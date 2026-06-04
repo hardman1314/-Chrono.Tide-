@@ -28,6 +28,14 @@ Chrono Tide 是一个功能丰富的本地游戏库管理工具，专为 GALGAME
 
 <img width="1265" height="712" alt="image" src="https://github.com/user-attachments/assets/060f54ba-a67b-4d63-9952-a905a17856ef" />
 
+## 💬 同好交流
+欢迎所有剧情党、Galgame玩家一起测试、提建议、共同优化
+QQ交流群（时之汐社）：**1091837834**
+<img width="560" height="560" alt="背景" src="https://github.com/user-attachments/assets/ede88de6-488e-4855-a45b-0fb11edb895d" />
+
+
+## 🎐 关于作者
+纯社恐大学生业余开发，热爱剧情向作品，只为做出自己用着舒服的工具
 
 
 
