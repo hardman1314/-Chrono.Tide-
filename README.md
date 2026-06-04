@@ -1,17 +1,18 @@
-# Chrono Tide - 开源版本
+# Chrono Tide V1.0.0开源版
 
-> 一款基于 Flutter 的 Windows 桌面端游戏库管理平台
+
+> 一款为大家开发的 Windows 桌面端游戏库管理平台
 
 ## 项目简介
 
-Chrono Tide 是一个功能丰富的本地游戏库管理工具，专为 GALGAME 玩家设计。开源版本包含以下核心功能：
+Chrono Tide 是一个功能丰富的本地游戏库管理工具，专为 GALGAME 玩家设计。包含以下核心功能：
 
 - **本地游戏库管理** - 扫描、启动、删除、标记已安装的游戏
 - **手动入库** - 支持拖拽添加本地游戏，自动从 VNDB/Bangumi/Steam 等平台抓取元数据
 - **万能解压引擎** - 支持 ZIP/RAR/7Z/LZ4/TAR/ISO/CAB/ARJ 等十余种格式
 - **多线程下载器** - 4线程分片并行下载，支持断点续传
 - **存档备份系统** - 自动/手动备份游戏存档，支持恢复
-- **Locale Emulator 转区** - 日文游戏一键转区启动
+- **Locale Emulator 转区** - 日文游戏一键转区启动- **区域模拟器转区**- 日文游戏一键转区启动
 - **主题系统** - 亮色/暗色/自定义背景图切换
 - **元数据聚合** - 内嵌 LunaMetadataSDK，支持 VNDB/Bangumi/Steam/Ymgal/DLsite/ErogameScape 六大数据源
 
