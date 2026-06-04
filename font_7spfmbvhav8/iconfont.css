@@ -1,0 +1,149 @@
+@font-face {
+  font-family: "iconfont"; /* Project id  */
+  src: url('iconfont.ttf?t=1780069072347') format('truetype');
+}
+
+.iconfont {
+  font-family: "iconfont" !important;
+  font-size: 16px;
+  font-style: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-airplay:before {
+  content: "\e611";
+}
+
+.icon-album:before {
+  content: "\e612";
+}
+
+.icon-align-end-vertical:before {
+  content: "\e613";
+}
+
+.icon-anchor:before {
+  content: "\e614";
+}
+
+.icon-anvil:before {
+  content: "\e615";
+}
+
+.icon-app-window-mac:before {
+  content: "\e616";
+}
+
+.icon-app-window:before {
+  content: "\e617";
+}
+
+.icon-axe:before {
+  content: "\e618";
+}
+
+.icon-astroid:before {
+  content: "\e619";
+}
+
+.icon-badge-alert:before {
+  content: "\e61a";
+}
+
+.icon-badge-check:before {
+  content: "\e61b";
+}
+
+.icon-badge-x:before {
+  content: "\e61c";
+}
+
+.icon-battery-medium:before {
+  content: "\e61d";
+}
+
+.icon-award:before {
+  content: "\e61e";
+}
+
+.icon-book-image:before {
+  content: "\e61f";
+}
+
+.icon-bookmark-plus:before {
+  content: "\e620";
+}
+
+.icon-book-search:before {
+  content: "\e621";
+}
+
+.icon-book-marked:before {
+  content: "\e622";
+}
+
+.icon-contact:before {
+  content: "\e62e";
+}
+
+.icon-candy:before {
+  content: "\e62f";
+}
+
+.icon-earth:before {
+  content: "\e635";
+}
+
+.icon-ghost:before {
+  content: "\e645";
+}
+
+.icon-layers-2:before {
+  content: "\e65a";
+}
+
+.icon-link:before {
+  content: "\e65b";
+}
+
+.icon-message-circle:before {
+  content: "\e66b";
+}
+
+.icon-monitor:before {
+  content: "\e672";
+}
+
+.icon-paperclip:before {
+  content: "\e682";
+}
+
+.icon-library-big:before {
+  content: "\e67e";
+}
+
+.icon-log-in:before {
+  content: "\e683";
+}
+
+.icon-table-cells-merge:before {
+  content: "\e6c7";
+}
+
+.icon-unlink-2:before {
+  content: "\e6dc";
+}
+
+.icon-user-round-cog:before {
+  content: "\e6df";
+}
+
+.icon-user-round-pen:before {
+  content: "\e6e0";
+}
+
+.icon-key-round:before {
+  content: "\e6f7";
+}
+

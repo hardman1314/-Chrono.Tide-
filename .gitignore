@@ -1,0 +1,49 @@
+# ─── Flutter / Dart ───
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.lock
+!pubspec.lock
+
+# ─── IDE ───
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# ─── 敏感配置（不入库）───
+config.json
+.env*
+secrets*
+credentials*
+*.jks
+*.keystore
+key.properties
+
+# ─── 运行时生成 ───
+runtime/openlist/data/
+runtime/openlist/data.zip
+downloads/
+logs/
+*.log
+
+# ─── 构建产物 ───
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ─── 系统文件 ───
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── 其他 ───
+.trae/
+.figma/

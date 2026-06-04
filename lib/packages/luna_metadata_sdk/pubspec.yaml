@@ -1,0 +1,26 @@
+name: luna_metadata_sdk
+description: LunaBox 元数据抓取 SDK - 支持多数据源的游戏元数据抓取库
+version: 1.0.0
+homepage: https://github.com/lunabox/metadata-sdk
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # HTTP 客户端
+  dio: ^5.4.0
+  
+  # HTML 解析（用于 DLsite/ErogameScape）
+  html: ^0.15.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

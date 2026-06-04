@@ -1,0 +1,53 @@
+name: chrono_tide
+description: "Chrono Tide - Galgame Manager"
+publish_to: 'none'
+version: 0.9.9
+
+environment:
+  sdk: ^3.5.3
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  window_manager: ^0.4.3
+  flutter_svg: ^2.0.10
+  pocketbase: ^0.23.2
+  shared_preferences: ^2.2.3
+  file_picker: ^8.0.0
+  auto_size_text: ^3.0.0
+  dio: ^5.4.0
+  path: ^1.9.0
+  path_provider: ^2.1.5
+  package_info_plus: ^8.0.0
+  cached_network_image: ^3.4.1
+  desktop_drop: 0.7.1
+  luna_metadata_sdk:
+    path: lib/packages/luna_metadata_sdk
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/images/themes/
+    - assets/tools/rar_lz4_unzip.exe
+    - assets/tools/bz.exe
+    - assets/tools/UnRAR.exe
+    - assets/tools/Rar.exe
+    - assets/tools/ark.x64.dll
+    - assets/tools/ark.x64.lgpl.dll
+    - assets/tools/bdzshl.x64.dll
+
+  fonts:
+    - family: ZhiMangXing
+      fonts:
+        - asset: assets/fonts/钟齐志莽行书.ttf
+    - family: Mali
+      fonts:
+        - asset: assets/fonts/Mali-Regular.ttf
