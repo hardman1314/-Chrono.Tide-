@@ -39,6 +39,14 @@ logs/
 *.so
 *.dylib
 
+# ─── 运行时工具（白名单例外）───
+!assets/tools/
+!assets/tools/*
+!windows/runner/tools/
+!windows/runner/tools/*
+!windows/runner/locale_emulator/
+!windows/runner/locale_emulator/*
+
 # ─── 系统文件 ───
 .DS_Store
 Thumbs.db
