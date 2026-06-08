@@ -6,7 +6,6 @@ import '../theme/app_colors.dart';
 import '../theme/app_styles.dart';
 import '../models/game_model.dart';
 import '../repositories/game_repository.dart';
-import '../core/pb_config.dart';
 import '../core/backend_config.dart';
 import '../services/global_install_center.dart';
 import '../services/local_game_registry.dart';

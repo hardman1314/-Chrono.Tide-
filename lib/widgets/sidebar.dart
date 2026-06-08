@@ -90,8 +90,8 @@ class _SidebarState extends State<Sidebar> {
               Expanded(
                 child: widget.isCollapsed
                     ? Padding(
-                        padding: const EdgeInsets.only(
-                            left: 12, right: 12, top: 8, bottom: 396),
+                        padding:
+                            const EdgeInsets.only(left: 12, right: 12, top: 8),
                         child: Column(
                           children: [
                             _buildNavItemCollapsed(

@@ -13,6 +13,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_theme_manager.dart';
 import 'interactive_wrapper.dart';
 import '../modules/auth/auth_service.dart';
+import '../core/backend_config.dart';
 import '../modules/auth/user_model.dart';
 import '../services/user_cache_service.dart';
 import '../core/path_helper.dart';

@@ -2,10 +2,12 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../core/pb_config.dart';
-import '../core/
+import '../core/path_helper.dart';
+import '../core/backend_config.dart';
+
 class OpenListService {
   static final String _configRecordId = BackendConfig.openlistConfigRecordId;
-fialBacendConfg.openlstConigRecordId
+
   static bool _isRunning = false;
   static Process? _process;
   static int? _processPid;
@@ -16,7 +18,17 @@ fialBacendConfg.openlstConigRecordId
   static String? get authToken => _authToken;
 
   static Future<void> boot() async {
-    debugPrint('[OL-BOOT] ======(
+    // 后端不可用时跳过 OpenList 启动
+    if (!BackendConfig.isBackendAvailable || !BackendConfig.isOpenlistConfigured) {
+      debugPrint('[OpenList] 后端未配置，跳过 OpenList 启动');
+      return;
+    }
+    debugPrint('[OL-BOOT] ========== OpenList 配置同步 & 启动 ==========');
+
+    await _ensureOpenListFiles();
+    await _syncConfig();
+    await _startProcess();
+    await _waitForReady();
     await _login();
 
     debugPrint(
@@ -495,30 +507,30 @@ fialBacendConfg.openlstConigRecordId
 
       final psScript = '''
         \$ErrorActionPreference = "Stop"
-        
+
         Write-Host "开始解压..."
         Write-Host "源文件: $zipPath"
         Write-Host "目标目录: $targetDir"
-        
+
         if (-not (Test-Path "$zipPath")) {
             Write-Host "ERROR: 源文件不存在"
             exit 1
         }
-        
+
         if (-not (Test-Path "$targetDir")) {
             New-Item -ItemType Directory -Path "$targetDir" -Force | Out-Null
         }
-        
+
         try {
             Expand-Archive -LiteralPath "$zipPath" -DestinationPath "$targetDir" -Force
-            
+
             \$files = Get-ChildItem -Path "$targetDir" -Recurse -File
             Write-Host ("提取文件数: " + \$files.Count)
-            
+
             foreach (\$file in \$files) {
                 Write-Host ("  FILE: " + \$file.Name + " (" + \$file.Length + " bytes)")
             }
-            
+
             exit 0
         } catch {
             Write-Host ("ERROR: " + \$_.Exception.Message)
@@ -1012,6 +1024,7 @@ fialBacendConfg.openlstConigRecordId
     ];
 
     credentialsList = credentialsList.where((c) => c.isNotEmpty).toList();
+
     debugPrint('[OL-AUTH] 准备尝试 ${credentialsList.length} 组凭据');
 
     for (int i = 0; i < credentialsList.length; i++) {

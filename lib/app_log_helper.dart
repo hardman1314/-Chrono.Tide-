@@ -41,7 +41,7 @@ class AppLogHelper {
       }
 
       // 如果没找到logs文件夹，就在exe同级创建
-      if (logDirPath == null) {
+      if (logDirPath.isEmpty) {
         logDirPath = "${exeDir.path}\\logs";
         print("⚠️ 未找到logs文件夹，将在：$logDirPath 创建");
       }

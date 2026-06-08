@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../core/pb_config.dart';
 import '../core/backend_config.dart';
 
 class GameModel {
