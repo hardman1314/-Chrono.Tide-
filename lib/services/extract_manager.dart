@@ -1238,6 +1238,18 @@ class ExtractManager {
     required double startPercent,
     required double endPercent,
   }) async {
+    // lz4.exe 不包含在开源版本中，检查工具是否可用
+    try {
+      final lz4Path = await _getToolPath('lz4.exe');
+      final lz4File = File(lz4Path);
+      if (!await lz4File.exists()) {
+        throw Exception('lz4.exe 工具文件不存在，开源版本不支持纯 LZ4 格式解压');
+      }
+    } catch (e) {
+      _log('ERROR', 'lz4.exe 不可用: $e');
+      throw Exception('开源版本不支持纯 LZ4 格式解压，如需此功能请使用正式版');
+    }
+
     final lz4Path = await _getToolPath('lz4.exe');
 
     _log('INFO', '');
