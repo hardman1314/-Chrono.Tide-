@@ -11,7 +11,7 @@ Chrono Tide 是一个功能丰富的本地游戏库管理工具，专为 GALGAME
 - **万能解压引擎** - 支持 ZIP/RAR/7Z/LZ4/TAR/ISO/CAB/ARJ 等十余种格式
 - **多线程下载器** - 4线程分片并行下载，支持断点续传
 - **存档备份系统** - 自动/手动备份游戏存档，支持恢复
-- **Locale Emulator 转区** - 日文游戏一键转区启动
+- **Locale Emulator 转区** - 日文游戏一键转区启动- **区域模拟器 转区**- 日文游戏一键转区启动
 - **主题系统** - 亮色/暗色/自定义背景图切换
 - **元数据聚合** - 内嵌 LunaMetadataSDK，支持 VNDB/Bangumi/Steam/Ymgal/DLsite/ErogameScape 六大数据源
 
@@ -60,9 +60,9 @@ flutter run -d windows
 ```dart
 static const String pbBaseUrl = 'http://your-server:8090';
 static const String openlistConfigRecordId = 'your-record-id';
-static const String openlistAdminUsername = 'your-username';
-static const String openlistAdminPassword = 'your-password';
-static const String defaultExtractionPassword = 'your-password';
+static const String openlistAdminUsername = 'your-username';static const String openlistAdminUsername = '您的用户名';
+static const String openlistAdminPassword = 'your-password';static const String openlistAdminPassword = '您的密码';
+static const String defaultExtractionPassword = 'your-password';static const String defaultExtractionPassword = '您的密码';
 ```
 
 4. 在 PocketBase 中创建以下集合：
@@ -98,7 +98,7 @@ lib/
 
 ## 技术栈
 
-- **框架**: Flutter (Dart)
+- **框架**: Flutter (Dart)- **框架**: Flutter（Dart）
 - **后端**: PocketBase (需自建)
 - **文件服务**: Alist/OpenList (需自建)
 - **元数据源**: VNDB, Bangumi, Steam, Ymgal, DLsite, ErogameScape
