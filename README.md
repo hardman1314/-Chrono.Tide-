@@ -113,5 +113,7 @@ lib/
 - [Alist](https://alist.nn.ci/) - 文件列表程序
 - [VNDB](https://vndb.org/) - 视觉小说数据库
 - [Bangumi](https://bangumi.tv/) - 番组计划
+- [KunGal](https://www.kungal.com/) - 鲲Gal
+- [hikarinagi](https://www.hikarinagi.org/) - hikarinagi
 - [Locale Emulator](https://xupefei.github.io/Locale-Emulator/) - 区域模拟器
 - [ludusavi](https://github.com/mtkennerly/ludusavi) - 游戏存档备份工具
