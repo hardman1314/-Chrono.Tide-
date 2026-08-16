@@ -5,10 +5,12 @@ class Game {
   final String? company;
   final String? summary;
   final double rating;
+  final int? voteCount;
   final String? releaseDate;
   final SourceType sourceType;
   final String? sourceId;
   final DateTime cachedAt;
+  final List<String>? screenshotUrls;
 
   Game({
     required this.id,
@@ -17,9 +19,11 @@ class Game {
     this.company,
     this.summary,
     this.rating = 0.0,
+    this.voteCount,
     this.releaseDate,
     this.sourceType = SourceType.local,
     this.sourceId,
+    this.screenshotUrls,
     DateTime? cachedAt,
   }) : cachedAt = cachedAt ?? DateTime.now();
 
@@ -31,12 +35,16 @@ class Game {
       company: json['company'],
       summary: json['summary'],
       rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
+      voteCount: (json['vote_count'] as num?)?.toInt(),
       releaseDate: json['release_date'],
       sourceType: SourceType.values.firstWhere(
         (e) => e.name == (json['source_type'] ?? 'local'),
         orElse: () => SourceType.local,
       ),
       sourceId: json['source_id']?.toString(),
+      screenshotUrls: (json['screenshot_urls'] as List<dynamic>?)
+          ?.map((e) => e.toString())
+          .toList(),
       cachedAt: json['cached_at'] != null
           ? DateTime.parse(json['cached_at'])
           : DateTime.now(),
@@ -51,9 +59,11 @@ class Game {
       'company': company,
       'summary': summary,
       'rating': rating,
+      'vote_count': voteCount,
       'release_date': releaseDate,
       'source_type': sourceType.name,
       'source_id': sourceId,
+      'screenshot_urls': screenshotUrls,
       'cached_at': cachedAt.toIso8601String(),
     };
   }
@@ -65,9 +75,11 @@ class Game {
     String? company,
     String? summary,
     double? rating,
+    int? voteCount,
     String? releaseDate,
     SourceType? sourceType,
     String? sourceId,
+    List<String>? screenshotUrls,
     DateTime? cachedAt,
   }) {
     return Game(
@@ -77,9 +89,11 @@ class Game {
       company: company ?? this.company,
       summary: summary ?? this.summary,
       rating: rating ?? this.rating,
+      voteCount: voteCount ?? this.voteCount,
       releaseDate: releaseDate ?? this.releaseDate,
       sourceType: sourceType ?? this.sourceType,
       sourceId: sourceId ?? this.sourceId,
+      screenshotUrls: screenshotUrls ?? this.screenshotUrls,
       cachedAt: cachedAt ?? this.cachedAt,
     );
   }
@@ -92,7 +106,10 @@ enum SourceType {
   ymgal,
   steam,
   dlsite,
-  erogamescape;
+  erogamescape,
+  touchgal,
+  hikarinagi,
+  kun;
 
   String get displayName {
     switch (this) {
@@ -108,6 +125,12 @@ enum SourceType {
         return 'DLsite';
       case SourceType.erogamescape:
         return 'ErogameScape';
+      case SourceType.touchgal:
+        return 'TouchGal';
+      case SourceType.hikarinagi:
+        return 'Hikarinagi';
+      case SourceType.kun:
+        return 'KunGal';
       default:
         return '本地';
     }

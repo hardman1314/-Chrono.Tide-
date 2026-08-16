@@ -5,11 +5,13 @@ import '../services/global_install_center.dart';
 import '../widgets/download_button.dart';
 import '../widgets/download_progress_bar.dart';
 import '../widgets/interactive_wrapper.dart';
+import '../widgets/custom_title_bar.dart' show kTitleBarHeight;
 
 class InstallCenterPage extends StatefulWidget {
   final VoidCallback onClose;
+  final VoidCallback? onRetry;
 
-  const InstallCenterPage({super.key, required this.onClose});
+  const InstallCenterPage({super.key, required this.onClose, this.onRetry});
 
   @override
   State<InstallCenterPage> createState() => _InstallCenterPageState();
@@ -65,33 +67,59 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
   Widget build(BuildContext context) {
     final task = GlobalInstallCenter.instance.currentTask;
 
-    return Material(
-      color: Colors.black54,
-      child: Center(
-        child: Container(
-          width: 900,
-          height: 580,
-          decoration: BoxDecoration(
-            color: AppColors.background,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.border, width: 1.6),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.25),
-                offset: const Offset(4, 8),
-                blurRadius: 24,
+    return Stack(
+      children: [
+        // 遮罩从标题栏下方开始，确保标题栏在安装中心打开时仍可交互
+        Positioned(
+          top: kTitleBarHeight,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Container(color: Colors.black54),
+        ),
+        // 内容区同样从标题栏下方开始
+        Positioned(
+          top: kTitleBarHeight,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Center(
+            child: Padding(
+              // UX-07: 留出边距并约束最大尺寸，窄窗口下自适应收缩避免溢出
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: 900,
+                  maxHeight: 580,
+                ),
+                child: Container(
+                  width: double.infinity,
+                  height: double.infinity,
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.border, width: 1.6),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.25),
+                        offset: const Offset(4, 8),
+                        blurRadius: 24,
+                      ),
+                    ],
+                  ),
+                  clipBehavior: Clip.hardEdge,
+                  child: Column(
+                    children: [
+                      _buildHeader(),
+                      Expanded(child: _buildContent()),
+                    ],
+                  ),
+                ),
               ),
-            ],
-          ),
-          clipBehavior: Clip.hardEdge,
-          child: Column(
-            children: [
-              _buildHeader(),
-              Expanded(child: _buildContent()),
-            ],
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 
@@ -132,18 +160,18 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: _phase == InstallPhase.downloading
-                        ? const Color(0xFF4A72A5).withOpacity(0.12)
+                        ? AppColors.infoBlue.withOpacity(0.12)
                         : const Color(0xFFD4A017).withOpacity(0.12),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Text(
                     _phase == InstallPhase.downloading ? '下载中' : '解压中',
                     style: TextStyle(
-                      fontFamily: 'Mali',
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
+                      fontFamily: 'Inter',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
                       color: _phase == InstallPhase.downloading
-                          ? const Color(0xFF4A72A5)
+                          ? AppColors.infoBlue
                           : const Color(0xFFD4A017),
                     ),
                   ),
@@ -232,7 +260,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
               width: 216,
               height: 323,
               decoration: BoxDecoration(
-                color: const Color(0xFFE9E0D1),
+                color: AppColors.placeholderCover,
                 border: Border.all(color: AppColors.border, width: 2),
                 boxShadow: [
                   BoxShadow(
@@ -289,7 +317,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
   Widget _buildCoverImage(String? coverUrl) {
     if (coverUrl == null || coverUrl.isEmpty || !coverUrl.startsWith('http')) {
       return Container(
-        color: const Color(0xFFE9E0D1),
+        color: AppColors.placeholderCover,
         child: Center(
           child: Icon(
             Icons.image_outlined,
@@ -304,7 +332,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
       coverUrl,
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) => Container(
-        color: const Color(0xFFE9E0D1),
+        color: AppColors.placeholderCover,
         child: Center(
           child: Icon(
             Icons.broken_image_outlined,
@@ -351,7 +379,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                 fontFamily: 'ZhiMangXing',
                 fontSize: 30,
                 letterSpacing: 2.0,
-                color: const Color(0xFF8B7355),
+                color: AppColors.border,
               ),
             ),
           ),
@@ -369,24 +397,24 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                       opacity: 0.8,
                       child: Text(
                         '下载速度: ${_progress.downloadSpeed}',
-                        style: const TextStyle(
-                          fontFamily: 'Mali',
+                        style: TextStyle(
+                          fontFamily: 'Inter',
                           fontSize: 16,
                           height: 24 / 16,
-                          color: Color(0xFF5C4A3D),
-                          fontWeight: FontWeight.w700,
+                          color: AppColors.titleBrown,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                     Text(
                       '${_progress.downloadPercent.toStringAsFixed(1)}%',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'Mali',
                         fontSize: 24,
                         height: 32 / 24,
                         letterSpacing: 1.2,
-                        color: Color(0xFF5C4A3D),
-                        fontWeight: FontWeight.w700,
+                        color: AppColors.titleBrown,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
@@ -421,7 +449,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                 fontFamily: 'ZhiMangXing',
                 fontSize: 30,
                 letterSpacing: 2.0,
-                color: const Color(0xFF8B7355),
+                color: AppColors.border,
               ),
             ),
           ),
@@ -440,24 +468,24 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                         _progress.statusMessage.isNotEmpty
                             ? _progress.statusMessage
                             : '正在解压...',
-                        style: const TextStyle(
-                          fontFamily: 'Mali',
+                        style: TextStyle(
+                          fontFamily: 'Inter',
                           fontSize: 16,
                           height: 24 / 16,
-                          color: Color(0xFF5C4A3D),
-                          fontWeight: FontWeight.w700,
+                          color: AppColors.titleBrown,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                     Text(
                       '${_progress.extractPercent.toStringAsFixed(0)}%',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'Mali',
                         fontSize: 24,
                         height: 32 / 24,
                         letterSpacing: 1.2,
-                        color: Color(0xFF5C4A3D),
-                        fontWeight: FontWeight.w700,
+                        color: AppColors.titleBrown,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
@@ -496,7 +524,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Icon(
               Icons.check_rounded,
               size: 42,
-              color: const Color(0xFF4CAF50),
+              color: AppColors.successGreen,
             ),
           ),
           const SizedBox(height: 20),
@@ -506,7 +534,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
               fontFamily: 'ZhiMangXing',
               fontSize: 32,
               letterSpacing: 2.5,
-              color: const Color(0xFF4CAF50),
+              color: AppColors.successGreen,
             ),
           ),
           const SizedBox(height: 12),
@@ -515,10 +543,10 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '游戏已成功入库，可在库中查看并启动',
               style: TextStyle(
-                fontFamily: 'Mali',
+                fontFamily: 'Inter',
                 fontSize: 15,
                 height: 24 / 15,
-                color: const Color(0xFFA08264),
+                color: AppColors.secondaryText,
               ),
             ),
           ),
@@ -577,7 +605,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
               _errorMessage ?? '操作过程中发生异常，请稍后重试',
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: 'Mali',
+                fontFamily: 'Inter',
                 fontSize: 14,
                 height: 22 / 14,
                 color: const Color(0xFFD4A0A8),
@@ -587,7 +615,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
           ),
           const SizedBox(height: 28),
           DownloadButton(
-            onTap: widget.onClose,
+            onTap: widget.onRetry ?? widget.onClose,
             variant: ButtonVariant.retry,
           ),
           const SizedBox(width: 16),
@@ -598,7 +626,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '关闭',
               style: TextStyle(
-                fontFamily: 'Mali',
+                fontFamily: 'Inter',
                 fontSize: 15,
                 color: AppColors.secondaryText,
                 decoration: TextDecoration.underline,
@@ -622,7 +650,7 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
               fontFamily: 'ZhiMangXing',
               fontSize: 30,
               letterSpacing: 2.0,
-              color: const Color(0xFF8B7355),
+              color: AppColors.border,
             ),
           ),
           const SizedBox(height: 12),
@@ -631,10 +659,10 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '已清理临时缓存文件，任务已终止',
               style: TextStyle(
-                fontFamily: 'Mali',
+                fontFamily: 'Inter',
                 fontSize: 14,
                 height: 22 / 14,
-                color: const Color(0xFFA08264),
+                color: AppColors.secondaryText,
               ),
             ),
           ),

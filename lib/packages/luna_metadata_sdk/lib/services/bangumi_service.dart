@@ -1,60 +1,51 @@
 import 'dart:convert' as convert;
+
 import 'package:dio/dio.dart';
+
 import '../models/game.dart';
 import '../models/tags.dart';
+import 'bangumi_oauth.dart';
 import 'metadata_base.dart';
 
-/// Bangumi 镜像站服务（匿名版本）
+/// Bangumi 数据源服务
+///
+/// 直接使用原站 `api.bgm.tv`。访问策略：个人访问令牌优先
+/// （用户在设置弹窗填入，更高速率限额）+ 匿名兜底（未填入时匿名访问）。
+/// 国内访问原站需代理，代理由全局 Dio（[MetadataFetcher] 三级代理
+/// 优先级）统一处理。
 ///
 /// 特点：
-/// 1. 支持多个镜像站点自动切换
-/// 2. 无需用户 Token
-/// 3. 智能错误处理和重试
-/// 4. 自动将图片URL替换为镜像站域名
+/// 1. 直接使用原站 `api.bgm.tv`，废弃镜像站
+/// 2. 个人访问令牌优先，401 时降级匿名访问
+/// 3. 智能最佳匹配 [_pickBestMatch]，避免盲目取首个结果
+/// 4. 速率受限（[executeRateLimited]），防 429
+///
+/// 注：类名保留 `BangumiMirrorService` 以维持向后兼容（历史命名）。
 class BangumiMirrorService implements MetadataSourceService {
   final Dio _dio;
-  final List<String> _mirrorURLs;
-  int _currentMirrorIndex = 0;
 
-  static const List<String> _defaultMirrors = [
-    'https://api.bangumi.one', // 主镜像站
-    'https://api.bgm.tv', // 原站
-  ];
+  /// 原站 API 基址
+  static const String _baseURL = 'https://api.bgm.tv';
 
-  BangumiMirrorService({
-    Dio? dio,
-    List<String>? mirrorURLs,
-  })  : _dio = dio ??
-            Dio(BaseOptions(
-              connectTimeout: const Duration(seconds: 10),
-              receiveTimeout: const Duration(seconds: 15),
-              headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json',
-                'Origin': 'https://bangumi.one',
-                'Referer': 'https://bangumi.one/',
-              },
-            )),
-        _mirrorURLs = mirrorURLs ?? _defaultMirrors;
-
-  /// 获取当前使用的镜像站点
-  String get currentMirror => _mirrorURLs[_currentMirrorIndex];
-
-  /// 获取所有镜像站点
-  List<String> get allMirrors => List.from(_mirrorURLs);
-
-  /// 设置自定义镜像站点
-  void setCustomMirrors(List<String> mirrors) {
-    if (mirrors.isNotEmpty) {
-      _mirrorURLs.clear();
-      _mirrorURLs.addAll(mirrors);
-      _currentMirrorIndex = 0;
-    }
+  BangumiMirrorService({Dio? dio})
+      : _dio = Dio(BaseOptions(
+          connectTimeout: const Duration(seconds: 8),
+          receiveTimeout: const Duration(seconds: 12),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+          },
+        )) {
+    // 继承代理配置：dio 非空时复制其代理回调；为 null 时显式 DIRECT
+    applyProxyConfig(dio, _dio);
   }
 
   @override
-  String get sourceName => 'Bangumi (镜像)';
+  String get sourceName => 'Bangumi';
+
+  @override
+  Future<List<MetadataResult>> fetchByIds(List<String> ids) async => [];
 
   @override
   SourceType get sourceType => SourceType.bangumi;
@@ -62,7 +53,7 @@ class BangumiMirrorService implements MetadataSourceService {
   @override
   Future<bool> testConnection() async {
     try {
-      final response = await _dio.head(currentMirror);
+      final response = await _dio.head(_baseURL);
       return response.statusCode == 200 ||
           response.statusCode == 404 ||
           response.statusCode == 405;
@@ -74,78 +65,145 @@ class BangumiMirrorService implements MetadataSourceService {
   @override
   Future<MetadataResult> fetchByName(String name) async {
     if (name.isEmpty) {
-      return MetadataResult(
-          game: Game(id: '', name: '', sourceType: SourceType.bangumi));
+      return _emptyResult();
     }
-
-    Exception? lastError;
-
-    for (int i = 0; i < _mirrorURLs.length; i++) {
-      try {
-        final result = await _searchFromCurrentMirror(name);
-        return result;
-      } catch (e) {
-        lastError = e is Exception ? e : Exception(e.toString());
-
-        // 切换到下一个镜像
-        _currentMirrorIndex = (_currentMirrorIndex + 1) % _mirrorURLs.length;
-
-        // 如果是限流错误，不再尝试其他镜像
-        if (e.toString().contains('429') ||
-            e.toString().contains('rate limit')) {
-          break;
-        }
-      }
-    }
-
-    throw lastError ?? Exception('所有镜像站点均无法访问');
-  }
-
-  Future<MetadataResult> _searchFromCurrentMirror(String keyword) async {
-    final baseURL = _mirrorURLs[_currentMirrorIndex];
-    final url = '$baseURL/v0/search/subjects?limit=5&offset=0';
 
     try {
-      final response = await _dio.post(
-        url,
-        data: {
-          'keyword': keyword,
-          'sort': 'rank',
-          'filter': {
-            'type': [4], // 只搜索游戏类型
-            'nsfw': true,
-          },
-        },
-      );
+      // 加载用户配置的个人访问令牌
+      final token = await BangumiTokenStore.loadToken();
 
-      if (response.statusCode == 200) {
-        final data = response.data is String
-            ? convert.jsonDecode(response.data)
-            : response.data;
-        final results = data['data'] as List<dynamic>? ?? [];
-
-        if (results.isEmpty) {
-          return MetadataResult(
-              game: Game(id: '', name: '', sourceType: SourceType.bangumi));
+      // 有令牌时优先使用，401 时降级匿名
+      if (token != null && token.isNotEmpty) {
+        try {
+          return await _search(name, token);
+        } on _UnauthorizedException {
+          fetchLog('[Bangumi] Token 无效或已过期，降级匿名访问');
         }
-
-        return _parseGameResponse(results.first is Map
-            ? Map<String, dynamic>.from(results.first)
-            : {});
-      } else if (response.statusCode == 429) {
-        throw Exception('请求过于频繁，请稍后重试');
-      } else {
-        throw Exception('搜索 API 返回错误: ${response.statusCode}');
       }
+
+      // 匿名访问
+      return await _search(name, null);
+    } catch (e) {
+      fetchLog('[Bangumi] 查询失败: $e');
+      return _emptyResult();
+    }
+  }
+
+  /// 发起搜索请求
+  ///
+  /// [token] 非空时带 Bearer 认证（授权用户），为 null 时匿名访问。
+  /// 返回 401 时抛 [_UnauthorizedException] 供上层降级匿名重试。
+  Future<MetadataResult> _search(String keyword, String? token) async {
+    final url = '$_baseURL/v0/search/subjects?limit=10&offset=0';
+
+    try {
+      final response = await executeRateLimited(
+          SourceType.bangumi,
+          () => _dio.post(
+                url,
+                data: {
+                  'keyword': keyword,
+                  'sort': 'rank',
+                  'filter': {
+                    'type': [4], // 只搜索游戏类型
+                    'nsfw': true,
+                  },
+                },
+                options: token != null
+                    ? Options(headers: {'Authorization': 'Bearer $token'})
+                    : null,
+              ));
+
+      if (response.statusCode == 401) {
+        throw _UnauthorizedException();
+      }
+      if (response.statusCode != 200) {
+        return _emptyResult();
+      }
+
+      final data = response.data is String
+          ? convert.jsonDecode(response.data)
+          : response.data;
+      final results = data['data'] as List<dynamic>? ?? [];
+
+      if (results.isEmpty) {
+        return MetadataResult(
+            game: Game(id: '', name: '', sourceType: SourceType.bangumi));
+      }
+
+      // Phase 2.5: 最佳匹配，避免盲目取 results.first
+      final bestMatch = _pickBestMatch(results, keyword);
+      return _parseGameResponse(bestMatch ?? {});
     } on DioException catch (e) {
-      if (e.type == DioExceptionType.connectionTimeout) {
-        throw Exception('搜索连接超时: $baseURL');
-      } else if (e.type == DioExceptionType.connectionError) {
-        throw Exception('搜索连接失败: $baseURL');
-      } else {
-        throw Exception('搜索网络错误: ${e.message}');
+      if (e.response?.statusCode == 401) {
+        throw _UnauthorizedException();
+      }
+      fetchLog('[Bangumi] 搜索网络错误: ${e.message}');
+      return _emptyResult();
+    }
+  }
+
+  /// Phase 2.5: 从 Bangumi 搜索结果中挑选与查询词最匹配的项
+  ///
+  /// Bangumi 搜索按 rank 排序，但同名作品可能存在多个载体
+  /// （PC游戏、主机版、合集、OVA等），rank 最高者未必是用户想要的版本。
+  /// 本方法通过名称相似度重新打分，优先选择标题精确匹配的 PC 游戏版本。
+  ///
+  /// 评分规则：
+  /// - 精确匹配（去标点小写后相等）+100
+  /// - 前缀匹配 +40
+  /// - 包含匹配 +20
+  /// - 候选名称集合：name_cn + name（原文名）
+  ///
+  /// 当所有候选分数都 < 20 时返回 null（放弃匹配），避免返回错误游戏。
+  Map<String, dynamic>? _pickBestMatch(List<dynamic> results, String query) {
+    final candidates = <Map<String, dynamic>>[];
+    for (final r in results) {
+      if (r is Map) candidates.add(Map<String, dynamic>.from(r));
+    }
+    if (candidates.isEmpty) return null;
+
+    final specialChars = RegExp(r'[-_:(\)\[\]"]');
+    final queryNorm =
+        query.toLowerCase().replaceAll(specialChars, '').replaceAll(' ', '');
+
+    Map<String, dynamic>? bestResult;
+    int bestScore = 0;
+
+    for (final item in candidates) {
+      final names = <String>{};
+      final nameCn = safeString(item, 'name_cn');
+      final name = safeString(item, 'name');
+      if (nameCn != null && nameCn.isNotEmpty) names.add(nameCn);
+      if (name != null && name.isNotEmpty) names.add(name);
+
+      int itemBest = 0;
+      for (final n in names) {
+        final nameNorm =
+            n.toLowerCase().replaceAll(specialChars, '').replaceAll(' ', '');
+        if (nameNorm.isEmpty) continue;
+
+        int score = 0;
+        if (nameNorm == queryNorm) {
+          score = 100;
+        } else if (nameNorm.startsWith(queryNorm)) {
+          score = 40;
+        } else if (nameNorm.contains(queryNorm) ||
+            queryNorm.contains(nameNorm)) {
+          score = 20;
+        }
+        if (score > itemBest) itemBest = score;
+      }
+
+      if (itemBest > bestScore) {
+        bestScore = itemBest;
+        bestResult = item;
       }
     }
+
+    // 最低匹配阈值：至少包含匹配（score >= 20），否则放弃
+    if (bestScore < 20) return null;
+    return bestResult;
   }
 
   MetadataResult _parseGameResponse(Map<String, dynamic> json) {
@@ -156,7 +214,7 @@ class BangumiMirrorService implements MetadataSourceService {
           game: Game(id: '', name: '', sourceType: SourceType.bangumi));
     }
 
-    // 提取图片（修复相对路径问题）
+    // 提取图片（P1.2：不再替换为 bangumi.one，原站 lain.bgm.tv 直接可用）
     final images = safeMap(json, 'images') ?? {};
     String coverUrl = _normalizeImageUrl(safeString(images, 'large') ?? '');
     if (coverUrl.isEmpty) {
@@ -169,7 +227,7 @@ class BangumiMirrorService implements MetadataSourceService {
 
     // 提取评分
     final ratingData = safeMap(json, 'rating') ?? {};
-    double rating = safeDouble(ratingData, 'score') ?? 0.0;
+    final rating = normalizeRating(safeDouble(ratingData, 'score') ?? 0.0);
 
     // 提取标签
     final tags = _extractTags(safeList(json, 'tags'));
@@ -205,8 +263,9 @@ class BangumiMirrorService implements MetadataSourceService {
         if (value is List && value.isNotEmpty) {
           final first = value.first;
           if (first is String) return first;
-          if (first is Map)
+          if (first is Map) {
             return safeString(Map<String, dynamic>.from(first), 'v');
+          }
         }
       }
     }
@@ -224,7 +283,6 @@ class BangumiMirrorService implements MetadataSourceService {
       final tagMap = Map<String, dynamic>.from(tag);
       final count = safeInt(tagMap, 'count') ?? 0;
       if (count >= 3) {
-        // 降低阈值以适应匿名模式
         rawTags.add(tagMap);
       }
     }
@@ -255,22 +313,14 @@ class BangumiMirrorService implements MetadataSourceService {
     }).toList();
   }
 
-  /// 修复图片 URL（处理相对路径 + 域名替换）
+  /// 修复图片 URL（P1.2：不再替换 bgm.tv→bangumi.one）
   ///
-  /// 重要：根据 mirrox 项目镜像映射表，
-  /// 所有 bgm.tv 域名必须替换为 bangumi.one 才能在国内访问
+  /// 原站 lain.bgm.tv 图片在代理环境下直接可访问，
+  /// 仅处理协议相对 URL 和相对路径。
   String _normalizeImageUrl(String url) {
     if (url.isEmpty) return '';
 
     var result = url;
-
-    // 替换所有 bgm.tv 相关域名为镜像站
-    result =
-        result.replaceAll('https://lain.bgm.tv', 'https://lain.bangumi.one');
-    result =
-        result.replaceAll('http://lain.bgm.tv', 'https://lain.bangumi.one');
-    result = result.replaceAll('//lain.bgm.tv', '//lain.bangumi.one');
-    result = result.replaceAll('bgm.tv', 'bangumi.one');
 
     // 处理协议相对 URL（// 开头）
     if (result.startsWith('//')) {
@@ -279,9 +329,28 @@ class BangumiMirrorService implements MetadataSourceService {
 
     // 处理相对路径（/ 开头）
     if (result.startsWith('/') && !result.startsWith('//')) {
-      return 'https://lain.bangumi.one$result';
+      return 'https://lain.bgm.tv$result';
     }
 
     return result;
   }
+
+  MetadataResult _emptyResult() {
+    return MetadataResult(
+        game: Game(id: '', name: '', sourceType: SourceType.bangumi));
+  }
+}
+
+/// 内部异常：Bangumi API 返回 401 Unauthorized
+///
+/// 由 [BangumiMirrorService._search] 方法在 HTTP 401 时抛出，
+/// [BangumiMirrorService.fetchByName] 捕获后刷新 OAuth Token 并重试一次，
+/// 刷新失败则降级匿名访问。
+class _UnauthorizedException implements Exception {
+  final String? message;
+  _UnauthorizedException([this.message]);
+  @override
+  String toString() => message != null
+      ? '_UnauthorizedException: $message'
+      : '_UnauthorizedException';
 }

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
 import 'interactive_wrapper.dart';
@@ -6,7 +7,7 @@ class LibraryContextMenu extends StatelessWidget {
   final Offset position;
   final VoidCallback onDetails;
   final VoidCallback onMark;
-  final VoidCallback onSelectExe;
+  final VoidCallback onLaunchManager;
   final VoidCallback onBackup;
   final VoidCallback onDelete;
   final VoidCallback onClose;
@@ -16,7 +17,7 @@ class LibraryContextMenu extends StatelessWidget {
     required this.position,
     required this.onDetails,
     required this.onMark,
-    required this.onSelectExe,
+    required this.onLaunchManager,
     required this.onBackup,
     required this.onDelete,
     required this.onClose,
@@ -24,6 +25,23 @@ class LibraryContextMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // UX-19: 边界检测，菜单不溢出屏幕右侧或底部
+    final screenSize = MediaQuery.sizeOf(context);
+    const menuWidth = 160.0;
+    const menuHeight = 248.0; // 5 项 × ~48px + 边框/分割线
+    const margin = 8.0;
+
+    final maxLeft = math.max(margin, screenSize.width - menuWidth - margin);
+    final left = position.dx.clamp(margin, maxLeft);
+
+    double top;
+    if (position.dy + menuHeight > screenSize.height - margin) {
+      // 底部放不下时上翻至点击点上方
+      top = math.max(margin, position.dy - menuHeight);
+    } else {
+      top = position.dy;
+    }
+
     return Stack(
       children: [
         Positioned.fill(
@@ -33,8 +51,8 @@ class LibraryContextMenu extends StatelessWidget {
           ),
         ),
         Positioned(
-          left: position.dx,
-          top: position.dy,
+          left: left,
+          top: top,
           child: Material(
             color: Colors.transparent,
             child: Container(
@@ -43,7 +61,7 @@ class LibraryContextMenu extends StatelessWidget {
                 border: Border.all(color: AppColors.border, width: 2),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0x218B7355),
+                    color: AppColors.border.withOpacity(0.13),
                     offset: const Offset(4, 5),
                     blurRadius: 0,
                   ),
@@ -56,35 +74,35 @@ class LibraryContextMenu extends StatelessWidget {
                   _buildMenuItem(
                     icon: Icons.info_outline_rounded,
                     label: '详 情',
-                    labelColor: const Color(0xFF5C4A3D),
+                    labelColor: AppColors.titleBrown,
                     onTap: onDetails,
                     showDivider: true,
                   ),
                   _buildMenuItem(
-                    icon: Icons.play_circle_outline_rounded,
-                    label: '启动程序',
-                    labelColor: const Color(0xFF5C4A3D),
-                    onTap: onSelectExe,
+                    icon: Icons.tune_rounded,
+                    label: '启动管理',
+                    labelColor: AppColors.titleBrown,
+                    onTap: onLaunchManager,
                     showDivider: true,
                   ),
                   _buildMenuItem(
                     icon: Icons.bookmark_border_rounded,
                     label: '标 记',
-                    labelColor: const Color(0xFF5C4A3D),
+                    labelColor: AppColors.titleBrown,
                     onTap: onMark,
                     showDivider: true,
                   ),
                   _buildMenuItem(
                     icon: Icons.save_outlined,
                     label: '存档备份',
-                    labelColor: const Color(0xFF5C4A3D),
+                    labelColor: AppColors.titleBrown,
                     onTap: onBackup,
                     showDivider: true,
                   ),
                   _buildMenuItem(
                     icon: Icons.delete_outline_rounded,
                     label: '删 除',
-                    labelColor: const Color(0xFFD4183D),
+                    labelColor: AppColors.dangerRed,
                     onTap: onDelete,
                     showDivider: false,
                   ),
@@ -114,7 +132,8 @@ class LibraryContextMenu extends StatelessWidget {
         decoration: showDivider
             ? BoxDecoration(
                 border: Border(
-                  bottom: BorderSide(color: const Color(0xFFE9E0D1), width: 1),
+                  bottom:
+                      BorderSide(color: AppColors.placeholderCover, width: 1),
                 ),
               )
             : null,
@@ -122,7 +141,7 @@ class LibraryContextMenu extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Icon(icon, size: 18, color: const Color(0xFF8B7355)),
+            Icon(icon, size: 18, color: AppColors.border),
             Text(
               label,
               style: TextStyle(

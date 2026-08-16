@@ -20,14 +20,15 @@ class ExtractStatus extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Opacity(
-          opacity: 0.57,
+          // UX-10: 提高不透明度以改善对比度（原 0.57 导致大字文本对比度不足）
+          opacity: 0.85,
           child: Text(
             '正 在 解 压',
             style: TextStyle(
-              fontFamily: 'Zhi Mang Xing',
+              fontFamily: 'ZhiMangXing',
               fontSize: 30,
               letterSpacing: 2.0,
-              color: const Color(0xFF8B7355),
+              color: AppColors.border,
             ),
           ),
         ),
@@ -52,23 +53,23 @@ class ExtractStatus extends StatelessWidget {
               opacity: 0.8,
               child: Text(
                 '解压速度: ${speed.toInt()} MB/s',
-                style: const TextStyle(
-                  fontFamily: 'Mali',
+                style: TextStyle(
+                  fontFamily: 'Inter',
                   fontSize: 16,
                   height: 24 / 16,
-                  color: Color(0xFF5C4A3D),
+                  color: AppColors.titleBrown,
                   fontWeight: FontWeight.w700,
                 ),
               ),
             ),
             Text(
               '${(extractProgress * 100).toInt()}%',
-              style: const TextStyle(
+              style: TextStyle(
                 fontFamily: 'Mali',
                 fontSize: 24,
                 height: 32 / 24,
                 letterSpacing: 1.2,
-                color: Color(0xFF5C4A3D),
+                color: AppColors.titleBrown,
                 fontWeight: FontWeight.w700,
               ),
             ),

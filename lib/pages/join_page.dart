@@ -2,15 +2,20 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import '../theme/app_colors.dart';
+import '../widgets/screenshot_carousel.dart';
+import '../widgets/app_snack_bar.dart';
+import '../widgets/custom_title_bar.dart' show kTitleBarHeight;
 import 'join/join_controller.dart';
 import 'join/batch_import_controller.dart';
 import 'join/widgets/form_inputs.dart';
+import 'join/widgets/field_lock_button.dart';
 import 'join/widgets/metadata_section.dart';
 import 'join/widgets/file_drop_zone.dart';
 import 'join/widgets/action_buttons.dart';
 import 'join/widgets/progress_dialog.dart';
 import 'join/widgets/swipe_switcher.dart';
 import 'join/widgets/batch_import_section.dart';
+import 'join/widgets/smart_import_section.dart';
 
 class JoinPage extends StatefulWidget {
   final VoidCallback? onGameAdded;
@@ -50,25 +55,29 @@ class _JoinPageState extends State<JoinPage> {
           onError: _showErrorSnackBar,
           onSuccess: _showBatchSuccessNotification,
           onInfo: _showInfoSnackBar,
-          onConfirmEdit: _saveSingleToBatchGame,
+          onConfirmEdit: _onBatchConfirmEdit,
         );
 
-    // ★ 关键修复：无论使用全局还是本地控制器，都必须绑定保存回调！
-    // 全局控制器在 main_container.dart 创建时没有设置 onConfirmEdit，
-    // 导致 ✓ 按钮点击后什么都不会发生。
-    _batchController.onConfirmEdit = _saveSingleToBatchGame;
+    // ★ 关键修复：无论使用全局还是本地控制器，都必须绑定回调！
+    _batchController.onConfirmEdit = _onBatchConfirmEdit;
+    _batchController.onAutoSave = _saveSingleToBatchGame;
 
     SchedulerBinding.instance.addPostFrameCallback((_) {
       _singleController.initListeners();
 
       _batchController.addListener(() {
-        // 只在切换选中游戏时同步到左侧表单
-        // 确认保存操作（_lastSelectedGameId 为 null）不触发同步，避免覆盖用户编辑
+        // 只在用户主动切换选中游戏时同步到左侧表单
+        // _lastSelectedGameId != null 表示是切换操作
+        // _lastSelectedGameId == null 表示是确认保存后的通知，不覆盖表单
         if (_batchController.selectedGame != null &&
             _batchController.lastSelectedGameId != null) {
           _syncBatchGameToSingleForm(_batchController.selectedGame!);
+        } else if (_batchController.selectedGame == null &&
+            _batchController.lastSelectedGameId == null) {
+          // 确认保存后：selectedGame 被设为 null，清空左侧表单
+          _singleController.resetForm();
         }
-        // 确保UI更新（即使是从其他页面切回来）
+        // 确保UI更新
         setState(() {});
       });
     });
@@ -86,14 +95,30 @@ class _JoinPageState extends State<JoinPage> {
   }
 
   void _syncBatchGameToSingleForm(dynamic batchGame) {
-    _singleController.nameController.text = batchGame.gameName;
-    _singleController.tagsController.text = batchGame.tags.join(', ');
-    _singleController.descController.text = batchGame.description;
-    if (batchGame.developer != null &&
-        batchGame.developer.toString().isNotEmpty) {
-      _singleController.developerController.text =
-          batchGame.developer.toString();
-    }
+    _singleController.bumpGeneration(); // 强制重建左侧UI，防止批量切换时Element累积
+    _singleController.nameController.text = batchGame.gameName ?? '';
+    _singleController.tagsController.text =
+        (batchGame.tags as List?)?.join(', ') ?? '';
+    _singleController.descController.text = batchGame.description ?? '';
+    // 修复：无论 developer 是否为空都直接赋值，避免残留上一个游戏的会社名
+    _singleController.developerController.text =
+        batchGame.developer?.toString() ?? '';
+
+    // 双标题同步：从 BatchGameItem 恢复 originalTitle/metadataTitle/usingMetadataTitle
+    // 让 NameInput 右下角能显示"另一个标题"并支持切换
+    _singleController.setTitles(
+      original: batchGame.originalTitle ?? batchGame.gameName ?? '',
+      metadata: batchGame.metadataTitle,
+      useMetadata: batchGame.usingMetadataTitle ?? false,
+    );
+
+    // 清理之前的元数据抓取结果，避免残留上一个游戏的抓取数据
+    _singleController.clearScrapeResults();
+
+    // 恢复截图URL数据（从 BatchGameItem 的 screenshotUrls 字段恢复）
+    // 注意：必须在 clearScrapeResults 之后调用，否则会被清空
+    _singleController
+        .restoreScreenshotUrls(batchGame.screenshotUrls?.cast<String>() ?? []);
 
     // 设置封面（优先使用本地文件，其次从网络URL下载）
     if (batchGame.coverFilePath != null &&
@@ -110,6 +135,14 @@ class _JoinPageState extends State<JoinPage> {
       // 无任何封面数据，清空封面
       _singleController.removeCover();
     }
+  }
+
+  /// 确认保存编辑（✓按钮）— 保存数据到卡片 + 重置表单
+  void _onBatchConfirmEdit() {
+    _saveSingleToBatchGame();
+    // confirmCurrentSelection 已经在 controller 中处理了取消选中和清空标志
+    // listener 会检测到 selectedGame == null && lastSelectedGameId == null
+    // 并自动调用 _singleController.resetForm()
   }
 
   void _saveSingleToBatchGame() {
@@ -155,12 +188,23 @@ class _JoinPageState extends State<JoinPage> {
       coverFilePath: _singleController.coverFilePath,
       developer: _singleController.developerController.text.trim(),
       metadata: newMetadata,
+      screenshotUrls: _singleController.screenshotUrls,
+      // 双标题回写：同步单文件模式下的元数据标题与切换状态
+      // metadataTitle 为 null 时 copyWith 保留原值（未抓取新元数据时不覆盖）
+      metadataTitle: _singleController.metadataTitle,
+      usingMetadataTitle: _singleController.usingMetadataTitle,
     );
   }
 
   void _onModeChanged(ImportMode mode) {
-    if (_currentMode == ImportMode.batch && mode == ImportMode.single) {
+    if (_currentMode == ImportMode.batch && mode != ImportMode.batch) {
+      // 从批量模式切出时，自动保存当前编辑
       _saveSingleToBatchGame();
+      // 取消选中并重置表单
+      if (_batchController.selectedGame != null) {
+        _batchController.selectGame(null);
+      }
+      _singleController.resetForm();
     }
 
     setState(() {
@@ -170,79 +214,22 @@ class _JoinPageState extends State<JoinPage> {
 
   void _showErrorSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(
-        children: [
-          const Icon(Icons.error_outline, color: Colors.white, size: 20),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message, style: const TextStyle(fontSize: 14))),
-        ],
-      ),
-      duration: const Duration(seconds: 3),
-      backgroundColor: AppColors.dangerRed,
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      margin: const EdgeInsets.all(16),
-      elevation: 6,
-    ));
+    AppSnackBar.error(context, message);
   }
 
   void _showSuccessSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(
-        children: [
-          const Icon(Icons.check_circle_outline, color: Colors.white, size: 20),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message, style: const TextStyle(fontSize: 14))),
-        ],
-      ),
-      duration: const Duration(seconds: 2, milliseconds: 500),
-      backgroundColor: const Color(0xFF4CAF50),
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      margin: const EdgeInsets.all(16),
-      elevation: 6,
-    ));
+    AppSnackBar.success(context, message);
   }
 
   void _showWarningSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(
-        children: [
-          const Icon(Icons.warning_amber_outlined,
-              color: Colors.white, size: 20),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message, style: const TextStyle(fontSize: 14))),
-        ],
-      ),
-      duration: const Duration(seconds: 3),
-      backgroundColor: const Color(0xFFD4A017),
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      margin: const EdgeInsets.all(16),
-      elevation: 6,
-    ));
+    AppSnackBar.warning(context, message);
   }
 
   void _showInfoSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(
-        children: [
-          const Icon(Icons.info_outline, color: Colors.white, size: 20),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message, style: const TextStyle(fontSize: 14))),
-        ],
-      ),
-      duration: const Duration(seconds: 2, milliseconds: 500),
-      backgroundColor: const Color(0xFF4A72A5),
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      margin: const EdgeInsets.all(16),
-      elevation: 6,
-    ));
+    AppSnackBar.info(context, message);
   }
 
   // 新增：批量入库专用的醒目成功提示
@@ -315,7 +302,7 @@ class _JoinPageState extends State<JoinPage> {
             children: [
               _buildLeftColumn(),
               const SizedBox(width: 20),
-              Expanded(flex: 6, child: _buildRightColumn()),
+              Expanded(flex: 7, child: _buildRightColumn()),
             ],
           ),
         );
@@ -324,9 +311,12 @@ class _JoinPageState extends State<JoinPage> {
   }
 
   Widget _buildLeftColumn() {
+    // 使用 selectionGeneration 作为 key，确保每次点击元数据卡片时
+    // Flutter 强制销毁旧组件树并重建新组件树，彻底防止快速点击导致的信息区重复累积
     return Expanded(
       flex: 5,
       child: Column(
+        key: ValueKey('left_col_gen_${_singleController.selectionGeneration}'),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
@@ -338,16 +328,39 @@ class _JoinPageState extends State<JoinPage> {
                 child: Column(
                   children: [
                     NameInput(controller: _singleController),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 6),
                     TagsInput(controller: _singleController),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 6),
                     DeveloperInput(controller: _singleController),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+          // 截图轮播 + 锁按钮
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              ScreenshotCarousel(
+                key: ValueKey(
+                    'join_screenshots_${_singleController.screenshotUrls.length}'),
+                paths: _singleController.screenshotUrls,
+                isNetwork: true,
+                showIndicator: false,
+              ),
+              Positioned(
+                top: 4,
+                left: 4,
+                child: FieldLockButton(
+                  isLocked: _singleController.screenshotLocked,
+                  onToggle: () => _singleController.toggleScreenshotLock(),
+                  size: 18,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Expanded(child: DescInput(controller: _singleController)),
         ],
       ),
@@ -370,22 +383,27 @@ class _JoinPageState extends State<JoinPage> {
               batchController: _batchController,
               singleController: _singleController,
             ),
+            smartModeChild: SmartImportSection(
+              onGameAdded: widget.onGameAdded,
+            ),
           ),
         ),
         const SizedBox(height: 16),
-        ActionButtons(
-          controller:
-              _currentMode == ImportMode.single ? _singleController : null,
-          onBatchSubmit: _currentMode == ImportMode.batch
-              ? () => _submitBatchImport()
-              : null,
-          onBatchCancel: _currentMode == ImportMode.batch
-              ? () {
-                  _batchController.clearAll();
-                  _singleController.resetForm();
-                }
-              : null,
-        ),
+        // 智能导入模式不需要底部操作按钮（操作在面板内完成）
+        if (_currentMode != ImportMode.smart)
+          ActionButtons(
+            controller:
+                _currentMode == ImportMode.single ? _singleController : null,
+            onBatchSubmit: _currentMode == ImportMode.batch
+                ? () => _submitBatchImport()
+                : null,
+            onBatchCancel: _currentMode == ImportMode.batch
+                ? () {
+                    _batchController.clearAll();
+                    _singleController.resetForm();
+                  }
+                : null,
+          ),
       ],
     );
   }
@@ -396,7 +414,15 @@ class _JoinPageState extends State<JoinPage> {
       return;
     }
 
+    // 入库前自动保存当前编辑
+    if (_batchController.selectedGame != null) {
+      _saveSingleToBatchGame();
+    }
+
     await _batchController.submitBatchImport();
+
+    // 入库完成后重置左侧表单
+    _singleController.resetForm();
   }
 }
 
@@ -454,57 +480,72 @@ class _BatchSuccessOverlayState extends State<_BatchSuccessOverlay>
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black54, // 半透明黑色背景
-      child: Center(
-        child: AnimatedBuilder(
-          animation: _controller,
-          builder: (context, child) {
-            return Opacity(
-              opacity: _opacityAnimation.value,
-              child: Transform.scale(
-                scale: _scaleAnimation.value,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 32, vertical: 20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF4CAF50), // 绿色背景
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF4CAF50).withOpacity(0.4),
-                        blurRadius: 20,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.check_circle_outline,
-                        color: Colors.white,
-                        size: 48,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        widget.message,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.5,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
+    return Stack(
+      children: [
+        // 遮罩从标题栏下方开始，确保标题栏在成功浮层显示时仍可交互
+        Positioned(
+          top: kTitleBarHeight,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Container(color: Colors.black54),
         ),
-      ),
+        Positioned(
+          top: kTitleBarHeight,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Center(
+            child: AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) {
+                return Opacity(
+                  opacity: _opacityAnimation.value,
+                  child: Transform.scale(
+                    scale: _scaleAnimation.value,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 32, vertical: 20),
+                      decoration: BoxDecoration(
+                        color: AppColors.successGreen, // 绿色背景
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.successGreen.withOpacity(0.4),
+                            blurRadius: 20,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.check_circle_outline,
+                            color: Colors.white,
+                            size: 48,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            widget.message,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.5,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

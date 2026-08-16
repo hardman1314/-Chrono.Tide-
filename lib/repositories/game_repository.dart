@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:pocketbase/pocketbase.dart';
 import '../core/pb_config.dart';
-import '../core/backend_config.dart';
 import '../models/game_model.dart';
 
 class GameRepository {
@@ -14,10 +13,6 @@ class GameRepository {
     int perPage = pageSize,
     String searchQuery = '',
   }) async {
-    if (!BackendConfig.isBackendAvailable) {
-      return [];
-    }
-
     debugPrint('[PB] 开始请求PB games集合');
     debugPrint(
         '[PB]   请求地址: ${PBConfig.pb.baseUrl}/api/collections/games/records');
@@ -69,10 +64,6 @@ class GameRepository {
   }
 
   static Future<GameModel?> getGameById(String gameId) async {
-    if (!BackendConfig.isBackendAvailable) {
-      return null;
-    }
-
     debugPrint('[PB] 开始获取游戏详情 | gameId=$gameId');
 
     try {
@@ -102,6 +93,48 @@ class GameRepository {
       }
       debugPrint('[ERROR] ❌ PB未知错误 - getGameById: $e');
       throw Exception('获取游戏详情时发生未知错误');
+    }
+  }
+
+  /// 获取游戏总数 (仅请求 totalItems, 不传输实际数据)
+  ///
+  /// 用于探索页加载完成即显示总数, 避免用户滚动后才看到准确数量。
+  /// 失败时返回 -1, UI 层应将 -1 显示为"加载中..."或省略数字。
+  static Future<int> getGameCount({String searchQuery = ''}) async {
+    debugPrint('[PB] 开始获取游戏总数');
+    if (searchQuery.isNotEmpty) {
+      debugPrint('[PB]   搜索过滤: "$searchQuery"');
+    }
+
+    try {
+      final filter = searchQuery.isNotEmpty ? "title ~ '$searchQuery'" : null;
+
+      final result = await PBConfig.pb.collection('games').getList(
+            page: 1,
+            perPage: 1,
+            sort: '-created',
+            filter: filter,
+            expand: '',
+          );
+
+      final total = result.totalItems;
+      debugPrint('[PB] ✅ 游戏总数获取成功: $total');
+      return total;
+    } on ClientException catch (e) {
+      if (_isNetworkError(e)) {
+        debugPrint('[ERROR] ❌ PB网络异常 - getGameCount: ${e.toString()}');
+        return -1;
+      }
+      debugPrint(
+          '[ERROR] ❌ PB请求失败 (${e.statusCode}) - getGameCount: ${e.toString()}');
+      return -1;
+    } catch (e) {
+      if (e is SocketException || e is IOException) {
+        debugPrint('[ERROR] ❌ PB连接异常 - getGameCount: $e');
+        return -1;
+      }
+      debugPrint('[ERROR] ❌ PB未知错误 - getGameCount: $e');
+      return -1;
     }
   }
 

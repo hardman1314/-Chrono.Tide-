@@ -1,8 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:window_manager/window_manager.dart';
 import 'openlist_service.dart';
-import '../core/path_helper.dart';
+import 'magpie_service.dart';
 
 class ProcessCleanupService {
   static bool _isInitialized = false;
@@ -11,15 +10,9 @@ class ProcessCleanupService {
   static Future<void> initialize() async {
     if (_isInitialized) return;
     _isInitialized = true;
-
     debugPrint('[PROCESS-CLEANUP] ✅ 初始化进程清理服务');
-
-    try {
-      windowManager.addListener(_WindowCleanupListener());
-      debugPrint('[PROCESS-CLEANUP] ✅ 已注册窗口事件监听');
-    } catch (e) {
-      debugPrint('[PROCESS-CLEANUP] ⚠️ 注册窗口监听失败: $e');
-    }
+    // 不再注册 _WindowCleanupListener
+    // 窗口关闭事件已由 CustomTitleBar 通过 setPreventClose(true) 统一处理
   }
 
   static Future<void> cleanupAll() async {
@@ -33,15 +26,26 @@ class ProcessCleanupService {
 
     debugPrint('[PROCESS-CLEANUP] ═══════════ 开始全局进程清理 ═══════════');
 
-    try {
-      await OpenListService.dispose();
-    } catch (e) {
-      debugPrint('[PROCESS-CLEANUP] ❌ OpenList清理异常: $e');
-    }
-
-    await _killProcessByName('7z.exe');
-    await _killProcessByName('7za.exe');
-    await _killProcessByName('LRProc.exe');
+    // 并行执行所有清理任务，大幅缩短退出时间
+    await Future.wait([
+      (() async {
+        try {
+          await OpenListService.dispose();
+        } catch (e) {
+          debugPrint('[PROCESS-CLEANUP] ❌ OpenList清理异常: $e');
+        }
+      })(),
+      (() async {
+        try {
+          await MagpieService.instance.shutdown();
+        } catch (e) {
+          debugPrint('[PROCESS-CLEANUP] ❌ Magpie清理异常: $e');
+        }
+      })(),
+      _killProcessByName('7z.exe'),
+      _killProcessByName('7za.exe'),
+      _killProcessByName('LRProc.exe'),
+    ]);
 
     stopwatch.stop();
     debugPrint(
@@ -52,36 +56,17 @@ class ProcessCleanupService {
 
   static Future<void> _killProcessByName(String processName) async {
     try {
+      // 直接用 taskkill 强制终止，不再先用 tasklist 检查
+      // taskkill 在进程不存在时会返回非零退出码，不会报错
       final result = await Process.run(
-        'tasklist',
-        ['/FI', 'IMAGENAME eq $processName', '/NH', '/FO', 'CSV'],
+        'taskkill',
+        ['/IM', processName, '/F', '/T'],
       );
-      final output = result.stdout.toString().trim();
 
-      if (!output.toLowerCase().contains(processName.toLowerCase())) {
-        return;
+      if (result.exitCode == 0) {
+        debugPrint('[PROCESS-CLEANUP] ✅ $processName 已终止');
       }
-
-      debugPrint('[PROCESS-CLEANUP] 🔄 终止 $processName ...');
-
-      for (int i = 1; i <= 2; i++) {
-        final killResult = await Process.run(
-          'taskkill',
-          ['/IM', processName, '/F', '/T'],
-        );
-
-        if (killResult.exitCode == 0) {
-          debugPrint('[PROCESS-CLEANUP] ✅ $processName 已终止 (尝试$i)');
-          break;
-        }
-
-        await Future.delayed(Duration(milliseconds: 300 * i));
-
-        if (i == 2) {
-          debugPrint(
-              '[PROCESS-CLEANUP] ⚠️ $processName 可能未完全终止');
-        }
-      }
+      // 进程不存在时静默跳过，无需额外处理
     } catch (e) {
       debugPrint('[PROCESS-CLEANUP] ⚠️ 终止 $processName 异常: $e');
     }
@@ -127,51 +112,4 @@ class ProcessCleanupService {
 
     return result;
   }
-}
-
-class _WindowCleanupListener extends WindowListener {
-  @override
-  void onWindowClose() async {
-    debugPrint('[PROCESS-CLEANUP] 📢 收到窗口关闭事件，执行进程清理...');
-
-    await ProcessCleanupService.cleanupAll();
-
-    windowManager.close();
-  }
-
-  @override
-  void onWindowFocus() {}
-
-  @override
-  void onWindowBlur() {}
-
-  @override
-  void onWindowMaximize() {}
-
-  @override
-  void onWindowUnmaximize() {}
-
-  @override
-  void onWindowMinimize() {}
-
-  @override
-  void onWindowRestore() {}
-
-  @override
-  void onWindowEnterFullScreen() {}
-
-  @override
-  void onWindowLeaveFullScreen() {}
-
-  @override
-  void onWindowResize() {}
-
-  @override
-  void onWindowMove() {}
-
-  @override
-  void onWindowResized() {}
-
-  @override
-  void onWindowMoved() {}
 }

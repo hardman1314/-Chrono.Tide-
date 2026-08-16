@@ -15,6 +15,89 @@ enum DownloadStatus {
   cancelled,
 }
 
+/// Isolate 合并参数
+class _MergeParams {
+  final List<String> chunkPaths;
+  final String finalPath;
+  final int expectedSize;
+  final int bufferSize;
+
+  const _MergeParams({
+    required this.chunkPaths,
+    required this.finalPath,
+    required this.expectedSize,
+    required this.bufferSize,
+  });
+}
+
+/// Isolate 合并结果
+class _MergeResult {
+  final bool success;
+  final String? error;
+
+  const _MergeResult({required this.success, this.error});
+}
+
+/// 在独立 Isolate 中执行分片合并，避免同步 I/O 阻塞主 Isolate
+_MergeResult _mergeChunksInIsolate(_MergeParams params) {
+  try {
+    final outFile = File(params.finalPath);
+    final outRaf = outFile.openSync(mode: FileMode.write);
+
+    try {
+      for (int i = 0; i < params.chunkPaths.length; i++) {
+        final chunkFile = File(params.chunkPaths[i]);
+        if (!chunkFile.existsSync()) {
+          throw Exception('分片$i临时文件无法合并');
+        }
+
+        final inRaf = chunkFile.openSync(mode: FileMode.read);
+        try {
+          final buffer = List<int>.filled(params.bufferSize, 0);
+          int bytesRead;
+
+          while ((bytesRead = inRaf.readIntoSync(buffer)) > 0) {
+            if (bytesRead < buffer.length) {
+              outRaf.writeFromSync(buffer.sublist(0, bytesRead));
+            } else {
+              outRaf.writeFromSync(buffer);
+            }
+          }
+        } finally {
+          inRaf.closeSync();
+        }
+      }
+
+      outRaf.flushSync();
+
+      final mergedLength = outRaf.lengthSync();
+      if (mergedLength != params.expectedSize) {
+        if (mergedLength > params.expectedSize) {
+          outRaf.truncateSync(params.expectedSize);
+        }
+        outRaf.flushSync();
+      }
+
+      outRaf.closeSync();
+    } catch (e) {
+      outRaf.closeSync();
+      return _MergeResult(success: false, error: e.toString());
+    }
+
+    final finalSize = outFile.lengthSync();
+    if (finalSize != params.expectedSize) {
+      return _MergeResult(
+        success: false,
+        error: '文件大小校验失败: 最终$finalSize ≠ 预期${params.expectedSize}',
+      );
+    }
+
+    return const _MergeResult(success: true);
+  } catch (e) {
+    return _MergeResult(success: false, error: e.toString());
+  }
+}
+
 class DownloadProgress {
   final double percent;
   final int downloadedBytes;
@@ -57,7 +140,7 @@ class DownloadCore {
   static const int _progressThrottleMs = 500;
   static const int _logThrottlePercent = 5;
   static const int _ioBufferSize = 1024 * 1024;
-  static const int _mergeBufferSize = 256 * 1024;
+  static const int _mergeBufferSize = 4 * 1024 * 1024; // 4MB，减少 I/O 调用次数
 
   static int _activeTaskCount = 0;
   static bool get hasActiveTask => _activeTaskCount > 0;
@@ -89,11 +172,14 @@ class DownloadCore {
   String? _gameDescription;
   String? _gameCoverUrl;
   List<String>? _gameTags;
+  String? _gameDeveloper;
   String? _customGameLocation;
+  List<String>? _screenshotUrls;
 
   final ExtractManager _extractManager = ExtractManager();
 
   final List<_ChunkTask> _chunks = [];
+  int _singleStreamReceived = 0; // 单流下载的已接收字节数
   int _lastReceivedBytes = 0;
   DateTime? _lastSpeedTime;
   DateTime? _lastProgressEmitTime;
@@ -183,7 +269,9 @@ class DownloadCore {
     String? description,
     String? coverUrl,
     List<String>? tags,
+    String? developer,
     String? customGameLocation,
+    List<String>? screenshotUrls,
   }) async {
     debugPrint(
         '[DOWNLOAD-CORE] 发起智能下载 | 游戏ID=$gameId | 直链=${url.length > 60 ? "${url.substring(0, 60)}..." : url}');
@@ -198,7 +286,9 @@ class DownloadCore {
     _gameDescription = description;
     _gameCoverUrl = coverUrl;
     _gameTags = tags;
+    _gameDeveloper = developer;
     _customGameLocation = customGameLocation;
+    _screenshotUrls = screenshotUrls;
     _errorMessage = null;
     _savedPath = null;
     _extractionCompleter = Completer<void>();
@@ -210,6 +300,7 @@ class DownloadCore {
     _speedWindow.clear();
     _speedWindowSum = 0;
     _chunks.clear();
+    _singleStreamReceived = 0;
     _emitStatus(DownloadStatus.downloading);
     _activeTaskCount++;
 
@@ -254,6 +345,19 @@ class DownloadCore {
         throw Exception('下载后文件大小为0');
       }
 
+      // 文件大小容差校验：夸克云盘等网盘的 Content-Length 可能不准确
+      // 允许 ±1% 误差，仅当差异超过 5% 时才判定失败
+      if (totalSize > 0 && size > 0) {
+        final diffRatio = (size - totalSize).abs() / totalSize;
+        if (diffRatio > 0.05) {
+          throw Exception(
+              '文件大小差异过大: 实际${_formatBytes(size)} vs 预期${_formatBytes(totalSize)} (差异${(diffRatio * 100).toStringAsFixed(1)}%)');
+        } else if (diffRatio > 0.01) {
+          debugPrint(
+              '[DOWNLOAD-CORE] ⚠️ 文件大小存在轻微差异(${(diffRatio * 100).toStringAsFixed(2)}%)，在容差范围内，继续处理');
+        }
+      }
+
       debugPrint(
           '[DOWNLOAD-CORE] ✅ 下载成功 | 本地路径: $filePath | 大小: ${_formatBytes(size)}');
 
@@ -264,13 +368,23 @@ class DownloadCore {
         speed: '0 B/s',
       ));
 
-      _emitStatus(DownloadStatus.completed);
+      // 先减少活跃任务计数，确保 completed 状态不会被后续异常覆盖
       if (_activeTaskCount > 0) _activeTaskCount--;
+
+      // 发出 completed 状态 — 这是不可逆的，下载已确认成功
+      _emitStatus(DownloadStatus.completed);
       _emitComplete(filePath);
 
-      await _triggerExtraction(filePath);
-
-      debugPrint('[DOWNLOAD-CORE] ✅ 下载+解压流程全部完成');
+      // 触发解压 — 即使解压失败，下载状态仍保持 completed
+      // 之前的 bug：_triggerExtraction 抛异常会被 catch 捕获并覆盖 completed 为 failed
+      try {
+        await _triggerExtraction(filePath);
+        debugPrint('[DOWNLOAD-CORE] ✅ 下载+解压流程全部完成');
+      } catch (extractErr) {
+        debugPrint(
+            '[DOWNLOAD-CORE] ⚠️ 解压流程异常，但下载状态保持 completed | 错误: $extractErr');
+        // 不覆盖 completed 状态，解压失败由 ExtractManager 自身的状态管理处理
+      }
     } on DioException catch (e) {
       _stopProgressTimer();
       if (e.type == DioExceptionType.cancel) {
@@ -293,8 +407,9 @@ class DownloadCore {
       await outFile.delete();
     }
 
-    final raf = outFile.openSync(mode: FileMode.write);
-    int receivedBytes = 0;
+    // 使用 IOSink 异步写入，避免 writeFromSync 阻塞主 Isolate
+    // IOSink.add() 将写入调度到 I/O 线程池，立即返回不阻塞事件循环
+    final sink = outFile.openWrite();
 
     try {
       final response = await dio.get<ResponseBody>(
@@ -303,26 +418,17 @@ class DownloadCore {
         cancelToken: CancelToken(),
       );
 
-      final buffer = <int>[];
       await for (final data in response.data!.stream) {
         if (_status != DownloadStatus.downloading) break;
-        final bytes = data is List<int> ? data : (data as List).cast<int>();
-        buffer.addAll(bytes);
-        if (buffer.length >= _ioBufferSize) {
-          raf.writeFromSync(buffer);
-          buffer.clear();
-        }
-        receivedBytes += bytes.length;
+        // 直接将 Dio 流数据块写入 IOSink，无需中间缓冲
+        // IOSink 内部有自己的缓冲，避免 addAll 造成的 GC 压力
+        sink.add(data);
+        _singleStreamReceived += data.length;
       }
 
-      if (buffer.isNotEmpty) {
-        raf.writeFromSync(buffer);
-        buffer.clear();
-      }
-
-      raf.flushSync();
+      await sink.flush();
     } finally {
-      raf.closeSync();
+      await sink.close();
     }
 
     _stopProgressTimer();
@@ -383,61 +489,39 @@ class DownloadCore {
         final file = File(chunk.tempPath);
         if (await file.exists()) await file.delete();
 
-        final raf = file.openSync(mode: FileMode.write);
+        // 使用 IOSink 异步写入，避免 writeFromSync 阻塞主 Isolate
+        final sink = file.openWrite();
         try {
-          final buffer = <int>[];
           await for (final data in response.data!.stream) {
             if (_status != DownloadStatus.downloading) break;
-            final bytes = data is List<int> ? data : (data as List).cast<int>();
-            buffer.addAll(bytes);
-            if (buffer.length >= _ioBufferSize) {
-              raf.writeFromSync(buffer);
-              buffer.clear();
-            }
-            chunk.receivedBytes += bytes.length;
+            // 直接写入 IOSink，不阻塞事件循环
+            sink.add(data);
+            chunk.receivedBytes += data.length;
           }
-          if (buffer.isNotEmpty) {
-            raf.writeFromSync(buffer);
-            buffer.clear();
-          }
-
-          raf.flushSync();
+          await sink.flush();
         } finally {
-          raf.closeSync();
+          await sink.close();
         }
 
         if (_status == DownloadStatus.downloading) {
           chunk.completed = true;
-          debugPrint(
-              '[DOWNLOAD-CORE]   ✅ 分片${chunk.index}完成 | ${_formatBytes(chunk.receivedBytes)}');
         }
         return;
       } on DioException catch (e) {
         if (e.type == DioExceptionType.cancel) rethrow;
         if (attempt < maxRetries) {
           final backoff = min(2000 * pow(1.5, attempt), 8000).toInt();
-          debugPrint(
-              '[DOWNLOAD-CORE]   ⚠️ 分片${chunk.index}第${attempt + 1}次失败: ${e.message} | ${backoff}ms后重试...');
           await Future.delayed(Duration(milliseconds: backoff));
           if (_status != DownloadStatus.downloading) return;
         } else {
-          debugPrint('[DOWNLOAD-CORE]   ❌ 分片${chunk.index}重试耗尽 | ${e.message}');
           rethrow;
         }
       } catch (e) {
-        final msg = e.toString().toLowerCase();
-        final isNetworkError = msg.contains('connection closed') ||
-            msg.contains('socket') ||
-            msg.contains('httpexception') ||
-            msg.contains('reset by peer');
-        if ((isNetworkError || true) && attempt < maxRetries) {
+        if (attempt < maxRetries) {
           final backoff = min(2000 * pow(1.5, attempt), 8000).toInt();
-          debugPrint(
-              '[DOWNLOAD-CORE]   ⚠️ 分片${chunk.index}异常(${attempt + 1}): $e | ${backoff}ms后重试...');
           await Future.delayed(Duration(milliseconds: backoff));
           if (_status != DownloadStatus.downloading) return;
         } else {
-          debugPrint('[DOWNLOAD-CORE]   ❌ 分片${chunk.index}重试耗尽 | $e');
           rethrow;
         }
       }
@@ -451,79 +535,25 @@ class DownloadCore {
     }
 
     try {
-      debugPrint('[DOWNLOAD-CORE] 开始高速流式合并...');
+      debugPrint('[DOWNLOAD-CORE] 开始 Isolate 合并（不阻塞 UI）...');
 
-      final outRaf = outFile.openSync(mode: FileMode.write);
-      int totalWritten = 0;
-      final totalChunks = _chunks.length;
-      int yieldCounter = 0;
+      // 使用 Isolate 执行合并，避免同步 I/O 阻塞主 Isolate
+      final chunkPaths = _chunks.map((c) => c.tempPath).toList();
+      final mergeResult = await compute(
+        _mergeChunksInIsolate,
+        _MergeParams(
+          chunkPaths: chunkPaths,
+          finalPath: finalPath,
+          expectedSize: expectedSize,
+          bufferSize: _mergeBufferSize,
+        ),
+      );
 
-      try {
-        for (int i = 0; i < _chunks.length; i++) {
-          final chunkFile = File(_chunks[i].tempPath);
-          if (!await chunkFile.exists()) {
-            throw Exception('分片$i临时文件无法合并');
-          }
-
-          final actualSize = await chunkFile.length();
-
-          final inRaf = chunkFile.openSync(mode: FileMode.read);
-          try {
-            final buffer = List<int>.filled(_mergeBufferSize, 0);
-            int bytesRead;
-
-            while ((bytesRead = inRaf.readIntoSync(buffer)) > 0) {
-              if (bytesRead < buffer.length) {
-                outRaf.writeFromSync(buffer.sublist(0, bytesRead));
-              } else {
-                outRaf.writeFromSync(buffer);
-              }
-              totalWritten += bytesRead;
-
-              yieldCounter++;
-              if (yieldCounter >= 4) {
-                yieldCounter = 0;
-                await Future.delayed(Duration.zero);
-              }
-            }
-          } finally {
-            inRaf.closeSync();
-          }
-
-          await chunkFile.delete();
-
-          final mergePct = _mergeStartPercent +
-              ((i + 1) / totalChunks * (100.0 - _mergeStartPercent));
-          _emitProgress(DownloadProgress(
-            percent: mergePct.clamp(_mergeStartPercent, 99.9),
-            downloadedBytes: totalWritten,
-            totalBytes: expectedSize,
-            speed: '合并中...',
-          ));
-        }
-
-        outRaf.flushSync();
-
-        final mergedLength = outRaf.lengthSync();
-        if (mergedLength != expectedSize) {
-          if (mergedLength > expectedSize) {
-            outRaf.truncateSync(expectedSize);
-          }
-          outRaf.flushSync();
-        }
-
-        outRaf.closeSync();
-      } catch (e) {
-        outRaf.closeSync();
-        rethrow;
+      if (!mergeResult.success) {
+        throw Exception(mergeResult.error);
       }
 
-      final finalSize = await outFile.length();
-      if (finalSize != expectedSize) {
-        throw Exception(
-            '文件大小校验失败: 最终${_formatBytes(finalSize)} ≠ 预期${_formatBytes(expectedSize)}');
-      }
-
+      // 清理临时分片文件
       for (final c in _chunks) {
         final tmp = File(c.tempPath);
         if (await tmp.exists()) {
@@ -533,6 +563,15 @@ class DownloadCore {
         }
       }
 
+      // 发送合并完成进度
+      _emitProgress(DownloadProgress(
+        percent: 99.9,
+        downloadedBytes: expectedSize,
+        totalBytes: expectedSize,
+        speed: '合并完成',
+      ));
+
+      final finalSize = await outFile.length();
       debugPrint('[DOWNLOAD-CORE] ✅ 合并完成 | 大小: ${_formatBytes(finalSize)}');
     } catch (e) {
       if (await outFile.exists()) {
@@ -546,16 +585,23 @@ class DownloadCore {
 
   void _startProgressTimer(int totalSize) {
     _progressTimer?.cancel();
+    // 性能优化：从 500ms 降低到 1000ms，减少 50% 的 UI 重建
+    // 在 20MB/s 下，1秒间隔足以提供流畅的进度反馈
     _progressTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
+      const Duration(milliseconds: 1000),
       (_) {
         if (_status != DownloadStatus.downloading) return;
 
-        int totalReceived = 0;
-        bool allDone = true;
+        // 同时计算分片下载和单流下载的已接收字节数
+        int totalReceived = _singleStreamReceived;
+        bool allDone = _chunks.isEmpty ? false : true;
         for (final c in _chunks) {
           totalReceived += c.receivedBytes;
           if (!c.completed) allDone = false;
+        }
+        // 单流下载模式下，allDone 由 totalReceived >= totalSize 判定
+        if (_chunks.isEmpty && totalReceived >= totalSize) {
+          allDone = true;
         }
 
         final now = DateTime.now();
@@ -579,25 +625,18 @@ class DownloadCore {
         final pct = (rawPct / 100.0 * _downloadMaxPercent)
             .clamp(0.0, _downloadMaxPercent);
 
-        final shouldLog = _shouldLogProgress(rawPct);
-        if (shouldLog) {
-          debugPrint(
-              '[DOWNLOAD-CORE] 进度 | ${pct.toStringAsFixed(1)}% | $speedStr | ${_formatBytes(totalReceived)}/${_formatBytes(totalSize)}');
-          _lastLogTime = now;
-          _lastLoggedPercent = pct;
-        }
+        // 性能优化：仅当百分比变化 >=1% 或下载完成时才发射进度
+        // 避免微小变化触发不必要的 UI 重建
+        final lastEmitPct = _progress?.percent ?? -1.0;
+        final pctChanged = (pct - lastEmitPct).abs() >= 1.0;
 
-        final shouldEmit =
-            now.difference(_lastProgressEmitTime ?? now).inMilliseconds >=
-                _progressThrottleMs;
-        if (shouldEmit || pct >= 99.9 || allDone) {
+        if (pctChanged || pct >= 99.9 || allDone) {
           _emitProgress(DownloadProgress(
             percent: pct,
             downloadedBytes: totalReceived,
             totalBytes: totalSize,
             speed: speedStr,
           ));
-          _lastProgressEmitTime = now;
         }
       },
     );
@@ -621,13 +660,6 @@ class DownloadCore {
     return (_speedWindowSum ~/ _speedWindow.length).clamp(0, 104857600);
   }
 
-  bool _shouldLogProgress(double pct) {
-    final now = DateTime.now();
-    final timeSinceLastLog = now.difference(_lastLogTime ?? now).inSeconds;
-    final percentSinceLast = (pct - _lastLoggedPercent).abs();
-    return timeSinceLastLog >= 3 || percentSinceLast >= _logThrottlePercent;
-  }
-
   void cancel() {
     if (_status != DownloadStatus.downloading) {
       debugPrint('[DOWNLOAD-CORE] ⚠️ 当前无下载任务，无法取消');
@@ -641,6 +673,9 @@ class DownloadCore {
   }
 
   void _handleCancel() {
+    // 防止重复处理：如果已经处于 cancelled 状态，直接返回
+    if (_status == DownloadStatus.cancelled) return;
+
     if (_activeTaskCount > 0) _activeTaskCount--;
     _emitStatus(DownloadStatus.cancelled);
 
@@ -651,14 +686,11 @@ class DownloadCore {
       speed: '0 B/s',
     ));
 
-    debugPrint('[DOWNLOAD-CORE] 取消下载｜终止所有分片请求...');
     for (final c in _chunks) {
       c.cancelToken?.cancel('用户主动取消');
     }
 
-    debugPrint('[DOWNLOAD-CORE] 删除临时文件...');
     _cleanupTempFiles();
-    debugPrint('[DOWNLOAD-CORE] ✅ 取消完成');
   }
 
   Future<void> _cleanupTempFiles() async {
@@ -688,19 +720,22 @@ class DownloadCore {
   }
 
   void _handleError(String rawMsg) {
+    // 防止覆盖已设置的 cancelled 或 completed 状态
+    if (_status == DownloadStatus.cancelled ||
+        _status == DownloadStatus.completed) {
+      return;
+    }
+
     if (_activeTaskCount > 0) _activeTaskCount--;
     final cnMsg = _standardizeError(rawMsg);
     _emitStatus(DownloadStatus.failed);
     _emitError(cnMsg);
-    debugPrint('[DOWNLOAD-CORE] ❌ 下载失败 | $cnMsg');
-    debugPrint('[DOWNLOAD-CORE]   自动清理残留临时文件...');
     _cleanupTempFiles();
     if (_savedPath != null) {
       try {
         final f = File(_savedPath!);
         if (f.existsSync()) {
           f.deleteSync();
-          debugPrint('[DOWNLOAD-CORE]   ✅ 已清理不完整文件: $_savedPath');
         }
       } catch (_) {}
       _savedPath = null;
@@ -717,7 +752,9 @@ class DownloadCore {
         gameDescription: _gameDescription,
         gameCoverUrl: _gameCoverUrl,
         gameTags: _gameTags,
+        gameDeveloper: _gameDeveloper,
         customGameLocation: _customGameLocation,
+        screenshotUrls: _screenshotUrls,
       );
 
       while (_extractManager.status == ExtractStatus.extracting) {

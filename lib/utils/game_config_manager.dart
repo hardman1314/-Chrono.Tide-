@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import '../core/path_helper.dart';
 
 class GameConfig {
   final String launchExePath;
@@ -32,27 +33,37 @@ class GameConfigManager {
   static final GameConfigManager instance = GameConfigManager._internal();
   GameConfigManager._internal();
 
-  late String _configDir;
+  String? _configDir;
 
   Future<String> get configDir async {
-    if (_configDir.isNotEmpty) return _configDir;
+    if (_configDir != null) return _configDir!;
+    // 优先便携目录（安装目录内），避免占用系统 C 盘
+    if (await PathHelper.isPortableWritable()) {
+      _configDir = PathHelper.gameConfigsDir;
+      try {
+        final dir = Directory(_configDir!);
+        if (!dir.existsSync()) await dir.create(recursive: true);
+      } catch (_) {}
+      return _configDir!;
+    }
+    // 降级：原系统目录（安装目录只读时，行为同改造前）
     try {
       final appDocDir = await getApplicationSupportDirectory();
       _configDir = p.join(appDocDir.path, 'ChronoTide', 'GameConfigs');
-      final dir = Directory(_configDir);
+      final dir = Directory(_configDir!);
       if (!await dir.exists()) {
         await dir.create(recursive: true);
       }
     } catch (e) {
-      final tempBase =
+      // 最终兜底：系统临时目录
+      _configDir =
           p.join(Directory.systemTemp.path, 'ChronoTide', 'GameConfigs');
-      final dir = Directory(tempBase);
+      final dir = Directory(_configDir!);
       if (!await dir.exists()) {
         await dir.create(recursive: true);
       }
-      _configDir = tempBase;
     }
-    return _configDir;
+    return _configDir!;
   }
 
   String _sanitizeGameId(String gameTitle) {

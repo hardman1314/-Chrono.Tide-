@@ -3,14 +3,13 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_styles.dart';
 
-enum NavPage { library, discover, join }
+enum NavPage { library, discover, join, home }
 
 class Sidebar extends StatefulWidget {
   final NavPage currentPage;
   final ValueChanged<NavPage> onPageChanged;
   final bool isCollapsed;
   final VoidCallback? onToggle;
-  final bool isLocalMode;
 
   const Sidebar({
     super.key,
@@ -18,7 +17,6 @@ class Sidebar extends StatefulWidget {
     required this.onPageChanged,
     this.isCollapsed = false,
     this.onToggle,
-    this.isLocalMode = false,
   });
 
   @override
@@ -27,6 +25,7 @@ class Sidebar extends StatefulWidget {
 
 class _SidebarState extends State<Sidebar> {
   int _hoveredIndex = -1;
+  int _homeHoveredIndex = -1; // 0=normal, 1=hovered
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +63,7 @@ class _SidebarState extends State<Sidebar> {
                   child: Text(
                     'CT',
                     style: TextStyle(
-                      fontFamily: 'Zhi Mang Xing',
+                      fontFamily: 'ZhiMangXing',
                       fontSize: 20,
                       fontWeight: FontWeight.w700,
                       color: AppColors.primaryText,
@@ -90,32 +89,33 @@ class _SidebarState extends State<Sidebar> {
               Expanded(
                 child: widget.isCollapsed
                     ? Padding(
-                        padding:
-                            const EdgeInsets.only(left: 12, right: 12, top: 8),
+                        padding: const EdgeInsets.only(
+                            left: 12, right: 12, top: 8, bottom: 8),
                         child: Column(
                           children: [
                             _buildNavItemCollapsed(
                               iconPath: 'assets/images/library_icon_new.svg',
                               activeIconPath:
                                   'assets/images/library_icon_new.svg',
+                              label: '库',
                               page: NavPage.library,
                               isActive: widget.currentPage == NavPage.library,
                               index: 0,
                             ),
-                            if (!widget.isLocalMode)
-                              _buildNavItemCollapsed(
-                                iconPath: 'assets/images/discover_icon.svg',
-                                activeIconPath:
-                                    'assets/images/discover_active_icon.svg',
-                                page: NavPage.discover,
-                                isActive:
-                                    widget.currentPage == NavPage.discover,
-                                index: 1,
-                              ),
+                            _buildNavItemCollapsed(
+                              iconPath: 'assets/images/discover_icon.svg',
+                              activeIconPath:
+                                  'assets/images/discover_active_icon.svg',
+                              label: '探索',
+                              page: NavPage.discover,
+                              isActive: widget.currentPage == NavPage.discover,
+                              index: 1,
+                            ),
                             _buildNavItemCollapsed(
                               iconPath: 'assets/images/add_icon.svg',
                               activeIconPath:
                                   'assets/images/add_active_icon.svg',
+                              label: '添加',
                               page: NavPage.join,
                               isActive: widget.currentPage == NavPage.join,
                               index: 2,
@@ -140,20 +140,18 @@ class _SidebarState extends State<Sidebar> {
                                   'assets/images/discover_active_bookmark.png',
                               index: 0,
                             ),
-                            if (!widget.isLocalMode)
-                              _buildNavItemExpanded(
-                                iconPath: 'assets/images/discover_icon.svg',
-                                activeIconPath:
-                                    'assets/images/discover_active_icon.svg',
-                                label: '探索',
-                                page: NavPage.discover,
-                                isActive:
-                                    widget.currentPage == NavPage.discover,
-                                hasBookmark: true,
-                                bookmarkPath:
-                                    'assets/images/discover_active_bookmark.png',
-                                index: 1,
-                              ),
+                            _buildNavItemExpanded(
+                              iconPath: 'assets/images/discover_icon.svg',
+                              activeIconPath:
+                                  'assets/images/discover_active_icon.svg',
+                              label: '探索',
+                              page: NavPage.discover,
+                              isActive: widget.currentPage == NavPage.discover,
+                              hasBookmark: true,
+                              bookmarkPath:
+                                  'assets/images/discover_active_bookmark.png',
+                              index: 1,
+                            ),
                             _buildNavItemExpanded(
                               iconPath: 'assets/images/add_icon.svg',
                               activeIconPath:
@@ -170,38 +168,9 @@ class _SidebarState extends State<Sidebar> {
                         ),
                       ),
               ),
-              if (widget.isLocalMode)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: widget.isCollapsed
-                      ? Tooltip(
-                          message: '本地模式',
-                          child: Icon(
-                            Icons.storage,
-                            size: 18,
-                            color: AppColors.secondaryText,
-                          ),
-                        )
-                      : Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.storage,
-                              size: 14,
-                              color: AppColors.secondaryText,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              '本地模式',
-                              style: TextStyle(
-                                fontFamily: 'Mali',
-                                fontSize: 12,
-                                color: AppColors.secondaryText,
-                              ),
-                            ),
-                          ],
-                        ),
-                ),
+              // 主页按钮 - 位于侧边栏底部
+              // 网络状态指示已移至用户头像浮动气泡（见 FloatingUserButton）
+              _buildHomeButton(),
             ],
           ),
         ],
@@ -214,7 +183,7 @@ class _SidebarState extends State<Sidebar> {
     const double radius = 17.0;
     final icon = isLeft ? Icons.chevron_left : Icons.chevron_right;
 
-    return MouseRegion(
+    final core = MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: widget.onToggle ?? () {},
@@ -222,7 +191,13 @@ class _SidebarState extends State<Sidebar> {
           width: radius,
           height: diameter,
           child: CustomPaint(
-            painter: SemicirclePainter(isLeft: isLeft),
+            painter: SemicirclePainter(
+              isLeft: isLeft,
+              // BUG-05: 传入主题颜色，替代硬编码
+              fillColor: AppColors.toggleBg,
+              borderColor: AppColors.toggleBorder,
+              shadowColor: AppColors.shadowColor,
+            ),
             child: Center(
               child: Padding(
                 padding: EdgeInsets.only(
@@ -241,6 +216,17 @@ class _SidebarState extends State<Sidebar> {
         ),
       ),
     );
+    // UX-25: 侧边栏收起/展开切换按钮——辅助屏幕阅读器与 hover 提示
+    final action = isLeft ? '展开侧边栏' : '收起侧边栏';
+    return Tooltip(
+      message: action,
+      waitDuration: const Duration(milliseconds: 400),
+      child: Semantics(
+        button: true,
+        label: action,
+        child: core,
+      ),
+    );
   }
 
   Widget _buildNavItemExpanded({
@@ -256,7 +242,7 @@ class _SidebarState extends State<Sidebar> {
     final currentPath = isActive ? activeIconPath : iconPath;
     final isHovered = _hoveredIndex == index;
 
-    return MouseRegion(
+    final core = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hoveredIndex = index),
       onExit: (_) => setState(() => _hoveredIndex = -1),
@@ -327,11 +313,23 @@ class _SidebarState extends State<Sidebar> {
         ),
       ),
     );
+    // UX-25: 导航项添加 Tooltip（hover 显示名称）+ Semantics（屏幕阅读器播报）
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 400),
+      child: Semantics(
+        button: true,
+        selected: isActive,
+        label: label,
+        child: core,
+      ),
+    );
   }
 
   Widget _buildNavItemCollapsed({
     required String iconPath,
     required String activeIconPath,
+    required String label,
     required NavPage page,
     required bool isActive,
     required int index,
@@ -339,7 +337,7 @@ class _SidebarState extends State<Sidebar> {
     final currentPath = isActive ? activeIconPath : iconPath;
     final isHovered = _hoveredIndex == index;
 
-    return MouseRegion(
+    final core = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hoveredIndex = index),
       onExit: (_) => setState(() => _hoveredIndex = -1),
@@ -353,23 +351,22 @@ class _SidebarState extends State<Sidebar> {
           height: 60,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
+            // BUG-05: 硬编码白色背景替换为主题感知的 navActiveBg / cardHoverBg
             color: isActive
-                ? const Color(0xFFFFFFFF).withOpacity(0.65)
-                : (isHovered
-                    ? const Color(0xFFFFFFFF).withOpacity(0.25)
-                    : Colors.transparent),
+                ? AppColors.navActiveBg
+                : (isHovered ? AppColors.cardHoverBg : Colors.transparent),
             border: Border.all(
               color: isActive
-                  ? const Color(0xFFA07840)
+                  ? AppColors.navActiveBorder
                   : (isHovered
-                      ? const Color(0xFFC8B49A)
-                      : const Color(0xFFC8B49A).withOpacity(0.5)),
+                      ? AppColors.navInactiveBorder
+                      : AppColors.navInactiveBorder.withOpacity(0.5)),
               width: 1,
             ),
             boxShadow: isActive
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF8C6428).withOpacity(0.10),
+                      color: AppColors.shadowColor.withOpacity(0.10),
                       offset: const Offset(0, 1),
                       blurRadius: 6,
                     )
@@ -381,6 +378,169 @@ class _SidebarState extends State<Sidebar> {
             child: _buildIcon(currentPath, 28, 28),
           ),
         ),
+      ),
+    );
+    // UX-25: 收起态导航项——Tooltip 尤为关键（标签被隐藏），辅助屏幕阅读器播报
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 400),
+      child: Semantics(
+        button: true,
+        selected: isActive,
+        label: label,
+        child: core,
+      ),
+    );
+  }
+
+  /// 网络状态指示已移至用户头像浮动气泡（FloatingUserButton），
+  /// 见 lib/widgets/floating_user_button.dart。
+
+  Widget _buildHomeButton() {
+    final isActive = widget.currentPage == NavPage.home;
+    final isHovered = _homeHoveredIndex == 1;
+
+    if (widget.isCollapsed) {
+      // 收起模式：紧凑圆形按钮
+      final core = Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => _homeHoveredIndex = 1),
+          onExit: (_) => setState(() => _homeHoveredIndex = -1),
+          child: GestureDetector(
+            onTap: () => widget.onPageChanged(NavPage.home),
+            behavior: HitTestBehavior.opaque,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 47,
+              height: 47,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                // BUG-05: 硬编码颜色替换为主题感知变量
+                color: isActive
+                    ? AppColors.navActiveBg
+                    : (isHovered ? AppColors.cardHoverBg : Colors.transparent),
+                border: Border.all(
+                  color: isActive
+                      ? AppColors.navActiveBorder
+                      : (isHovered
+                          ? AppColors.navInactiveBorder
+                          : AppColors.navInactiveBorder.withOpacity(0.5)),
+                  width: 1,
+                ),
+                boxShadow: isActive
+                    ? [
+                        BoxShadow(
+                          color: AppColors.shadowColor.withOpacity(0.10),
+                          offset: const Offset(0, 1),
+                          blurRadius: 6,
+                        )
+                      ]
+                    : null,
+              ),
+              child: Center(
+                child: Icon(
+                  Icons.home_rounded,
+                  size: 22,
+                  // BUG-05: 图标颜色从硬编码替换为主题感知变量
+                  color: isActive
+                      ? AppColors.navActiveBorder
+                      : (isHovered
+                          ? AppColors.border
+                          : AppColors.navInactiveBorder),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      // UX-25: 主页按钮添加 Tooltip + Semantics
+      return Tooltip(
+        message: '主页',
+        waitDuration: const Duration(milliseconds: 400),
+        child: Semantics(
+          button: true,
+          selected: isActive,
+          label: '主页',
+          child: core,
+        ),
+      );
+    }
+
+    // 展开模式：与导航卡同宽(175)的扁条按钮，风格统一（图标在上、文字在下）
+    final core = Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _homeHoveredIndex = 1),
+        onExit: (_) => setState(() => _homeHoveredIndex = -1),
+        child: GestureDetector(
+          onTap: () => widget.onPageChanged(NavPage.home),
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 175,
+            height: 56,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: AppColors.border,
+                width: isActive || isHovered ? 2.0 : 1.6,
+              ),
+              color: isHovered && !isActive
+                  ? AppColors.cardHoverBg
+                  : AppColors.background,
+              boxShadow: (isActive || isHovered)
+                  ? [
+                      BoxShadow(
+                        color: AppColors.border,
+                        offset: const Offset(2, 3),
+                        blurRadius: 0,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.home_rounded,
+                  size: 22,
+                  color: isActive
+                      ? AppColors.titleBrown
+                      : (isHovered ? AppColors.titleBrown : AppColors.border),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '主页',
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                    color: isActive
+                        ? AppColors.titleBrown
+                        : (isHovered
+                            ? AppColors.titleBrown
+                            : AppColors.secondaryText),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    // UX-25: 主页按钮添加 Tooltip + Semantics
+    return Tooltip(
+      message: '主页',
+      waitDuration: const Duration(milliseconds: 400),
+      child: Semantics(
+        button: true,
+        selected: isActive,
+        label: '主页',
+        child: core,
       ),
     );
   }
@@ -421,22 +581,31 @@ class _SidebarState extends State<Sidebar> {
 
 class SemicirclePainter extends CustomPainter {
   final bool isLeft;
+  // BUG-05: 颜色从外部传入，避免硬编码，使主题切换时半圆按钮颜色跟随变化
+  final Color fillColor;
+  final Color borderColor;
+  final Color shadowColor;
 
-  SemicirclePainter({required this.isLeft});
+  SemicirclePainter({
+    required this.isLeft,
+    required this.fillColor,
+    required this.borderColor,
+    required this.shadowColor,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     const double r = 17.0;
     const double d = 34.0;
     final paint = Paint()
-      ..color = const Color(0xFFE8E0D0)
+      ..color = fillColor
       ..style = PaintingStyle.fill;
     final borderPaint = Paint()
-      ..color = const Color(0xFFC8B49A)
+      ..color = borderColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.0;
     final shadowPaint = Paint()
-      ..color = const Color(0xFF64461E).withOpacity(0.12)
+      ..color = shadowColor.withOpacity(0.12)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
 
     final path = Path();
@@ -478,5 +647,8 @@ class SemicirclePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(SemicirclePainter oldDelegate) =>
-      isLeft != oldDelegate.isLeft;
+      isLeft != oldDelegate.isLeft ||
+      fillColor != oldDelegate.fillColor ||
+      borderColor != oldDelegate.borderColor ||
+      shadowColor != oldDelegate.shadowColor;
 }

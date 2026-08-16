@@ -2,13 +2,13 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as path;
 import 'local_game_registry.dart';
 import 'rar_lz4_unzip_service.dart';
 import 'game_launcher_detector.dart';
 import 'game_data_format.dart';
 import 'install_path_preference.dart';
 import '../core/path_helper.dart';
-import '../core/backend_config.dart';
 
 enum ExtractStatus {
   idle,
@@ -37,8 +37,7 @@ class ExtractManager {
   static final String _gamesBaseDir = PathHelper.gamesDir;
   static final String _logsDir = PathHelper.logsDir;
   static final String _downloadsDir = PathHelper.downloadsDir;
-  static final String _defaultPassword =
-      BackendConfig.defaultExtractionPassword;
+  static const String _defaultPassword = 'Bilibili_Slpeey';
   static final String _toolsDir = PathHelper.toolsDir;
 
   static int _activeTaskCount = 0;
@@ -55,6 +54,9 @@ class ExtractManager {
   String? _actualGameDir;
   Process? _currentProcess;
   bool _isCancelled = false;
+  // 会话级日志时间戳:同一次解压任务内所有 _log() 调用复用同一时间戳,
+  // 避免秒级时间戳生成多个 extract_*.txt 文件(修复日志爆炸问题)。
+  String? _sessionLogTs;
 
   final List<void Function(ExtractStatus)> _statusListeners = [];
   final List<void Function(ExtractProgress)> _progressListeners = [];
@@ -67,6 +69,14 @@ class ExtractManager {
   String? get targetGameDir => _targetGameDir;
   String? get actualGameDir => _actualGameDir;
   String get gamesBaseDir => _gamesBaseDir;
+
+  /// 获取用于验证的首选目录：优先实际解压目录，其次元数据目录
+  String? get preferredVerifyDir {
+    if (_actualGameDir != null && _actualGameDir!.isNotEmpty) {
+      return _actualGameDir;
+    }
+    return _targetGameDir;
+  }
 
   void addStatusListener(void Function(ExtractStatus) listener) {
     _statusListeners.add(listener);
@@ -89,6 +99,22 @@ class ExtractManager {
     _progressListeners.clear();
     _successListeners.clear();
     _failureListeners.clear();
+  }
+
+  void removeStatusListener(void Function(ExtractStatus) listener) {
+    _statusListeners.remove(listener);
+  }
+
+  void removeProgressListener(void Function(ExtractProgress) listener) {
+    _progressListeners.remove(listener);
+  }
+
+  void removeSuccessListener(void Function() listener) {
+    _successListeners.remove(listener);
+  }
+
+  void removeFailureListener(void Function(String) listener) {
+    _failureListeners.remove(listener);
   }
 
   void _emitStatus(ExtractStatus s) {
@@ -162,7 +188,9 @@ class ExtractManager {
     String? gameDescription,
     String? gameCoverUrl,
     List<String>? gameTags,
+    String? gameDeveloper,
     String? customGameLocation,
+    List<String>? screenshotUrls,
   }) async {
     if (_status == ExtractStatus.extracting) {
       _log('WARN', '已有解压任务在执行，忽略重复请求');
@@ -171,6 +199,8 @@ class ExtractManager {
 
     _currentArchivePath = archivePath;
     _errorMessage = null;
+    _isCancelled = false;
+    _sessionLogTs = null; // 重置会话时间戳,新任务生成新日志文件
 
     _log('INFO', '========== 开始解压任务 ==========');
     _log('INFO', '压缩包路径: $archivePath');
@@ -237,8 +267,8 @@ class ExtractManager {
 
       if (isRarLz4Format) {
         _log('INFO', '');
-        _log('INFO', '【.rar.lz4 格式检测】使用专用工具 rar_lz4_unzip.exe 处理');
-        _log('INFO', '⚠️ 彻底废弃 LZ4+UnRAR 命令行方案，仅使用原生解压工具');
+        _log('INFO', '【.rar.lz4 格式检测】使用 Dart 原生 bz.exe + UnRAR.exe 方案处理');
+        _log('INFO', '🔹 bz.exe(Bandizip) 解 LZ4 外层 → UnRAR.exe 解 RAR 内层（密码内置）');
         _log('INFO', '');
 
         _emitProgress(
@@ -370,7 +400,9 @@ class ExtractManager {
         description: gameDescription,
         coverUrl: gameCoverUrl,
         tags: gameTags,
+        developer: gameDeveloper,
         overrideDirectoryPath: extractionTargetDir,
+        screenshotUrls: screenshotUrls,
       );
 
       await _embedCoverBase64(
@@ -386,7 +418,11 @@ class ExtractManager {
       _emitStatus(ExtractStatus.completed);
       if (_activeTaskCount > 0) _activeTaskCount--;
 
-      final gamePath = _targetGameDir ?? '';
+      // directoryPath 应使用游戏本体实际解压目录，而非元数据目录
+      // 这样"打开目录"才能打开游戏启动程序所在的目录
+      final gamePath = extractionTargetDir.isNotEmpty
+          ? extractionTargetDir
+          : (_targetGameDir ?? '');
       final gameId = _currentArchivePath ?? '';
 
       if (_registeredGames.contains(gamePath)) {
@@ -407,6 +443,7 @@ class ExtractManager {
         LocalGameRegistry.instance.registerExtractionComplete(
           gameTitle: gameTitle,
           directoryPath: gamePath,
+          developer: gameDeveloper,
         );
 
         _registeredGames.add(gamePath);
@@ -418,6 +455,12 @@ class ExtractManager {
 
       _emitSuccess();
     } catch (e, st) {
+      // 如果是用户主动取消，不做失败处理
+      if (_isCancelled) {
+        _log('INFO', '用户已取消解压，跳过错误处理');
+        return;
+      }
+
       _log('ERROR', '解压过程捕获异常: $e');
       _log('ERROR', '堆栈: $st');
 
@@ -436,46 +479,68 @@ class ExtractManager {
 
       bool extractionActuallySucceeded = false;
 
-      for (int retry = 0; retry < 3; retry++) {
+      // 优先检查实际解压目录（_actualGameDir），这是游戏文件所在的位置
+      // 之前的 bug：只检查 _targetGameDir（元数据目录），自定义路径下该目录可能为空
+      final dirsToCheck = <String>[
+        if (_actualGameDir != null && _actualGameDir!.isNotEmpty) _actualGameDir!,
+        if (_targetGameDir != null && _targetGameDir!.isNotEmpty) _targetGameDir!,
+      ];
+
+      for (int retry = 0; retry < 3 && !extractionActuallySucceeded; retry++) {
         if (retry > 0) {
           _log('INFO', '⏳ 等待后重试校验 (${retry + 1}/3)...');
           await Future.delayed(Duration(milliseconds: 500 * retry));
         }
 
-        try {
-          final targetDirCheck = Directory(_targetGameDir!);
-          if (await targetDirCheck.exists()) {
-            final entities = await targetDirCheck.list().toList();
-            _log('INFO',
-                '   目标目录检查 (尝试${retry + 1}): 存在=${await targetDirCheck.exists()}, 条目数=${entities.length}');
+        for (final dirPath in dirsToCheck) {
+          if (extractionActuallySucceeded) break;
+          try {
+            final dirCheck = Directory(dirPath);
+            if (await dirCheck.exists()) {
+              final entities = await dirCheck.list().toList();
+              _log('INFO',
+                  '   目录检查 (尝试${retry + 1}): $dirPath | 条目数=${entities.length}');
 
-            if (entities.isNotEmpty) {
-              final gameJsonFile =
-                  File('$_targetGameDir/${GameDataFormat.gameJsonFileName}');
-              final ctgameFile =
-                  File('$_targetGameDir/${GameDataFormat.ctgameFileName}');
-              if (await gameJsonFile.exists() || await ctgameFile.exists()) {
-                extractionActuallySucceeded = true;
-                _log('SUCCESS', '✅ 最终校验通过: 目标目录有效 + game.json/.ctgame 存在');
-                _log('SUCCESS', '   目录条目数: ${entities.length}');
-                break;
-              } else {
-                _log('WARN', '⚠️ game.json和.ctgame均不存在');
-                if (entities.length >= 1) {
+              if (entities.isNotEmpty) {
+                // 递归查找是否有 .exe 文件（游戏本体的关键标志）
+                bool hasExe = false;
+                try {
+                  final allFiles = await dirCheck.list(recursive: true).toList();
+                  for (final entity in allFiles) {
+                    if (entity is File &&
+                        entity.path.toLowerCase().endsWith('.exe')) {
+                      hasExe = true;
+                      break;
+                    }
+                  }
+                } catch (_) {}
+
+                final gameJsonFile =
+                    File('$dirPath/${GameDataFormat.gameJsonFileName}');
+                final ctgameFile =
+                    File('$dirPath/${GameDataFormat.ctgameFileName}');
+                final hasMetadata =
+                    await gameJsonFile.exists() || await ctgameFile.exists();
+
+                if (hasExe || hasMetadata) {
                   extractionActuallySucceeded = true;
-                  _log('SUCCESS', '✅ 宽松校验通过: 目录非空(≥1项)，视为成功');
-                  _log('SUCCESS', '   目录条目数: ${entities.length}');
+                  _log('SUCCESS', '✅ 最终校验通过: $dirPath (EXE=$hasExe, 元数据=$hasMetadata)');
+                  break;
+                } else if (entities.length >= 1) {
+                  // 宽松校验：目录非空，可能是游戏文件在子目录中
+                  extractionActuallySucceeded = true;
+                  _log('SUCCESS', '✅ 宽松校验通过: $dirPath 非空(${entities.length}项)');
                   break;
                 }
+              } else {
+                _log('WARN', '   ⚠️ 目录为空: $dirPath');
               }
             } else {
-              _log('WARN', '   ⚠️ 目标目录为空');
+              _log('WARN', '   ⚠️ 目录不存在: $dirPath');
             }
-          } else {
-            _log('WARN', '   ⚠️ 目标目录不存在');
+          } catch (verifyErr) {
+            _log('WARN', '   校验过程异常 ($dirPath): $verifyErr');
           }
-        } catch (verifyErr) {
-          _log('WARN', '   校验过程异常: $verifyErr');
         }
       }
 
@@ -498,14 +563,22 @@ class ExtractManager {
               }
             }
 
-            if (game.directoryPath
-                    .toLowerCase()
-                    .contains(_targetGameDir!.toLowerCase()) ||
-                _targetGameDir!
-                    .toLowerCase()
-                    .contains(game.directoryPath.toLowerCase())) {
-              if (!candidates.contains(game)) {
-                candidates.add(game);
+            // 同时检查 _targetGameDir 和 _actualGameDir 的路径匹配
+            final checkDirs = [
+              _targetGameDir,
+              _actualGameDir,
+            ];
+            for (final checkDir in checkDirs) {
+              if (checkDir == null || checkDir.isEmpty) continue;
+              if (game.directoryPath
+                      .toLowerCase()
+                      .contains(checkDir.toLowerCase()) ||
+                  checkDir
+                      .toLowerCase()
+                      .contains(game.directoryPath.toLowerCase())) {
+                if (!candidates.contains(game)) {
+                  candidates.add(game);
+                }
               }
             }
           }
@@ -533,7 +606,8 @@ class ExtractManager {
           if (!extractionActuallySucceeded && candidates.isEmpty) {
             _log('WARN', '   注册表中未找到匹配的游戏记录');
             _log('WARN', '   搜索标题: "$gameTitle"');
-            _log('WARN', '   目标目录: "$_targetGameDir"');
+            _log('WARN', '   实际目录: "$_actualGameDir"');
+            _log('WARN', '   元数据目录: "$_targetGameDir"');
           } else if (!extractionActuallySucceeded) {
             _log('WARN', '   找到${candidates.length}个候选记录，但目录均无效');
           }
@@ -555,7 +629,9 @@ class ExtractManager {
           description: gameDescription,
           coverUrl: gameCoverUrl,
           tags: gameTags,
+          developer: gameDeveloper,
           overrideDirectoryPath: extractionTargetDir,
+          screenshotUrls: screenshotUrls,
         );
 
         await _embedCoverBase64(
@@ -571,7 +647,10 @@ class ExtractManager {
         _emitStatus(ExtractStatus.completed);
         if (_activeTaskCount > 0) _activeTaskCount--;
 
-        final gamePath = _targetGameDir ?? '';
+        // directoryPath 应使用游戏本体实际解压目录，而非元数据目录
+        final gamePath = extractionTargetDir.isNotEmpty
+            ? extractionTargetDir
+            : (_targetGameDir ?? '');
         final gameId = _currentArchivePath ?? '';
 
         if (_registeredGames.contains(gamePath)) {
@@ -582,6 +661,7 @@ class ExtractManager {
           LocalGameRegistry.instance.registerExtractionComplete(
             gameTitle: gameTitle,
             directoryPath: gamePath,
+            developer: gameDeveloper,
           );
           _registeredGames.add(gamePath);
           _log('INFO', '✅ 入库完成');
@@ -722,7 +802,8 @@ class ExtractManager {
     required String gameTitle,
   }) async {
     if (_isWithinGamesBaseDirectory(effectiveLocation)) {
-      final targetDir = '$_targetGameDir\\${_safeDirectoryName(gameTitle)}';
+      // 使用 path.join 统一路径分隔符
+      final targetDir = path.join(_targetGameDir!, _safeDirectoryName(gameTitle));
       _log('INFO', '🎯 解压方案(本体在元数据子目录): $targetDir');
       return targetDir;
     } else {
@@ -749,10 +830,11 @@ class ExtractManager {
     var dirName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
     if (dirName.isEmpty) dirName = 'UnknownGame';
 
-    var candidate = '$_gamesBaseDir/$dirName';
+    // 使用 path.join 统一路径分隔符，避免混合 / 和 \
+    var candidate = path.join(_gamesBaseDir, dirName);
     int idx = 1;
     while (await Directory(candidate).exists()) {
-      candidate = '$_gamesBaseDir/${dirName}_$idx';
+      candidate = path.join(_gamesBaseDir, '${dirName}_$idx');
       idx++;
     }
     return candidate;
@@ -776,10 +858,11 @@ class ExtractManager {
     var safeName = gameTitle.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
     if (safeName.isEmpty) safeName = 'UnknownGame';
 
-    var candidate = '$customBaseDir\\$safeName';
+    // 使用 path.join 统一路径分隔符
+    var candidate = path.join(customBaseDir, safeName);
     int idx = 1;
     while (await Directory(candidate).exists()) {
-      candidate = '$customBaseDir\\${safeName}_$idx';
+      candidate = path.join(customBaseDir, '${safeName}_$idx');
       idx++;
     }
 
@@ -884,8 +967,7 @@ class ExtractManager {
           errStr.contains('bad password') ||
           errStr.contains('wrong password') ||
           errStr.contains('password required') ||
-          errStr.contains('encrypted') ||
-          true;
+          errStr.contains('encrypted');
 
       if (!isPasswordRelatedError) {
         _log('ERROR', '错误类型不是密码相关，不进行重试');
@@ -1022,13 +1104,15 @@ class ExtractManager {
       await outDir.create(recursive: true);
     }
 
-    // 直接使用 -aos 模式
+    // 使用 -y 模式（自动确认覆盖），避免残留文件干扰解压
+    // 之前的 -aos（跳过已存在文件）可能导致上次失败的残留文件不被覆盖
+    // 使用 -bsp1 让 7z 输出进度到 stdout
     final args = <String>[
       'x',
       inputPath,
       '-o$outputDir',
       '-y',
-      '-aos',
+      '-bsp1',
     ];
 
     if (password != null && password.isNotEmpty) {
@@ -1037,14 +1121,21 @@ class ExtractManager {
       args.add('-p');
     }
 
-    final result = await Process.run(exePath, args);
+    // 使用 Process.start 替代 Process.run，避免阻塞主 Isolate
+    final process = await Process.start(
+      exePath,
+      args,
+      workingDirectory: outputDir,
+    );
+    _currentProcess = process;
 
-    final exitCode = result.exitCode;
-    final stdoutContent = result.stdout.toString().trim();
-    final stderrContent = result.stderr.toString().trim();
-
+    final stderrLines = <String>[];
     int lastPercent = 0;
-    for (final line in stdoutContent.split('\n')) {
+
+    final stdoutSub = process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
       final parsed = _parse7zLine(line);
       if (parsed != null && parsed > lastPercent) {
         lastPercent = parsed;
@@ -1055,10 +1146,30 @@ class ExtractManager {
           message: '解压中 $parsed%',
         ));
       }
-    }
+    });
+
+    final stderrSub = process.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      stderrLines.add(line);
+    });
+
+    final exitCode = await process.exitCode;
+    await stdoutSub.cancel();
+    await stderrSub.cancel();
+    _currentProcess = null;
 
     if (exitCode != 0) {
       _log('ERROR', '7-Zip解压RAR失败 (exitCode=$exitCode)');
+      for (final line in stderrLines) {
+        final lower = line.toLowerCase();
+        if (lower.contains('error') ||
+            lower.contains('cannot') ||
+            lower.contains('wrong password')) {
+          _log('ERROR', '  $line'.trim());
+        }
+      }
       throw Exception('解压失败(exitCode=$exitCode)');
     }
 
@@ -1075,20 +1186,21 @@ class ExtractManager {
   }) async {
     final exePath = await _getBundled7zPath();
 
-    _log('INFO', '使用内置7-Zip解压ZIP/7Z');
+    _log('INFO', '使用内置7-Zip解压ZIP/7Z（流式非阻塞）');
 
     final outDir = Directory(outputDir);
     if (!await outDir.exists()) {
       await outDir.create(recursive: true);
     }
 
-    // 直接使用 -aos 模式：跳过已存在的文件，不触发文件锁定冲突
+    // 使用 -y 模式（自动确认覆盖），避免残留文件干扰解压
+    // 使用 -bsp1 让 7z 输出进度到 stdout
     final args = <String>[
       'x',
       inputPath,
       '-o$outputDir',
       '-y',
-      '-aos',
+      '-bsp1',
     ];
 
     if (password != null && password.isNotEmpty) {
@@ -1097,15 +1209,24 @@ class ExtractManager {
       args.add('-p');
     }
 
-    final result = await Process.run(exePath, args);
+    // 使用 Process.start 替代 Process.run，避免阻塞主 Isolate
+    final process = await Process.start(
+      exePath,
+      args,
+      workingDirectory: outputDir,
+    );
+    _currentProcess = process;
 
-    final exitCode = result.exitCode;
-    final stdoutContent = result.stdout.toString().trim();
-    final stderrContent = result.stderr.toString().trim();
-
-    // 进度解析
+    final stdoutLines = <String>[];
+    final stderrLines = <String>[];
     int lastPercent = 0;
-    for (final line in stdoutContent.split('\n')) {
+
+    // 监听 stdout 流，实时解析进度
+    final stdoutSub = process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      stdoutLines.add(line);
       final parsed = _parse7zLine(line);
       if (parsed != null && parsed > lastPercent) {
         lastPercent = parsed;
@@ -1116,12 +1237,25 @@ class ExtractManager {
           message: '解压中 $parsed%',
         ));
       }
-    }
+    });
+
+    // 监听 stderr 流
+    final stderrSub = process.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      stderrLines.add(line);
+    });
+
+    final exitCode = await process.exitCode;
+    await stdoutSub.cancel();
+    await stderrSub.cancel();
+    _currentProcess = null;
 
     // 关键错误日志
     if (exitCode != 0) {
       _log('ERROR', '7-Zip解压失败 (exitCode=$exitCode)');
-      for (final line in stderrContent.split('\n')) {
+      for (final line in stderrLines) {
         final lower = line.toLowerCase();
         if (lower.contains('error') ||
             lower.contains('cannot') ||
@@ -1162,7 +1296,7 @@ class ExtractManager {
     required String outputDir,
   }) async {
     _log('INFO', '==========================================');
-    _log('INFO', '【.rar.lz4 格式检测】使用 rar_lz4_unzip.exe 专用工具');
+    _log('INFO', '【.rar.lz4 格式检测】使用 Dart 原生 bz.exe + UnRAR.exe 方案');
     _log('INFO', '==========================================');
     _log('INFO', '压缩包: $archivePath');
     _log('INFO', '输出目录: $outputDir');
@@ -1173,18 +1307,18 @@ class ExtractManager {
     }
 
     _emitProgress(const ExtractProgress(
-        percent: 5, message: '正在调用 rar_lz4_unzip.exe...'));
+        percent: 5, message: '正在初始化 bz.exe + UnRAR.exe...'));
 
     try {
       final service = RarLz4UnzipService();
 
       _emitProgress(const ExtractProgress(
-          percent: 10, message: '正在调用 rar_lz4_unzip.exe...'));
+          percent: 10, message: '正在解压 .rar.lz4 (bz.exe + UnRAR.exe)...'));
 
       final success = await service.unzip(archivePath, outputDir);
 
       if (!success) {
-        _log('ERROR', '❌ rar_lz4_unzip.exe 返回失败');
+        _log('ERROR', '❌ bz.exe + UnRAR.exe 解压返回失败');
         throw Exception('[.rar.lz4 解压失败] 工具返回非 SUCCESS');
       }
 
@@ -1221,12 +1355,12 @@ class ExtractManager {
       ));
 
       _log('INFO', '==========================================');
-      _log('INFO', '✅ 【rar_lz4_unzip.exe】解压成功完成');
+      _log('INFO', '✅ 【bz.exe + UnRAR.exe】解压成功完成');
       _log('INFO', '==========================================');
       _log('INFO', '');
     } catch (e) {
       _log('ERROR', '');
-      _log('ERROR', '【rar_lz4_unzip.exe】异常: $e');
+      _log('ERROR', '【bz.exe + UnRAR.exe】异常: $e');
       _log('ERROR', '');
       rethrow;
     }
@@ -1238,18 +1372,6 @@ class ExtractManager {
     required double startPercent,
     required double endPercent,
   }) async {
-    // lz4.exe 不包含在开源版本中，检查工具是否可用
-    try {
-      final lz4Path = await _getToolPath('lz4.exe');
-      final lz4File = File(lz4Path);
-      if (!await lz4File.exists()) {
-        throw Exception('lz4.exe 工具文件不存在，开源版本不支持纯 LZ4 格式解压');
-      }
-    } catch (e) {
-      _log('ERROR', 'lz4.exe 不可用: $e');
-      throw Exception('开源版本不支持纯 LZ4 格式解压，如需此功能请使用正式版');
-    }
-
     final lz4Path = await _getToolPath('lz4.exe');
 
     _log('INFO', '');
@@ -1287,7 +1409,7 @@ class ExtractManager {
       outName = 'temp_archive';
     }
 
-    final outputPath = '$outputDir\\$outName'.replaceAll('/', '\\');
+    final outputPath = path.join(outputDir, outName);
 
     _log('INFO', '输出文件: $outputPath');
 
@@ -1297,19 +1419,29 @@ class ExtractManager {
     ));
 
     try {
-      final normalizedInputPath = inputPath.replaceAll('/', '\\');
-      final normalizedOutputPath = outputPath.replaceAll('/', '\\');
-
+      // 路径已通过 path.join 规范化，无需手动替换分隔符
       _log('INFO',
-          'LZ4完整命令: $lz4Path -d -f "$normalizedInputPath" "$normalizedOutputPath"');
+          'LZ4完整命令: $lz4Path -d -f "$inputPath" "$outputPath"');
 
-      final result = await Process.run(
+      // 使用 Process.start 替代 Process.run，避免阻塞主 Isolate
+      final process = await Process.start(
         lz4Path,
-        ['-d', '-f', normalizedInputPath, normalizedOutputPath],
+        ['-d', '-f', inputPath, outputPath],
         workingDirectory: outputDir,
       );
+      _currentProcess = process;
 
-      final exitCode = result.exitCode;
+      final stderrLines = <String>[];
+      final stderrSub = process.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) {
+        stderrLines.add(line);
+      });
+
+      final exitCode = await process.exitCode;
+      await stderrSub.cancel();
+      _currentProcess = null;
 
       _log('INFO', 'LZ4进程退出码: $exitCode');
 
@@ -1512,7 +1644,9 @@ class ExtractManager {
     String? description,
     String? coverUrl,
     List<String>? tags,
+    String? developer,
     String? overrideDirectoryPath,
+    List<String>? screenshotUrls,
   }) async {
     _log('INFO', '🔍 开始智能识别启动 EXE...');
 
@@ -1537,6 +1671,8 @@ class ExtractManager {
       launchPath: launcherPath,
       directoryPath: overrideDirectoryPath ?? targetDir,
       source: 'download',
+      developer: developer ?? '',
+      screenshotUrls: screenshotUrls,
     );
 
     final effectiveDir = overrideDirectoryPath ?? targetDir;
@@ -1573,7 +1709,7 @@ class ExtractManager {
     return;
   }
 
-  void _cleanupOnFailure(String targetDir,
+  Future<void> _cleanupOnFailure(String targetDir,
       [String? extractionTargetDir]) async {
     _log('WARN', '');
     _log('WARN', '========================================');
@@ -1731,7 +1867,7 @@ class ExtractManager {
     if (extractionTargetDir != null &&
         extractionTargetDir!.isNotEmpty &&
         extractionTargetDir != targetDir) {
-      _log('INFO', '步骤6: 清理解压目标目录(自定义路径)...');
+      _log('INFO', '步骤6: 检查解压目标目录(自定义路径)...');
 
       final extractDir = Directory(extractionTargetDir!);
       if (await extractDir.exists()) {
@@ -1746,36 +1882,57 @@ class ExtractManager {
               _log('WARN', '  ⚠️ 删除空解压目录失败: $extractionTargetDir | $delErr');
             }
           } else {
-            final fileCount = entities.where((e) => e is File).length;
-            final dirCount = entities.where((e) => e is Directory).length;
-            _log('INFO', '  ℹ️ 解压目录非空，保留部分解压内容: $extractionTargetDir');
-            _log('INFO', '     包含: $fileCount 个文件, $dirCount 个子目录');
-
+            // 递归检查目录中是否含有游戏数据文件
+            // 之前的 bug：只检查顶层文件，不检查子目录，导致含子目录结构的游戏被误删
             bool hasGameData = false;
-            for (final entity in entities) {
-              final name = entity.path.toLowerCase();
-              if (name.endsWith('.exe') ||
-                  name.endsWith('.ctgame') ||
-                  name.endsWith('.json')) {
-                hasGameData = true;
-                break;
+            try {
+              final allEntities =
+                  await extractDir.list(recursive: true).toList();
+              for (final entity in allEntities) {
+                if (entity is File) {
+                  final name = entity.path.toLowerCase();
+                  if (name.endsWith('.exe') ||
+                      name.endsWith('.ctgame') ||
+                      name.endsWith('.json') ||
+                      name.endsWith('.dat') ||
+                      name.endsWith('.xp3') ||
+                      name.endsWith('.ks') ||
+                      name.endsWith('.ald') ||
+                      name.endsWith('.arc') ||
+                      name.endsWith('.pna')) {
+                    hasGameData = true;
+                    break;
+                  }
+                }
               }
+            } catch (scanErr) {
+              _log('WARN', '  ⚠️ 递归扫描异常，保守保留: $scanErr');
+              hasGameData = true; // 扫描失败时保守处理，不删除
             }
 
-            if (!hasGameData && entities.length <= 5) {
+            final fileCount = entities.where((e) => e is File).length;
+            final dirCount = entities.where((e) => e is Directory).length;
+            _log('INFO', '  ℹ️ 解压目录非空: $extractionTargetDir');
+            _log('INFO', '     顶层: $fileCount 个文件, $dirCount 个子目录');
+            _log('INFO', '     含游戏数据: $hasGameData');
+
+            // 只有完全空目录才删除；非空目录一律保留，避免误删已解压的游戏文件
+            if (!hasGameData && entities.isEmpty) {
               try {
                 await extractDir.delete(recursive: true);
-                _log('INFO', '  ✅ 已清理无效的解压目录: $extractionTargetDir');
+                _log('INFO', '  ✅ 已清理空目录: $extractionTargetDir');
               } catch (delErr) {
-                _log('WARN', '  ⚠️ 清理解压目录失败: $extractionTargetDir | $delErr');
+                _log('WARN', '  ⚠️ 清理失败: $extractionTargetDir | $delErr');
               }
+            } else {
+              _log('INFO', '  ℹ️ 保留解压目录（含游戏数据或非空）: $extractionTargetDir');
             }
           }
         } catch (checkErr) {
           _log('ERROR', '  ❌ 检查解压目录异常: $extractionTargetDir | $checkErr');
         }
       }
-      _log('INFO', '✅ 步骤6完成: 解压目录清理结束');
+      _log('INFO', '✅ 步骤6完成: 解压目录检查结束');
     }
 
     _log('INFO', '');
@@ -1805,12 +1962,14 @@ class ExtractManager {
       if (!await logDir.exists()) {
         await logDir.create(recursive: true);
       }
-      final dateStr = DateTime.now()
+      // 使用会话级时间戳:同一次解压任务内所有日志写入同一个文件,
+      // 避免秒级时间戳生成多个 extract_*.txt 文件。
+      _sessionLogTs ??= DateTime.now()
           .toIso8601String()
           .replaceAll(':', '-')
           .replaceAll('.', '-')
           .substring(0, 19);
-      final logFile = File('$_logsDir/extract_${dateStr}.txt');
+      final logFile = File('$_logsDir/extract_$_sessionLogTs.txt');
       if (!await logFile.exists()) {
         await logFile.writeAsString('');
       }
@@ -1820,15 +1979,22 @@ class ExtractManager {
 
   void cancel() {
     if (_status == ExtractStatus.extracting) {
+      _isCancelled = true;
       if (_activeTaskCount > 0) _activeTaskCount--;
 
       if (_currentProcess != null) {
-        _log('WARN', '用户取消解压操作，终止进程...');
         _currentProcess?.kill();
         _currentProcess = null;
       }
 
-      _log('WARN', '用户取消解压操作');
+      // 修复:cancel 时调用 _cleanupOnFailure 清理残留文件。
+      // 异步执行不阻塞 cancel(),_cleanupOnFailure 内部只调 _log() 不改状态,无竞态。
+      if (_targetGameDir != null && _targetGameDir!.isNotEmpty) {
+        _cleanupOnFailure(_targetGameDir!, _actualGameDir).catchError((e) {
+          debugPrint('[EXTRACT] cancel 清理异常: $e');
+        });
+      }
+
       _emitStatus(ExtractStatus.idle);
     }
   }
@@ -1839,6 +2005,8 @@ class ExtractManager {
     _errorMessage = null;
     _currentArchivePath = null;
     _targetGameDir = null;
+    _actualGameDir = null;
     _currentProcess = null;
+    _sessionLogTs = null;
   }
 }

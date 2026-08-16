@@ -17,7 +17,7 @@ class AppColors {
   static Color get border => AppThemeManager.colors.border;
   static Color get borderLight => AppThemeManager.colors.borderLight;
   static Color get buttonBackground => AppThemeManager.colors.buttonBackground;
-  static Color get selectedBlue => AppThemeManager.colors.selectedBlue;
+  static Color get selectedAccent => AppThemeManager.colors.selectedAccent;
   static Color get dangerRed => AppThemeManager.colors.dangerRed;
   static Color get placeholderText => AppThemeManager.colors.placeholderText;
   static Color get placeholderBg => AppThemeManager.colors.placeholderBg;
@@ -39,4 +39,14 @@ class AppColors {
   static Color get toggleIcon => AppThemeManager.colors.toggleIcon;
   static Brightness get brightness => AppThemeManager.colors.brightness;
   static bool get isDark => brightness == Brightness.dark;
+
+  // --- 新增语义化令牌 ---
+  static Color get placeholderCover => AppThemeManager.colors.placeholderCover;
+  static Color get titleBrown => AppThemeManager.colors.titleBrown;
+  static Color get starGold => AppThemeManager.colors.starGold;
+  static Color get infoBlue => AppThemeManager.colors.infoBlue;
+  static Color get brandBlue => AppThemeManager.colors.brandBlue;
+
+  /// BUG-06: 信息按钮浅色背景（下载/前往库等 info 变体按钮使用）
+  static Color get infoBg => AppThemeManager.colors.infoBg;
 }

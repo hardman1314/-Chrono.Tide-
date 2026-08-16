@@ -5,6 +5,8 @@ import 'extract_manager.dart';
 import 'local_game_registry.dart';
 import 'game_data_format.dart';
 import 'path_validator.dart';
+import '../core/path_helper.dart';
+import 'storage/cleanup_utils.dart';
 
 enum InstallPhase {
   idle,
@@ -36,8 +38,9 @@ class InstallTask {
   final String? coverUrl;
   final List<String>? tags;
   final String downloadUrl;
-
+  final String? developer;
   final String? customGameLocation;
+  final List<String>? screenshotUrls;
 
   const InstallTask({
     required this.gameId,
@@ -46,7 +49,9 @@ class InstallTask {
     this.coverUrl,
     this.tags,
     required this.downloadUrl,
+    this.developer,
     this.customGameLocation,
+    this.screenshotUrls,
   });
 }
 
@@ -167,7 +172,7 @@ class GlobalInstallCenter {
 
     try {
       _emitPhase(InstallPhase.downloading);
-      _emitProgress(const InstallProgress(statusMessage: '正在获取下载链接...'));
+      _emitProgress(const InstallProgress(statusMessage: '正在获取链接...'));
 
       debugPrint('[INSTALL-CENTER] 步骤1/3：开始下载...');
       await _startDownload(task);
@@ -188,6 +193,7 @@ class GlobalInstallCenter {
         statusMessage: '安装完成',
       ));
 
+      await _onInstallSuccess(task);
       _emitSuccess();
       _resetBusyState();
       return true;
@@ -204,6 +210,7 @@ class GlobalInstallCenter {
           extractPercent: 100.0,
           statusMessage: '安装完成',
         ));
+        await _onInstallSuccess(task);
         _emitSuccess();
         _resetBusyState();
         return true;
@@ -230,7 +237,7 @@ class GlobalInstallCenter {
       _emitProgress(InstallProgress(
         downloadPercent: prog.percent,
         downloadSpeed: prog.speed,
-        statusMessage: '正在下载... ${prog.percent.toStringAsFixed(1)}%',
+        statusMessage: '正在获取... ${prog.percent.toStringAsFixed(1)}%',
       ));
     });
 
@@ -259,7 +266,7 @@ class GlobalInstallCenter {
     );
 
     if (_dlCore.status == DownloadStatus.failed) {
-      throw Exception(_dlCore.errorMessage ?? '下载失败');
+      throw Exception(_dlCore.errorMessage ?? '获取失败');
     }
     if (_dlCore.status == DownloadStatus.cancelled) {
       _emitPhase(InstallPhase.cancelled);
@@ -332,6 +339,93 @@ class GlobalInstallCenter {
     } else if (extractStatus == ExtractStatus.completed) {
       debugPrint('[INSTALL-CENTER] ✅ 解压状态为completed，安装成功');
     }
+  }
+
+  /// 安装成功后的清理与校验钩子。
+  ///
+  /// 1. 删除 downloads 里的游戏压缩包(无条件删除,用户已决策)。
+  ///    注:extract_manager.start() 已删过一次,此处是兜底确保删除。
+  /// 2. 完整性校验:检查解压目标目录文件数 ≥ 阈值且至少含 1 个 .exe。
+  ///    校验失败仅记录日志,不回滚(安装已成功,仅警告)。
+  Future<void> _onInstallSuccess(InstallTask task) async {
+    debugPrint('[INSTALL-CENTER] 🧹 安装成功后清理与校验...');
+
+    // 1. 兜底删除压缩包
+    if (_downloadedFilePath != null && _downloadedFilePath!.isNotEmpty) {
+      final ok = await CleanupUtils.deleteWithRetry(
+        File(_downloadedFilePath!),
+        retries: 2,
+        reason: 'install_success_cleanup',
+      );
+      debugPrint('[INSTALL-CENTER]   压缩包清理: ${ok ? "已删除" : "删除失败或不存在"}');
+    }
+
+    // 2. 完整性校验
+    await _verifyInstallIntegrity(task);
+  }
+
+  /// 校验解压结果完整性。
+  ///
+  /// 检查项:目标目录存在、文件数 ≥ 4、至少含 1 个 .exe。
+  /// 校验失败记录 CleanupLog 但不抛错(安装已成功,仅警告)。
+  Future<void> _verifyInstallIntegrity(InstallTask task) async {
+    final checkDir = _dlCore.extractManager.actualGameDir ??
+        _dlCore.extractManager.targetGameDir;
+    if (checkDir == null || checkDir.isEmpty) {
+      debugPrint('[INSTALL-CENTER]   ⚠️ 完整性校验:无目标目录信息,跳过');
+      return;
+    }
+
+    final dir = Directory(checkDir);
+    if (!await dir.exists()) {
+      debugPrint('[INSTALL-CENTER]   ⚠️ 完整性校验:目标目录不存在 $checkDir');
+      await CleanupLog.append({
+        'op': 'integrity_check',
+        'target': checkDir,
+        'result': 'fail',
+        'error': 'directory_not_found',
+        'gameId': task.gameId,
+      });
+      return;
+    }
+
+    int fileCount = 0;
+    bool hasExe = false;
+    try {
+      await for (final entity
+          in dir.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          fileCount++;
+          if (entity.path.toLowerCase().endsWith('.exe')) {
+            hasExe = true;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[INSTALL-CENTER]   ⚠️ 完整性校验:扫描异常 $e');
+      await CleanupLog.append({
+        'op': 'integrity_check',
+        'target': checkDir,
+        'result': 'fail',
+        'error': e.toString(),
+        'gameId': task.gameId,
+      });
+      return;
+    }
+
+    const minFileCount = 4;
+    final passed = fileCount >= minFileCount && hasExe;
+    debugPrint('[INSTALL-CENTER]   完整性校验: ${passed ? "✅ 通过" : "⚠️ 警告"} '
+        '| 文件数=$fileCount (阈值$minFileCount) | 含EXE=$hasExe');
+
+    await CleanupLog.append({
+      'op': 'integrity_check',
+      'target': checkDir,
+      'result': passed ? 'ok' : 'warn',
+      'fileCount': fileCount,
+      'hasExe': hasExe,
+      'gameId': task.gameId,
+    });
   }
 
   Future<bool> _verifyExtractionActuallySucceeded() async {
@@ -559,13 +653,99 @@ class GlobalInstallCenter {
         }
       }
 
+      // 步骤2.5:扫描 downloads 目录,清理与当前 gameId 相关的孤儿压缩包残留
+      debugPrint('[INSTALL-CENTER]   回滚步骤2.5：扫描 downloads 孤儿压缩包...');
+      try {
+        final dlDir = Directory(PathHelper.downloadsDir);
+        if (await dlDir.exists() && _currentTask != null) {
+          final gameId = _currentTask!.gameId;
+          final title = _currentTask!.title;
+          final now = DateTime.now();
+          await for (final entity in dlDir.list(followLinks: false)) {
+            if (entity is File) {
+              final name = entity.path.toLowerCase();
+              // 仅处理压缩包格式,跳过 .tmp 分片文件
+              final isArchive = name.endsWith('.zip') ||
+                  name.endsWith('.rar') ||
+                  name.endsWith('.7z') ||
+                  name.endsWith('.tar');
+              if (!isArchive) continue;
+              // 匹配 gameId 或 title(忽略大小写)
+              final matchesTask = name.contains(gameId.toLowerCase()) ||
+                  name.contains(title.toLowerCase());
+              if (!matchesTask) continue;
+              // 仅清理 24 小时内修改的文件(避免误删旧的无关压缩包)
+              try {
+                final stat = await entity.stat();
+                if (now.difference(stat.modified).inHours < 24) {
+                  await entity.delete();
+                  debugPrint('[INSTALL-CENTER]   ✅ 已删除孤儿压缩包: ${entity.path}');
+                }
+              } catch (e) {
+                debugPrint(
+                    '[INSTALL-CENTER]   ⚠️ 删除孤儿压缩包失败: ${entity.path} | $e');
+              }
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[INSTALL-CENTER]   ⚠️ 扫描孤儿压缩包异常: $e');
+      }
+
       debugPrint('[INSTALL-CENTER]   回滚步骤3：清理不完整目录...');
+      // 优先清理实际解压目录(可能是用户自定义路径),再清理元数据目录
+      final actualDir = _dlCore.extractManager.actualGameDir;
       final targetDir = _dlCore.extractManager.targetGameDir;
-      if (targetDir != null && targetDir.isNotEmpty) {
+
+      if (actualDir != null && actualDir.isNotEmpty) {
+        final dir = Directory(actualDir);
+        if (await dir.exists()) {
+          // 安全检查:仅当目录为空或不含游戏数据文件时才删除
+          // (复用 _cleanupOnFailure 步骤6 的保护逻辑,避免误删用户已有数据)
+          try {
+            final entities = await dir.list().toList();
+            bool hasGameData = false;
+            if (entities.isNotEmpty) {
+              for (final e in entities) {
+                if (e is File) {
+                  final fname = e.path.toLowerCase();
+                  if (fname.endsWith('.exe') ||
+                      fname.endsWith('.ctgame') ||
+                      fname.endsWith('.json') ||
+                      fname.endsWith('.dat') ||
+                      fname.endsWith('.xp3') ||
+                      fname.endsWith('.ks') ||
+                      fname.endsWith('.ald') ||
+                      fname.endsWith('.arc') ||
+                      fname.endsWith('.pna')) {
+                    hasGameData = true;
+                    break;
+                  }
+                }
+              }
+            }
+            if (!hasGameData) {
+              await dir.delete(recursive: true);
+              debugPrint('[INSTALL-CENTER]   ✅ 已删除实际解压目录: $actualDir');
+            } else {
+              debugPrint('[INSTALL-CENTER]   ⚠️ 实际解压目录含游戏数据,保留: $actualDir');
+            }
+          } catch (e) {
+            debugPrint('[INSTALL-CENTER]   ⚠️ 清理实际解压目录异常: $actualDir | $e');
+          }
+        }
+      }
+
+      // 清理元数据目录(若与实际解压目录不同)
+      if (targetDir != null && targetDir.isNotEmpty && targetDir != actualDir) {
         final dir = Directory(targetDir);
         if (await dir.exists()) {
-          await dir.delete(recursive: true);
-          debugPrint('[INSTALL-CENTER]   ✅ 已删除目录: $targetDir');
+          try {
+            await dir.delete(recursive: true);
+            debugPrint('[INSTALL-CENTER]   ✅ 已删除元数据目录: $targetDir');
+          } catch (e) {
+            debugPrint('[INSTALL-CENTER]   ⚠️ 清理元数据目录异常: $targetDir | $e');
+          }
         }
       }
 

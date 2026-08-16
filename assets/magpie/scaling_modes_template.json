@@ -1,0 +1,242 @@
+{
+    "scalingModes": [
+        {
+            "name": "Lanczos",
+            "effects": [
+                {
+                    "name": "Lanczos",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "FSR",
+            "effects": [
+                {
+                    "name": "FSR\\FSR_EASU",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "FSR\\FSR_RCAS",
+                    "parameters": {
+                        "sharpness": 0.8700000047683716
+                    }
+                }
+            ]
+        },
+        {
+            "name": "FSRCNNX",
+            "effects": [
+                {
+                    "name": "FSRCNNX\\FSRCNNX"
+                }
+            ]
+        },
+        {
+            "name": "ACNet",
+            "effects": [
+                {
+                    "name": "ACNet"
+                }
+            ]
+        },
+        {
+            "name": "Anime4K",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_Denoise_L"
+                }
+            ]
+        },
+        {
+            "name": "CRT-Geom",
+            "effects": [
+                {
+                    "name": "CRT\\CRT_Geom",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    },
+                    "parameters": {
+                        "monitorGamma": 2.200000047683716,
+                        "cornerSize": 0.0010000000474974513,
+                        "curvature": 0.0,
+                        "interlace": 0.0,
+                        "CRTGamma": 1.5
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Integer Scale 2x",
+            "effects": [
+                {
+                    "name": "Nearest",
+                    "scalingType": 0,
+                    "scale": {
+                        "x": 2.0,
+                        "y": 2.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "A4K 超轻量化",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_S"
+                },
+                {
+                    "name": "Bicubic",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "A4K 轻量化",
+            "effects": [
+                {
+                    "name": "Bicubic",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_S"
+                }
+            ]
+        },
+        {
+            "name": "A4K 组合 低锐化",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_S"
+                },
+                {
+                    "name": "Bicubic",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_Soft_S"
+                }
+            ]
+        },
+        {
+            "name": "高档位",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_S"
+                },
+                {
+                    "name": "Bicubic",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_Soft_M"
+                }
+            ]
+        },
+        {
+            "name": "特高档位",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_L"
+                },
+                {
+                    "name": "Lanczos",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_L"
+                }
+            ]
+        },
+        {
+            "name": "超高档位",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_VL"
+                },
+                {
+                    "name": "Lanczos",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_VL"
+                }
+            ]
+        },
+        {
+            "name": "最高档位",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_VL"
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_VL"
+                },
+                {
+                    "name": "Lanczos",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "超分到4K",
+            "effects": [
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_VL"
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Restore_VL"
+                },
+                {
+                    "name": "Lanczos",
+                    "scalingType": 1,
+                    "scale": {
+                        "x": 1.0,
+                        "y": 1.0
+                    }
+                },
+                {
+                    "name": "Anime4K\\Anime4K_Upscale_VL"
+                }
+            ]
+        }
+    ]
+}

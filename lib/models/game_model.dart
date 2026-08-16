@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../core/backend_config.dart';
+import '../core/pb_config.dart';
 
 class GameModel {
   final String id;
@@ -10,6 +10,7 @@ class GameModel {
   final String downloadUrl;
   final String status;
   final String developer;
+  final List<String> screenshotUrls; // PB screenshots 字段（多文件）
   final DateTime created;
   final DateTime updated;
 
@@ -22,6 +23,7 @@ class GameModel {
     this.downloadUrl = '',
     this.status = '',
     this.developer = '',
+    this.screenshotUrls = const [],
     required this.created,
     required this.updated,
   });
@@ -35,7 +37,8 @@ class GameModel {
     final tags = _parseTags(record);
     final downloadUrl = _safeGetString(record, 'downloadUrl');
     final status = _safeGetString(record, 'status');
-    final developer = _safeGetString(record, 'Developer');
+    final developer = _safeGetStringFallback(record, ['developer', 'Developer']);
+    final screenshotUrls = _extractScreenshotUrls(record);
 
     debugPrint('      → title: "$title"');
     debugPrint(
@@ -46,6 +49,8 @@ class GameModel {
         '      → downloadUrl: ${downloadUrl.isNotEmpty ? downloadUrl : "(空)"}');
     debugPrint(
         '      → developer: ${developer.isNotEmpty ? developer : "(空)"}');
+    debugPrint(
+        '      → screenshotUrls: ${screenshotUrls.isNotEmpty ? "${screenshotUrls.length}张" : "(空)"}');
 
     return GameModel(
       id: record.id,
@@ -56,6 +61,7 @@ class GameModel {
       downloadUrl: downloadUrl,
       status: status,
       developer: developer,
+      screenshotUrls: screenshotUrls,
       created: DateTime.tryParse(record.created) ?? DateTime.now(),
       updated: DateTime.tryParse(record.updated) ?? DateTime.now(),
     );
@@ -69,20 +75,52 @@ class GameModel {
     }
   }
 
-  static String _extractCoverUrl(dynamic record) {
-    try {
-      final cover = record.getStringValue('coverUrl');
-      if (cover != null && cover.isNotEmpty) {
-        return '${_pbBaseUrl}/api/files/games/${record.id}/$cover';
-      }
-    } catch (_) {}
-    try {
-      final cover = record.getStringValue('cover');
-      if (cover != null && cover.isNotEmpty) {
-        return '${_pbBaseUrl}/api/files/games/${record.id}/$cover';
-      }
-    } catch (_) {}
+  /// 按优先级依次尝试多个字段名，返回第一个非空值
+  /// 用于兼容 PB 字段命名变更（如 Developer → developer）
+  static String _safeGetStringFallback(dynamic record, List<String> fields) {
+    for (final field in fields) {
+      final value = _safeGetString(record, field);
+      if (value.isNotEmpty) return value;
+    }
     return '';
+  }
+
+  /// 从 PB record 提取封面 URL
+  /// 优先尝试 'cover'（标准命名），再回退 'coverUrl'（旧命名）
+  static String _extractCoverUrl(dynamic record) {
+    for (final field in ['cover', 'coverUrl']) {
+      try {
+        final value = record.getStringValue(field);
+        if (value != null && value.isNotEmpty) {
+          return '$_pbBaseUrl/api/files/games/${record.id}/$value';
+        }
+      } catch (_) {}
+    }
+    return '';
+  }
+
+  /// 从 PB record 的 screenshots 多文件字段提取完整 URL 列表
+  static List<String> _extractScreenshotUrls(dynamic record) {
+    final urls = <String>[];
+    try {
+      // PB 多文件字段：getListValue 返回文件名列表
+      final files = record.getListValue('screenshots');
+      if (files != null && files is List && files.isNotEmpty) {
+        for (final file in files) {
+          final fileName = file.toString();
+          if (fileName.isNotEmpty) {
+            urls.add('$_pbBaseUrl/api/files/games/${record.id}/$fileName');
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[MODEL] ⚠️ screenshots字段解析异常: $e');
+    }
+
+    if (urls.isNotEmpty) {
+      debugPrint('[MODEL] ✅ 截图URL解析成功: ${urls.length}张');
+    }
+    return urls;
   }
 
   static List<String> _parseTags(dynamic record) {
@@ -123,10 +161,10 @@ class GameModel {
     return [];
   }
 
-  /// 从 BackendConfig 获取 PocketBase 基础 URL
-  static String get _pbBaseUrl => BackendConfig.pbBaseUrl;
+  static String get _pbBaseUrl => PBConfig.baseUrl;
 
   bool get hasCover => coverUrl.isNotEmpty;
+  bool get hasScreenshots => screenshotUrls.isNotEmpty;
 
   GameModel copyWith({
     String? id,
@@ -137,6 +175,7 @@ class GameModel {
     String? downloadUrl,
     String? status,
     String? developer,
+    List<String>? screenshotUrls,
     DateTime? created,
     DateTime? updated,
   }) {
@@ -149,6 +188,7 @@ class GameModel {
       downloadUrl: downloadUrl ?? this.downloadUrl,
       status: status ?? this.status,
       developer: developer ?? this.developer,
+      screenshotUrls: screenshotUrls ?? this.screenshotUrls,
       created: created ?? this.created,
       updated: updated ?? this.updated,
     );

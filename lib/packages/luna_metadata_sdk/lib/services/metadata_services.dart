@@ -6,21 +6,28 @@ import 'package:html/parser.dart' as html_parser;
 import '../models/game.dart';
 import '../models/tags.dart';
 import 'metadata_base.dart';
+import 'tag_translator.dart';
 import 'bangumi_service.dart';
+import 'hikarinagi_service.dart';
+import 'kun_service.dart';
+import 'touchgal_service.dart';
 
 class VNDBService implements MetadataSourceService {
   late Dio _dio;
 
   VNDBService({Dio? dio}) {
-    _dio = dio ??
-        Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 20),
-          receiveTimeout: const Duration(seconds: 25),
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'LunaBox/2.0 (Metadata Scraper)',
-          },
-        ));
+    // 始终创建带服务专属 headers 的 Dio（Content-Type 对 VNDB POST 请求必需）
+    _dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      receiveTimeout: const Duration(seconds: 15),
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'LunaBox/2.0 (Metadata Scraper)',
+      },
+    ));
+    // 继承代理配置：dio 非空时复制其代理回调；为 null（直连平台）时
+    // 显式设置 DIRECT，避免 Dart HttpClient 在 Windows 上读取失效的系统代理注册表
+    applyProxyConfig(dio, _dio);
   }
 
   @override
@@ -49,15 +56,20 @@ class VNDBService implements MetadataSourceService {
   @override
   Future<MetadataResult> fetchByName(String name) async {
     try {
-      final response = await _dio.post(
-        'https://api.vndb.org/kana/vn',
-        data: {
-          'filters': ['search', '=', name],
-          'fields':
-              'id, title, titles{lang, title, latin, official, main}, image{url}, description, rating, released, developers{name}, tags{name, rating, spoiler}',
-          'sort': 'searchrank',
-        },
-      );
+      // P0.2：速率受限请求，自动 429 退避重试
+      final response = await executeRateLimited(
+          SourceType.vndb,
+          () => _dio.post(
+                'https://api.vndb.org/kana/vn',
+                data: {
+                  'filters': ['search', '=', name],
+                  // P1.1：增加 image_flagging 用于 NSFW 判定，tags 增加 level 字段
+                  // 阶段3.1：增加 votecount 用于热度代理
+                  'fields':
+                      'id, title, titles{lang, title, latin, official, main}, image{url}, screenshots{url}, description, rating, votecount, released, developers{name}, tags{name, rating, spoiler, lie}',
+                  'sort': 'searchrank',
+                },
+              ));
 
       if (response.statusCode != 200) {
         return MetadataResult(
@@ -73,37 +85,172 @@ class VNDBService implements MetadataSourceService {
             game: Game(id: '', name: '', sourceType: SourceType.vndb));
       }
 
-      final result =
-          results[0] is Map ? Map<String, dynamic>.from(results[0]) : null;
+      // Phase 2.5: 最佳匹配，避免盲目取 results[0]
+      // VNDB 按搜索相关性返回结果，但相关性排序并不总是与用户输入最匹配
+      // 例如 "青春フルサイル" 可能匹配到系列作/外传，而非正作
+      final result = _pickBestMatch(results, name);
       if (result == null) {
         return MetadataResult(
             game: Game(id: '', name: '', sourceType: SourceType.vndb));
       }
       return _parseResponse(result);
     } catch (e) {
+      fetchLog('[VNDB] 查询失败 [$name]: $e');
       return MetadataResult(
           game: Game(id: '', name: '', sourceType: SourceType.vndb));
     }
   }
 
+  /// P1.1：按 ID 批量查询（VNDB 支持 100 IDs/批）
+  ///
+  /// 用 `["id","=",["v1","v2",...]]` 过滤器一次查询多个游戏，
+  /// 将 N 次请求降为 ⌈N/100⌉ 次。本方法为未来跨源补全铺路，
+  /// 批量导入按名搜索无 ID，暂不消费。
+  @override
+  Future<List<MetadataResult>> fetchByIds(List<String> ids) async {
+    if (ids.isEmpty) return [];
+    final results = <MetadataResult>[];
+    for (int i = 0; i < ids.length; i += 100) {
+      final batch = ids.sublist(i, (i + 100).clamp(0, ids.length));
+      try {
+        final response = await executeRateLimited(
+              SourceType.vndb,
+              () => _dio.post(
+                    'https://api.vndb.org/kana/vn',
+                    data: {
+                      'filters': ['id', '=', batch],
+                      'fields':
+                          'id, title, titles{lang, title, latin, official, main}, image{url}, screenshots{url}, description, rating, votecount, released, developers{name}, tags{name, rating, spoiler, lie}',
+                    },
+                  ));
+        if (response.statusCode != 200) continue;
+        final json =
+            response.data is String ? jsonDecode(response.data) : response.data;
+        final list = safeList(json, 'results');
+        if (list == null) continue;
+        for (final item in list) {
+          if (item is Map) {
+            results.add(_parseResponse(Map<String, dynamic>.from(item)));
+          }
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+    return results;
+  }
+
+  /// Phase 2.5: 从 VNDB 搜索结果中挑选与查询词最匹配的项
+  ///
+  /// VNDB 按搜索相关性排序返回结果，但相关性算法基于全文索引，
+  /// 可能误将系列作/外传/同名片放在最前。本方法通过名称相似度重新打分。
+  ///
+  /// 评分规则：
+  /// - 精确匹配（去标点小写后相等）+100
+  /// - 前缀匹配 +40
+  /// - 包含匹配 +20
+  /// - 候选名称集合：title + titles 数组中的 latin/main/official 变体
+  ///
+  /// 当所有候选分数都为 0 时回退到第一条结果（保持原有行为），
+  /// 避免过度过滤导致空结果。
+  Map<String, dynamic>? _pickBestMatch(List<dynamic> results, String query) {
+    final candidates = <Map<String, dynamic>>[];
+    for (final r in results) {
+      if (r is Map) candidates.add(Map<String, dynamic>.from(r));
+    }
+    if (candidates.isEmpty) return null;
+
+    final specialChars = RegExp(r'[-_:(\)\[\]"]');
+    final queryNorm =
+        query.toLowerCase().replaceAll(specialChars, '').replaceAll(' ', '');
+
+    Map<String, dynamic> bestResult = candidates.first;
+    int bestScore = -1;
+
+    for (final item in candidates) {
+      final names = _collectCandidateNames(item);
+      int itemBest = 0;
+      for (final n in names) {
+        final nameNorm =
+            n.toLowerCase().replaceAll(specialChars, '').replaceAll(' ', '');
+        if (nameNorm.isEmpty) continue;
+
+        int score = 0;
+        if (nameNorm == queryNorm) {
+          score = 100;
+        } else if (nameNorm.startsWith(queryNorm)) {
+          score = 40;
+        } else if (nameNorm.contains(queryNorm) ||
+            queryNorm.contains(nameNorm)) {
+          score = 20;
+        }
+        if (score > itemBest) itemBest = score;
+      }
+
+      if (itemBest > bestScore) {
+        bestScore = itemBest;
+        bestResult = item;
+      }
+    }
+
+    return bestResult;
+  }
+
+  /// 收集 VNDB 结果项的所有候选名称（title + titles 数组中的变体）
+  List<String> _collectCandidateNames(Map<String, dynamic> item) {
+    final names = <String>{};
+    final title = safeString(item, 'title');
+    if (title != null && title.isNotEmpty) names.add(title);
+
+    final titles = safeList(item, 'titles');
+    if (titles != null) {
+      for (final t in titles) {
+        if (t is! Map) continue;
+        final tMap = Map<String, dynamic>.from(t);
+        final titleText = safeString(tMap, 'title');
+        final latinText = safeString(tMap, 'latin');
+        if (titleText != null && titleText.isNotEmpty) names.add(titleText);
+        if (latinText != null && latinText.isNotEmpty) names.add(latinText);
+      }
+    }
+
+    return names.toList();
+  }
+
   MetadataResult _parseResponse(Map<String, dynamic> json) {
+    // P1.1：多语言标题偏好链 zh-hans → zh-hant → zh → ja → en
+    // 比原 main/zh/ja 逻辑更精准，优先返回简体中文译名
     String name = safeString(json, 'title') ?? '';
     final titles = safeList(json, 'titles');
     if (titles != null && titles.isNotEmpty) {
+      const langPriority = ['zh-hans', 'zh-hant', 'zh', 'ja', 'en'];
+      final byLang = <String, String>{};
       for (final t in titles) {
         if (t is! Map) continue;
         final titleMap = Map<String, dynamic>.from(t);
-        final isMain = safeBool(titleMap, 'main') ?? false;
         final lang = safeString(titleMap, 'lang') ?? '';
         final titleText = safeString(titleMap, 'title') ?? '';
         final latinText = safeString(titleMap, 'latin') ?? '';
-
-        if ((isMain || lang.startsWith('zh') || lang.startsWith('ja')) &&
-            (titleText.isNotEmpty || latinText.isNotEmpty)) {
-          name = titleText.isNotEmpty ? titleText : latinText;
+        final value = titleText.isNotEmpty ? titleText : latinText;
+        if (lang.isNotEmpty && value.isNotEmpty && !byLang.containsKey(lang)) {
+          byLang[lang] = value;
+        }
+      }
+      String? picked;
+      for (final lang in langPriority) {
+        if (byLang.containsKey(lang)) {
+          picked = byLang[lang];
           break;
         }
       }
+      // 兜底：匹配任意 zh* 开头的语言
+      picked ??= byLang.entries
+          .firstWhere(
+            (e) => e.key.startsWith('zh'),
+            orElse: () => byLang.entries.first,
+          )
+          .value;
+      if (picked != null && picked.isNotEmpty) name = picked;
     }
 
     String coverUrl = '';
@@ -127,8 +274,11 @@ class VNDBService implements MetadataSourceService {
       company = devNames.join(', ');
     }
 
-    double rating = safeDouble(json, 'rating') ?? 0.0;
-    if (rating > 10) rating = rating / 10.0;
+    // P1.3：统一评分归一化
+    final rating = normalizeRating(safeDouble(json, 'rating') ?? 0.0);
+
+    // 阶段3.1：提取投票数（VNDB 的 votecount 字段，作为热度代理）
+    final voteCount = safeInt(json, 'votecount');
 
     List<TagItem> tags = [];
     final tagsData = safeList(json, 'tags');
@@ -138,7 +288,10 @@ class VNDBService implements MetadataSourceService {
         if (tag is! Map) continue;
         final tagMap = Map<String, dynamic>.from(tag);
         final tagRating = safeDouble(tagMap, 'rating') ?? 0.0;
-        if (tagRating >= 1.5) {
+        // P1.1：剔除重度剧透标签（spoiler==2）
+        // VNDB kana API 的剧透等级用 spoiler 字段（0/1/2 int），非 level
+        final spoilerLevel = safeInt(tagMap, 'spoiler') ?? 0;
+        if (tagRating >= 1.5 && spoilerLevel < 2) {
           filteredTags.add(tagMap);
         }
       }
@@ -153,10 +306,15 @@ class VNDBService implements MetadataSourceService {
         final tagName = safeString(tag, 'name');
         final tagRating = safeDouble(tag, 'rating') ?? 0.0;
         if (tagName != null && tagName.isNotEmpty) {
+          // Phase 2.3: 统一标签为中文
+          final translatedName =
+              TagTranslator.translate(tagName, SourceType.vndb);
+          final tagSpoilerLevel = safeInt(tag, 'spoiler') ?? 0;
           tags.add(TagItem(
-            name: tagName,
+            name: translatedName,
             source: 'vndb',
             weight: (tagRating / 3.0).clamp(0.1, 10.0),
+            isSpoiler: tagSpoilerLevel > 0,
           ));
         }
       }
@@ -170,12 +328,33 @@ class VNDBService implements MetadataSourceService {
         company: company,
         summary: safeString(json, 'description') ?? '',
         rating: rating,
+        voteCount: voteCount,
         releaseDate: safeString(json, 'released') ?? '',
         sourceType: SourceType.vndb,
         sourceId: safeString(json, 'id') ?? '',
+        screenshotUrls: _extractScreenshots(json),
       ),
       tags: tags,
     );
+  }
+
+  /// 从 VNDB 响应中提取截图 URL 列表，最多6张
+  /// VNDB 返回的 URL 格式为 https://t.vndb.org/sf/xx/xxxxx.jpg
+  List<String>? _extractScreenshots(Map<String, dynamic> json) {
+    final screenshotsData = safeList(json, 'screenshots');
+    if (screenshotsData == null || screenshotsData.isEmpty) return null;
+
+    final urls = <String>[];
+    for (final s in screenshotsData) {
+      if (s is! Map) continue;
+      final sMap = Map<String, dynamic>.from(s);
+      final url = safeString(sMap, 'url') ?? '';
+      if (url.isEmpty) continue;
+      urls.add(url);
+    }
+
+    if (urls.isEmpty) return null;
+    return urls.take(6).toList();
   }
 }
 
@@ -183,14 +362,14 @@ class SteamService implements MetadataSourceService {
   late Dio _dio;
 
   SteamService({Dio? dio}) {
-    _dio = dio ??
-        Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 20),
-          receiveTimeout: const Duration(seconds: 25),
-          headers: {
-            'User-Agent': 'LunaBox/2.0 (Metadata Scraper)',
-          },
-        ));
+    _dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      receiveTimeout: const Duration(seconds: 15),
+      headers: {
+        'User-Agent': 'LunaBox/2.0 (Metadata Scraper)',
+      },
+    ));
+    applyProxyConfig(dio, _dio);
   }
 
   @override
@@ -198,6 +377,9 @@ class SteamService implements MetadataSourceService {
 
   @override
   String get sourceName => 'Steam';
+
+  @override
+  Future<List<MetadataResult>> fetchByIds(List<String> ids) async => [];
 
   @override
   Future<bool> testConnection() async {
@@ -232,20 +414,24 @@ class SteamService implements MetadataSourceService {
 
       return await _fetchByAppID(bestMatch['id'] as int);
     } catch (e) {
+      fetchLog('[Steam] 查询失败 [$name]: $e');
       return MetadataResult(
           game: Game(id: '', name: '', sourceType: SourceType.steam));
     }
   }
 
   Future<List<Map<String, dynamic>>> _searchByName(String keyword) async {
-    final response = await _dio.get(
-      'https://store.steampowered.com/api/storesearch/',
-      queryParameters: {
-        'term': keyword,
-        'l': 'schinese',
-        'cc': 'CN',
-      },
-    );
+    // P0.2：速率受限请求
+    final response = await executeRateLimited(
+        SourceType.steam,
+        () => _dio.get(
+              'https://store.steampowered.com/api/storesearch/',
+              queryParameters: {
+                'term': keyword,
+                'l': 'schinese',
+                'cc': 'CN',
+              },
+            ));
 
     if (response.statusCode != 200) {
       return [];
@@ -292,14 +478,17 @@ class SteamService implements MetadataSourceService {
   }
 
   Future<MetadataResult> _fetchByAppID(int appID) async {
-    final response = await _dio.get(
-      'https://store.steampowered.com/api/appdetails',
-      queryParameters: {
-        'appids': appID,
-        'l': 'schinese',
-        'cc': 'CN',
-      },
-    );
+    // P0.2：速率受限请求
+    final response = await executeRateLimited(
+        SourceType.steam,
+        () => _dio.get(
+              'https://store.steampowered.com/api/appdetails',
+              queryParameters: {
+                'appids': appID,
+                'l': 'schinese',
+                'cc': 'CN',
+              },
+            ));
 
     if (response.statusCode != 200) {
       return _emptyResult();
@@ -338,7 +527,8 @@ class SteamService implements MetadataSourceService {
     if (metacritic != null) {
       final metaScore = safeInt(metacritic, 'score') ?? 0;
       if (metaScore > 0) {
-        rating = metaScore / 10.0;
+        // P1.3：统一评分归一化（100 分制 → 10 分制）
+        rating = normalizeRating(metaScore.toDouble());
       }
     }
 
@@ -409,9 +599,27 @@ class SteamService implements MetadataSourceService {
         releaseDate: releaseDate,
         sourceType: SourceType.steam,
         sourceId: appIDStr,
+        screenshotUrls: _extractSteamScreenshots(data),
       ),
       tags: tags,
     );
+  }
+
+  /// 从 Steam appdetails 响应中提取截图 URL 列表，使用 path_full，最多6张
+  List<String>? _extractSteamScreenshots(Map<String, dynamic> data) {
+    final screenshots = safeList(data, 'screenshots');
+    if (screenshots == null || screenshots.isEmpty) return null;
+
+    final urls = <String>[];
+    for (final ss in screenshots.take(6)) {
+      if (ss is! Map) continue;
+      final ssMap = Map<String, dynamic>.from(ss);
+      final fullPath = safeString(ssMap, 'path_full') ?? '';
+      if (fullPath.isNotEmpty) {
+        urls.add(fullPath);
+      }
+    }
+    return urls.isEmpty ? null : urls;
   }
 
   MetadataResult _emptyResult() {
@@ -424,19 +632,20 @@ class DLsiteService implements MetadataSourceService {
   late Dio _dio;
 
   DLsiteService({Dio? dio}) {
-    _dio = dio ??
-        Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 25),
-          receiveTimeout: const Duration(seconds: 30),
-          headers: {
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept':
-                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ja,en;q=0.8',
-            'Cookie': 'adultchecked=1; locale=ja',
-          },
-        ));
+    // DLsite HTML 爬虫需要浏览器 UA + Cookie（adultchecked=1 跳过年龄验证）
+    _dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 12),
+      receiveTimeout: const Duration(seconds: 20),
+      headers: {
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en;q=0.8',
+        'Cookie': 'adultchecked=1; locale=ja',
+      },
+    ));
+    applyProxyConfig(dio, _dio);
   }
 
   @override
@@ -444,6 +653,9 @@ class DLsiteService implements MetadataSourceService {
 
   @override
   String get sourceName => 'DLsite';
+
+  @override
+  Future<List<MetadataResult>> fetchByIds(List<String> ids) async => [];
 
   @override
   Future<bool> testConnection() async {
@@ -475,6 +687,7 @@ class DLsiteService implements MetadataSourceService {
 
       return await _fetchByID(bestMatch['id'].toString());
     } catch (e) {
+      fetchLog('[DLsite] 查询失败 [$name]: $e');
       return MetadataResult(
           game: Game(id: '', name: '', sourceType: SourceType.dlsite));
     }
@@ -485,7 +698,9 @@ class DLsiteService implements MetadataSourceService {
     final url =
         'https://www.dlsite.com/maniax/fsr/=/language/jp/keyword/$encodedKeyword/';
 
-    final response = await _dio.get(url);
+    // P0.2：速率受限请求
+    final response =
+        await executeRateLimited(SourceType.dlsite, () => _dio.get(url));
 
     if (response.statusCode != 200) {
       return [];
@@ -556,7 +771,9 @@ class DLsiteService implements MetadataSourceService {
     final url =
         'https://www.dlsite.com/$prefix/work/=/product_id/${id.toUpperCase()}.html';
 
-    final response = await _dio.get(url);
+    // P0.2：速率受限请求
+    final response =
+        await executeRateLimited(SourceType.dlsite, () => _dio.get(url));
 
     if (response.statusCode != 200) {
       return _emptyResult();
@@ -625,7 +842,10 @@ class DLsiteService implements MetadataSourceService {
     document.querySelectorAll('.main_genre a').forEach((a) {
       final tagName = a.text.trim();
       if (tagName.isNotEmpty) {
-        tags.add(TagItem(name: tagName, source: 'dlsite', weight: 1.0));
+        // Phase 2.3: 统一日文标签为中文
+        final translatedName =
+            TagTranslator.translate(tagName, SourceType.dlsite);
+        tags.add(TagItem(name: translatedName, source: 'dlsite', weight: 1.0));
       }
     });
 
@@ -639,9 +859,60 @@ class DLsiteService implements MetadataSourceService {
         releaseDate: releaseDate,
         sourceType: SourceType.dlsite,
         sourceId: id,
+        screenshotUrls: _extractDlsiteScreenshots(document),
       ),
       tags: tags,
     );
+  }
+
+  /// 从 DLsite 详情页提取游戏截图 URL 列表，最多6张
+  List<String>? _extractDlsiteScreenshots(dynamic document) {
+    final urls = <String>[];
+    final seen = <String>{};
+
+    // 方式1: 从 .work_slider 区域提取（新版页面结构）
+    document.querySelectorAll('.work_slider .slider_item img').forEach((img) {
+      final src = img.attributes['data-src'] ?? img.attributes['src'] ?? '';
+      if (src.isEmpty) return;
+      final normalized = _normalizeURL(src);
+      if (normalized.isEmpty || seen.contains(normalized)) return;
+      if (normalized.contains('_img_main') || normalized.contains('_img_smp'))
+        return;
+      seen.add(normalized);
+      urls.add(normalized);
+    });
+
+    // 方式2: 从 .work_sample 链接区域提取（经典页面结构）
+    if (urls.isEmpty) {
+      document.querySelectorAll('.work_sample_images a').forEach((link) {
+        final href = link.attributes['href'] ?? '';
+        if (href.isEmpty) return;
+        final normalized = _normalizeURL(href);
+        if (normalized.isEmpty || seen.contains(normalized)) return;
+        if (normalized.contains('_img_main') || normalized.contains('_img_smp'))
+          return;
+        seen.add(normalized);
+        urls.add(normalized);
+      });
+    }
+
+    // 方式3: 从所有包含 _sample 或 _smp 的图片链接提取（兜底）
+    if (urls.isEmpty) {
+      document.querySelectorAll('a').forEach((link) {
+        final href = link.attributes['href'] ?? '';
+        if (href.isEmpty) return;
+        final normalized = _normalizeURL(href);
+        if (normalized.isEmpty || seen.contains(normalized)) return;
+        if (!normalized.contains('_sample') && !normalized.contains('_smp'))
+          return;
+        if (normalized.contains('_img_main')) return;
+        seen.add(normalized);
+        urls.add(normalized);
+      });
+    }
+
+    if (urls.isEmpty) return null;
+    return urls.take(6).toList();
   }
 
   String? _extractFirstSrcSet(String? srcset) {
@@ -697,19 +968,20 @@ class ErogameScapeService implements MetadataSourceService {
       'https://erogamescape.org/~ap2/ero/toukei_kaiseki';
 
   ErogameScapeService({Dio? dio}) {
-    _dio = dio ??
-        Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 25),
-          receiveTimeout: const Duration(seconds: 30),
-          headers: {
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept':
-                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ja,en;q=0.8',
-            'Referer': _baseURL,
-          },
-        ));
+    // ErogameScape HTML 爬虫需要浏览器 UA + Referer
+    _dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 12),
+      receiveTimeout: const Duration(seconds: 20),
+      headers: {
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en;q=0.8',
+        'Referer': _baseURL,
+      },
+    ));
+    applyProxyConfig(dio, _dio);
   }
 
   @override
@@ -717,6 +989,9 @@ class ErogameScapeService implements MetadataSourceService {
 
   @override
   String get sourceName => 'ErogameScape';
+
+  @override
+  Future<List<MetadataResult>> fetchByIds(List<String> ids) async => [];
 
   @override
   Future<bool> testConnection() async {
@@ -748,21 +1023,25 @@ class ErogameScapeService implements MetadataSourceService {
 
       return await _fetchByID(bestMatch['id'].toString());
     } catch (e) {
+      fetchLog('[ErogameScape] 查询失败 [$name]: $e');
       return MetadataResult(
           game: Game(id: '', name: '', sourceType: SourceType.erogamescape));
     }
   }
 
   Future<List<Map<String, dynamic>>> _searchByName(String keyword) async {
-    final response = await _dio.get(
-      '$_baseURL/kensaku.php',
-      queryParameters: {
-        'category': 'game',
-        'word_category': 'name',
-        'mode': 'normal',
-        'word': keyword,
-      },
-    );
+    // P0.2：速率受限请求
+    final response = await executeRateLimited(
+        SourceType.erogamescape,
+        () => _dio.get(
+              '$_baseURL/kensaku.php',
+              queryParameters: {
+                'category': 'game',
+                'word_category': 'name',
+                'mode': 'normal',
+                'word': keyword,
+              },
+            ));
 
     if (response.statusCode != 200) {
       return [];
@@ -828,10 +1107,13 @@ class ErogameScapeService implements MetadataSourceService {
   }
 
   Future<MetadataResult> _fetchByID(String id) async {
-    final response = await _dio.get(
-      '$_baseURL/game.php',
-      queryParameters: {'game': id},
-    );
+    // P0.2：速率受限请求
+    final response = await executeRateLimited(
+        SourceType.erogamescape,
+        () => _dio.get(
+              '$_baseURL/game.php',
+              queryParameters: {'game': id},
+            ));
 
     if (response.statusCode != 200) {
       return _emptyResult();
@@ -884,8 +1166,9 @@ class ErogameScapeService implements MetadataSourceService {
         final ratingText = el.text.trim();
         final match = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(ratingText);
         if (match != null) {
-          rating = double.tryParse(match.group(1) ?? '') ?? 0.0;
-          if (rating > 10) rating = rating / 10.0;
+          // P1.3：统一评分归一化
+          rating =
+              normalizeRating(double.tryParse(match.group(1) ?? '') ?? 0.0);
           break;
         }
       }
@@ -898,7 +1181,11 @@ class ErogameScapeService implements MetadataSourceService {
       final erogameText = erogameCell.text;
       for (final token in ['18禁', '非18禁', '抜きゲー', '非抜きゲー', '和姦もの', '陵辱もの']) {
         if (erogameText.contains(token)) {
-          tags.add(TagItem(name: token, source: 'erogamescape', weight: 1.0));
+          // Phase 2.3: 统一日文标签为中文
+          final translatedToken =
+              TagTranslator.translate(token, SourceType.erogamescape);
+          tags.add(TagItem(
+              name: translatedToken, source: 'erogamescape', weight: 1.0));
         }
       }
     }
@@ -920,10 +1207,25 @@ class ErogameScapeService implements MetadataSourceService {
       row.querySelectorAll('td a').forEach((a) {
         final tagName = a.text.trim();
         if (tagName.isNotEmpty) {
-          tags.add(TagItem(name: tagName, source: 'erogamescape', weight: 1.0));
+          // Phase 2.3: 统一日文标签为中文
+          final translatedName =
+              TagTranslator.translate(tagName, SourceType.erogamescape);
+          tags.add(TagItem(
+              name: translatedName, source: 'erogamescape', weight: 1.0));
         }
       });
     });
+
+    // 提取简介（ErogameScape 之前完全缺失，Phase 2.2 修复）
+    // ErogameScape 的简介通常在 #comment 或 .review 元素中
+    String summary = '';
+    for (final selector in ['#comment', '.review', '#intro', '#content_text']) {
+      final summaryEl = document.querySelector(selector);
+      if (summaryEl != null) {
+        summary = summaryEl.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (summary.isNotEmpty) break;
+      }
+    }
 
     return MetadataResult(
       game: Game(
@@ -931,13 +1233,64 @@ class ErogameScapeService implements MetadataSourceService {
         name: title,
         coverUrl: coverUrl,
         company: company,
+        summary: summary,
         releaseDate: releaseDate,
         rating: rating.clamp(0.0, 10.0),
         sourceType: SourceType.erogamescape,
         sourceId: id,
+        screenshotUrls: _extractErogameScreenshots(document),
       ),
       tags: tags,
     );
+  }
+
+  /// 从 ErogameScape 详情页提取游戏截图 URL 列表，最多6张
+  List<String>? _extractErogameScreenshots(dynamic document) {
+    final urls = <String>[];
+    final seen = <String>{};
+
+    document.querySelectorAll('#game_images a').forEach((link) {
+      final href = link.attributes['href'] ?? '';
+      if (href.isEmpty) return;
+      final normalized = _normalizeErogameUrl(href);
+      if (normalized.isEmpty || seen.contains(normalized)) return;
+      if (!normalized.contains('.jpg') &&
+          !normalized.contains('.jpeg') &&
+          !normalized.contains('.png') &&
+          !normalized.contains('.gif')) return;
+      seen.add(normalized);
+      urls.add(normalized);
+    });
+
+    if (urls.isEmpty) {
+      document.querySelectorAll('table a img').forEach((img) {
+        final parentLink = img.parent;
+        if (parentLink == null) return;
+        final href = parentLink.attributes['href'] ?? '';
+        if (href.isEmpty) return;
+        final normalized = _normalizeErogameUrl(href);
+        if (normalized.isEmpty || seen.contains(normalized)) return;
+        if (!normalized.contains('.jpg') &&
+            !normalized.contains('.jpeg') &&
+            !normalized.contains('.png')) return;
+        if (normalized.contains('main_image')) return;
+        seen.add(normalized);
+        urls.add(normalized);
+      });
+    }
+
+    if (urls.isEmpty) return null;
+    return urls.take(6).toList();
+  }
+
+  String _normalizeErogameUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return '';
+    if (value.startsWith('http://') || value.startsWith('https://'))
+      return value;
+    if (value.startsWith('//')) return 'https:$value';
+    if (value.startsWith('/')) return '$_baseURL$value';
+    return '$_baseURL/$value';
   }
 
   String _normalizeJapaneseDate(String raw) {
@@ -976,16 +1329,17 @@ class YmgalService implements MetadataSourceService {
   DateTime? _tokenExpiresAt;
 
   YmgalService({Dio? dio}) {
-    _dio = dio ??
-        Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 20),
-          receiveTimeout: const Duration(seconds: 25),
-          headers: {
-            'User-Agent': 'LunaBox/2.0 (Metadata Scraper)',
-            'version': '1',
-            'Accept': 'application/json;charset=utf-8',
-          },
-        ));
+    // Ymgal API 需要 version 和 Accept 头，否则返回 HTML 而非 JSON
+    _dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      receiveTimeout: const Duration(seconds: 15),
+      headers: {
+        'User-Agent': 'LunaBox/2.0 (Metadata Scraper)',
+        'version': '1',
+        'Accept': 'application/json;charset=utf-8',
+      },
+    ));
+    applyProxyConfig(dio, _dio);
   }
 
   @override
@@ -993,6 +1347,9 @@ class YmgalService implements MetadataSourceService {
 
   @override
   String get sourceName => '月幕GAL';
+
+  @override
+  Future<List<MetadataResult>> fetchByIds(List<String> ids) async => [];
 
   @override
   Future<bool> testConnection() async {
@@ -1017,15 +1374,24 @@ class YmgalService implements MetadataSourceService {
         return _emptyResult();
       }
 
-      final response = await _dio.get(
-        'https://www.ymgal.games/open/archive/search-game',
-        queryParameters: {
-          'mode': 'accurate',
-          'keyword': keyword,
-          'similarity': '70',
-        },
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      );
+      // P0.2：速率受限请求
+      // 对齐 LunaBox：月幕GAL 搜索请求必须携带 `version: 1` 头，
+      // 否则 API 返回 {"success":false,"code":404,"msg":"Not found or incorrect version."}
+      final response = await executeRateLimited(
+          SourceType.ymgal,
+          () => _dio.get(
+                'https://www.ymgal.games/open/archive/search-game',
+                queryParameters: {
+                  'mode': 'accurate',
+                  'keyword': keyword,
+                  'similarity': '70',
+                },
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'version': '1',
+                  'Accept': 'application/json;charset=utf-8',
+                }),
+              ));
 
       if (response.statusCode != 200) {
         return _emptyResult();
@@ -1050,6 +1416,7 @@ class YmgalService implements MetadataSourceService {
 
       return _parseYmgalResponse(game);
     } catch (e) {
+      fetchLog('[Ymgal] 查询失败 [$name]: $e');
       return MetadataResult(
           game: Game(id: '', name: '', sourceType: SourceType.ymgal));
     }
@@ -1063,15 +1430,18 @@ class YmgalService implements MetadataSourceService {
     }
 
     try {
-      final response = await _dio.get(
-        'https://www.ymgal.games/oauth/token',
-        queryParameters: {
-          'grant_type': 'client_credentials',
-          'client_id': 'ymgal',
-          'client_secret': 'luna0327',
-          'scope': 'public',
-        },
-      );
+      // P0.2：速率受限请求（Token 端点同样受限）
+      final response = await executeRateLimited(
+          SourceType.ymgal,
+          () => _dio.get(
+                'https://www.ymgal.games/oauth/token',
+                queryParameters: {
+                  'grant_type': 'client_credentials',
+                  'client_id': 'ymgal',
+                  'client_secret': 'luna0327',
+                  'scope': 'public',
+                },
+              ));
 
       if (response.statusCode != 200) {
         return null;
@@ -1123,7 +1493,8 @@ class YmgalService implements MetadataSourceService {
     } else if (scoreRaw is String) {
       rating = double.tryParse(scoreRaw) ?? 0.0;
     }
-    if (rating > 10) rating = rating / 10.0;
+    // P1.3：统一评分归一化
+    rating = normalizeRating(rating);
 
     return MetadataResult(
       game: Game(
@@ -1145,9 +1516,36 @@ class YmgalService implements MetadataSourceService {
             '',
         sourceType: SourceType.ymgal,
         sourceId: (safeInt(json, 'gid') ?? safeString(json, 'id')).toString(),
+        screenshotUrls: _extractYmgalScreenshots(json),
       ),
       tags: tags,
     );
+  }
+
+  /// 从月幕GAL API 响应中提取截图 URL 列表，兼容多种字段名，最多6张
+  List<String>? _extractYmgalScreenshots(Map<String, dynamic> json) {
+    final screenshotsData = safeList(json, 'screenshots') ??
+        safeList(json, 'imgs') ??
+        safeList(json, 'images') ??
+        safeList(json, 'gallery');
+
+    if (screenshotsData == null || screenshotsData.isEmpty) return null;
+
+    final urls = <String>[];
+    for (final item in screenshotsData.take(6)) {
+      if (item is String && item.isNotEmpty) {
+        urls.add(item);
+      } else if (item is Map) {
+        final itemMap = Map<String, dynamic>.from(item);
+        final url = safeString(itemMap, 'url') ??
+            safeString(itemMap, 'path') ??
+            safeString(itemMap, 'src') ??
+            safeString(itemMap, 'img') ??
+            '';
+        if (url.isNotEmpty) urls.add(url);
+      }
+    }
+    return urls.isEmpty ? null : urls;
   }
 
   MetadataResult _emptyResult() {
@@ -1157,19 +1555,29 @@ class YmgalService implements MetadataSourceService {
 }
 
 class MetadataServiceFactory {
-  static MetadataSourceService getService(SourceType sourceType) {
+  /// 创建数据源服务实例
+  ///
+  /// [dio] 传入时，各服务会从其继承代理配置（httpClientAdapter）。
+  /// 不传时各服务使用自建的无代理 Dio（仅用于独立测试场景）。
+  static MetadataSourceService getService(SourceType sourceType, {Dio? dio}) {
     if (sourceType == SourceType.bangumi) {
-      return BangumiMirrorService();
+      return BangumiMirrorService(dio: dio);
     } else if (sourceType == SourceType.vndb) {
-      return VNDBService();
+      return VNDBService(dio: dio);
     } else if (sourceType == SourceType.steam) {
-      return SteamService();
+      return SteamService(dio: dio);
     } else if (sourceType == SourceType.dlsite) {
-      return DLsiteService();
+      return DLsiteService(dio: dio);
     } else if (sourceType == SourceType.erogamescape) {
-      return ErogameScapeService();
+      return ErogameScapeService(dio: dio);
     } else if (sourceType == SourceType.ymgal) {
-      return YmgalService();
+      return YmgalService(dio: dio);
+    } else if (sourceType == SourceType.touchgal) {
+      return TouchGalService(dio: dio);
+    } else if (sourceType == SourceType.hikarinagi) {
+      return HikarinagiService(dio: dio);
+    } else if (sourceType == SourceType.kun) {
+      return KunService(dio: dio);
     } else {
       throw ArgumentError('Unsupported source type: $sourceType');
     }

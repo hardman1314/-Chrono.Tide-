@@ -89,11 +89,7 @@ class FileSizePrefetchService {
     try {
       debugPrint('[SIZE-PREFETCH] 🔄 开始网络获取 | gameId=$gameId | path=$gamePath');
 
-      if (!OpenListService.isRunning) {
-        debugPrint('[SIZE-PREFETCH] ⚠️ OpenList未运行，跳过');
-        return null;
-      }
-
+      // getGameDownloadUrl 内部已实现按需启动，无需手动检查 isRunning
       final directUrl = await OpenListService.getGameDownloadUrl(gamePath);
 
       if (directUrl == null || directUrl.isEmpty) {

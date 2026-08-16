@@ -6,12 +6,12 @@ class DownloadProgressBar extends StatelessWidget {
   final Color fillColor;
   final double width;
 
-  const DownloadProgressBar({
+  DownloadProgressBar({
     super.key,
     required this.progress,
-    this.fillColor = const Color(0xFFB4D4FF),
+    Color? fillColor,
     this.width = 465,
-  });
+  }) : fillColor = fillColor ?? AppColors.infoBlue.withOpacity(0.3);
 
   @override
   Widget build(BuildContext context) {
@@ -20,12 +20,12 @@ class DownloadProgressBar extends StatelessWidget {
       child: Container(
         height: 21,
         decoration: BoxDecoration(
-          color: const Color(0xFFF0E6D2),
+          color: AppColors.placeholderCover,
           borderRadius: BorderRadius.circular(4),
           border: Border.all(color: AppColors.border, width: 2),
           boxShadow: [
             BoxShadow(
-              color: const Color(0x1A8B7355),
+              color: AppColors.borderLight,
               offset: const Offset(0, 2),
               blurRadius: 4,
             ),
@@ -34,7 +34,10 @@ class DownloadProgressBar extends StatelessWidget {
         clipBehavior: Clip.hardEdge,
         child: Stack(
           children: [
-            FractionallySizedBox(
+            AnimatedFractionallySizedBox(
+              // UX-11: 进度变化平滑过渡，消除离散跳跃造成的视觉闪烁
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
               widthFactor: progress.clamp(0.0, 1.0),
               alignment: Alignment.centerLeft,
               child: Container(
@@ -42,7 +45,7 @@ class DownloadProgressBar extends StatelessWidget {
                   border: Border(
                     right: BorderSide(color: AppColors.border, width: 2),
                   ),
-                  color: AppColors.selectedBlue,
+                  color: AppColors.selectedAccent,
                 ),
                 child: CustomPaint(
                   painter: _StripedPainter(),
@@ -74,7 +77,7 @@ class ExtractSubBar extends StatelessWidget {
       child: Container(
         height: 5,
         decoration: BoxDecoration(
-          color: const Color(0xFFF0E6D2),
+          color: AppColors.placeholderCover,
           borderRadius: BorderRadius.circular(3),
           border: Border.all(color: AppColors.border, width: 2),
           boxShadow: [
@@ -88,13 +91,16 @@ class ExtractSubBar extends StatelessWidget {
         clipBehavior: Clip.hardEdge,
         child: Align(
           alignment: Alignment.centerLeft,
-          child: FractionallySizedBox(
+          child: AnimatedFractionallySizedBox(
+            // UX-11: 解压子进度条平滑过渡
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
             widthFactor: progress.clamp(0.0, 1.0),
             child: Container(
               height: 5,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(3),
-                color: const Color(0xFFF6D04D),
+                color: AppColors.starGold,
               ),
               child: CustomPaint(
                 painter: _YellowStripePainter(),

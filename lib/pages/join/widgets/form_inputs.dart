@@ -1,7 +1,7 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import '../join_controller.dart';
-import '../../../widgets/interactive_wrapper.dart';
+import '../../../theme/app_colors.dart';
+import 'field_lock_button.dart';
 
 class CoverSection extends StatelessWidget {
   final JoinController controller;
@@ -10,105 +10,166 @@ class CoverSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasCover = controller.coverFilePath != null;
-
-    return InteractiveWrapper(
-      onTap: () => controller.pickCover(),
-      child: Transform.rotate(
-        angle: -0.035,
-        child: Container(
-          width: 147,
-          height: 220,
-          decoration: BoxDecoration(
-            color: const Color(0xFFE9E0D1),
-            border: Border.all(color: const Color(0xFF8B7355), width: 2),
-            boxShadow: [
-              BoxShadow(
-                  color: const Color(0xFF8B7355),
-                  offset: const Offset(4, 5),
-                  blurRadius: 0)
-            ],
-            borderRadius: BorderRadius.circular(4),
-          ),
-          clipBehavior: Clip.hardEdge,
-          child: hasCover
-              ? Stack(fit: StackFit.expand, children: [
-                  Transform.rotate(
-                      angle: 0.035,
-                      child: Image.file(File(controller.coverFilePath!),
-                          width: double.infinity,
-                          height: double.infinity,
-                          fit: BoxFit.cover)),
-                  Positioned(
-                      top: 6,
-                      right: 6,
-                      child: InteractiveWrapper(
-                          onTap: () => controller.removeCover(),
-                          hoverScale: 1.1,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius: BorderRadius.circular(10)),
-                            child: Icon(Icons.close_rounded,
-                                size: 14, color: Colors.white),
-                          )))
-                ])
-              : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Icon(Icons.add, size: 40, color: const Color(0xFF8B7355)),
-                  const SizedBox(height: 12),
-                  Text('添加封面',
-                      style: TextStyle(
-                          fontFamily: 'Zhi Mang Xing',
-                          fontSize: 20,
-                          letterSpacing: 2.0,
-                          color: const Color(0xFF8B7355)))
-                ]),
-        ),
-      ),
-    );
+    return CoverSectionWithLock(controller: controller);
   }
 }
 
-class NameInput extends StatelessWidget {
+class NameInput extends StatefulWidget {
   final JoinController controller;
 
   const NameInput({super.key, required this.controller});
 
   @override
+  State<NameInput> createState() => _NameInputState();
+}
+
+class _NameInputState extends State<NameInput> {
+  bool _hasInteracted = false;
+  bool _isSwitchHovered = false;
+  bool get _showError =>
+      _hasInteracted && widget.controller.nameController.text.trim().isEmpty;
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 67,
-      decoration: BoxDecoration(
-          color: const Color(0xFFFDFBF7),
-          border: Border.all(color: const Color(0xFF8B7355), width: 2),
-          boxShadow: [
-            BoxShadow(
-                color: const Color(0xFF8B7355).withOpacity(0.2),
-                offset: const Offset(2, 3),
-                blurRadius: 0)
-          ]),
-      padding: const EdgeInsets.all(14),
-      child: TextField(
-        controller: controller.nameController,
-        style: TextStyle(
-            fontFamily: 'Zhi Mang Xing',
-            fontSize: 24,
-            letterSpacing: 2.0,
-            color: const Color(0xFFC4B3A1)),
-        decoration: InputDecoration(
-            hintText: '输入名字',
-            hintStyle: TextStyle(
-                fontFamily: 'Zhi Mang Xing',
-                fontSize: 24,
-                letterSpacing: 2.0,
-                color: const Color(0xFFC4B3A1)),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
-            isDense: true),
-        onChanged: (_) => controller.notifyListeners(),
+    final controller = widget.controller;
+    // 双标题：右下角显示"另一个标题"，点击切换
+    final canToggle = controller.canToggleTitle;
+    final otherTitle = controller.usingMetadataTitle
+        ? controller.originalTitle
+        : (controller.metadataTitle ?? '');
+    final otherLabel = controller.usingMetadataTitle ? '原标题' : '元数据标题';
+    final showSwitch = canToggle && otherTitle.isNotEmpty;
+
+    return _LockableField(
+      isLocked: controller.nameLocked,
+      onToggleLock: () => controller.toggleNameLock(),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Stack(
+            children: [
+              Container(
+                height: 67,
+                decoration: BoxDecoration(
+                    color: AppColors.background,
+                    border: Border.all(
+                      color: controller.nameLocked
+                          ? AppColors.primaryText
+                          : (_showError
+                              ? AppColors.dangerRed
+                              : AppColors.border),
+                      width: controller.nameLocked ? 3 : 2,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                          color: AppColors.shadowColor,
+                          offset: const Offset(2, 3),
+                          blurRadius: 0)
+                    ]),
+                padding: const EdgeInsets.all(14),
+                child: TextField(
+                  controller: controller.nameController,
+                  style: TextStyle(
+                      fontFamily: 'ZhiMangXing',
+                      fontSize: 24,
+                      letterSpacing: 2.0,
+                      color: AppColors.primaryText),
+                  decoration: InputDecoration(
+                      hintText: '输入名字',
+                      hintStyle: TextStyle(
+                          fontFamily: 'ZhiMangXing',
+                          fontSize: 24,
+                          letterSpacing: 2.0,
+                          color: AppColors.placeholderText),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: EdgeInsets.zero,
+                      isDense: true),
+                  onChanged: (_) {
+                    _hasInteracted = true;
+                    // ignore: invalid_use_of_protected_member, invalid_use_of_visible_for_testing_member
+                    controller.notifyListeners();
+                    setState(() {});
+                  },
+                  onTap: () => _hasInteracted = true,
+                ),
+              ),
+              // 双标题切换：右下角小字显示另一个标题，点击切换
+              if (showSwitch)
+                Positioned(
+                  right: 6,
+                  bottom: 5,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    onEnter: (_) => setState(() => _isSwitchHovered = true),
+                    onExit: (_) => setState(() => _isSwitchHovered = false),
+                    child: GestureDetector(
+                      onTap: () {
+                        controller.toggleTitlePreference();
+                        setState(() {});
+                      },
+                      child: Container(
+                        constraints: const BoxConstraints(maxWidth: 180),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.background.withOpacity(0.88),
+                          borderRadius: BorderRadius.circular(2),
+                          border: _isSwitchHovered
+                              ? Border.all(
+                                  color: AppColors.infoBlue, width: 0.8)
+                              : null,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.swap_horiz,
+                              size: 11,
+                              color: AppColors.infoBlue,
+                            ),
+                            const SizedBox(width: 3),
+                            Flexible(
+                              child: Text(
+                                '$otherLabel: $otherTitle',
+                                style: TextStyle(
+                                  fontFamily: 'Inter',
+                                  fontSize: 10,
+                                  color: AppColors.secondaryText,
+                                  decoration: _isSwitchHovered
+                                      ? TextDecoration.underline
+                                      : null,
+                                  decorationColor: AppColors.infoBlue,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          // UX-05: 名称为空时的实时错误提示
+          if (_showError)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 4),
+              child: Text(
+                '游戏名称不能为空',
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.dangerRed,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -121,37 +182,46 @@ class TagsInput extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 51,
-      decoration: BoxDecoration(
-          color: const Color(0xFFFDFBF7),
-          border: Border.all(color: const Color(0xFF8B7355), width: 2),
-          boxShadow: [
-            BoxShadow(
-                color: const Color(0xFF8B7355).withOpacity(0.2),
-                offset: const Offset(2, 3),
-                blurRadius: 0)
-          ]),
-      padding: const EdgeInsets.all(12),
-      child: TextField(
-        controller: controller.tagsController,
-        style: TextStyle(
-            fontFamily: 'Inter',
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: const Color(0xFFC4B3A1)),
-        decoration: InputDecoration(
-            hintText: '标签（如：治愈, 废萌）',
-            hintStyle: TextStyle(
-                fontFamily: 'Inter',
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: const Color(0xFFC4B3A1)),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
-            isDense: true),
+    return _LockableField(
+      isLocked: controller.tagsLocked,
+      onToggleLock: () => controller.toggleTagsLock(),
+      child: Container(
+        height: 51,
+        decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(
+              color: controller.tagsLocked
+                  ? AppColors.primaryText
+                  : AppColors.border,
+              width: controller.tagsLocked ? 3 : 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                  color: AppColors.shadowColor,
+                  offset: const Offset(2, 3),
+                  blurRadius: 0)
+            ]),
+        padding: const EdgeInsets.all(12),
+        child: TextField(
+          controller: controller.tagsController,
+          style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.primaryText),
+          decoration: InputDecoration(
+              hintText: '标签（如：治愈, 废萌）',
+              hintStyle: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.placeholderText),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: EdgeInsets.zero,
+              isDense: true),
+        ),
       ),
     );
   }
@@ -164,37 +234,46 @@ class DeveloperInput extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 51,
-      decoration: BoxDecoration(
-          color: const Color(0xFFFDFBF7),
-          border: Border.all(color: const Color(0xFF8B7355), width: 2),
-          boxShadow: [
-            BoxShadow(
-                color: const Color(0xFF8B7355).withOpacity(0.2),
-                offset: const Offset(2, 3),
-                blurRadius: 0)
-          ]),
-      padding: const EdgeInsets.all(12),
-      child: TextField(
-        controller: controller.developerController,
-        style: TextStyle(
-            fontFamily: 'Inter',
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: const Color(0xFFC4B3A1)),
-        decoration: InputDecoration(
-            hintText: '会社（开发商）',
-            hintStyle: TextStyle(
-                fontFamily: 'Inter',
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: const Color(0xFFC4B3A1)),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
-            isDense: true),
+    return _LockableField(
+      isLocked: controller.developerLocked,
+      onToggleLock: () => controller.toggleDeveloperLock(),
+      child: Container(
+        height: 51,
+        decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(
+              color: controller.developerLocked
+                  ? AppColors.primaryText
+                  : AppColors.border,
+              width: controller.developerLocked ? 3 : 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                  color: AppColors.shadowColor,
+                  offset: const Offset(2, 3),
+                  blurRadius: 0)
+            ]),
+        padding: const EdgeInsets.all(12),
+        child: TextField(
+          controller: controller.developerController,
+          style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.primaryText),
+          decoration: InputDecoration(
+              hintText: '会社（开发商）',
+              hintStyle: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.placeholderText),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: EdgeInsets.zero,
+              isDense: true),
+        ),
       ),
     );
   }
@@ -207,42 +286,84 @@ class DescInput extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 360),
-      decoration: BoxDecoration(
-          color: const Color(0xFFFDFBF7),
-          border: Border.all(color: const Color(0xFF8B7355), width: 2),
-          boxShadow: [
-            BoxShadow(
-                color: const Color(0xFF8B7355).withOpacity(0.2),
-                offset: const Offset(2, 3),
-                blurRadius: 0)
-          ]),
-      padding: const EdgeInsets.all(18),
-      child: TextField(
-        controller: controller.descController,
-        style: TextStyle(
-            fontFamily: 'Inter',
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: const Color(0xFFC4B3A1)),
-        maxLines: null,
-        expands: false,
-        textAlignVertical: TextAlignVertical.top,
-        decoration: InputDecoration(
-            hintText: '输入游戏简介...',
-            hintStyle: TextStyle(
-                fontFamily: 'Inter',
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: const Color(0xFFC4B3A1)),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
-            isDense: true),
+    return _LockableField(
+      isLocked: controller.descLocked,
+      onToggleLock: () => controller.toggleDescLock(),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(
+              color: controller.descLocked
+                  ? AppColors.primaryText
+                  : AppColors.border,
+              width: controller.descLocked ? 3 : 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                  color: AppColors.shadowColor,
+                  offset: const Offset(2, 3),
+                  blurRadius: 0)
+            ]),
+        padding: const EdgeInsets.all(18),
+        child: TextField(
+          controller: controller.descController,
+          style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.primaryText),
+          maxLines: null,
+          expands: true,
+          textAlignVertical: TextAlignVertical.top,
+          decoration: InputDecoration(
+              hintText: '输入游戏简介...',
+              hintStyle: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.placeholderText),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: EdgeInsets.zero,
+              isDense: true),
+        ),
       ),
+    );
+  }
+}
+
+/// 可锁定字段的包装器
+/// 在输入框右上角显示锁定按钮
+class _LockableField extends StatelessWidget {
+  final bool isLocked;
+  final VoidCallback onToggleLock;
+  final Widget child;
+
+  const _LockableField({
+    required this.isLocked,
+    required this.onToggleLock,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        child,
+        // 锁定按钮 - 右上角悬浮
+        Positioned(
+          top: -2,
+          right: -2,
+          child: FieldLockButton(
+            isLocked: isLocked,
+            onToggle: onToggleLock,
+            size: 18,
+          ),
+        ),
+      ],
     );
   }
 }

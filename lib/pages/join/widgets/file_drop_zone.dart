@@ -49,12 +49,12 @@ class FileDropZone extends StatelessWidget {
                                 decoration: BoxDecoration(
                                     shape: BoxShape.rectangle,
                                     color: controller.isDragging
-                                        ? const Color(0xFF4A72A5)
+                                        ? AppColors.infoBlue
                                             .withOpacity(0.08)
-                                        : const Color(0xFFF5F1E8),
+                                        : AppColors.placeholderBg,
                                     border: Border.all(
                                         color: controller.isDragging
-                                            ? const Color(0xFF4A72A5)
+                                            ? AppColors.infoBlue
                                             : AppColors.border,
                                         width: controller.isDragging ? 2 : 1.6),
                                     borderRadius: BorderRadius.circular(8)),
@@ -62,16 +62,16 @@ class FileDropZone extends StatelessWidget {
                                 child: Icon(Icons.folder_outlined,
                                     size: 40,
                                     color: controller.isDragging
-                                        ? const Color(0xFF4A72A5)
+                                        ? AppColors.infoBlue
                                         : AppColors.border)),
                             const SizedBox(height: 16),
                             Text('置入本地游戏文件',
                                 style: TextStyle(
-                                    fontFamily: 'Zhi Mang Xing',
+                                    fontFamily: 'ZhiMangXing',
                                     fontSize: 18,
                                     letterSpacing: 1.2,
                                     color: controller.isDragging
-                                        ? const Color(0xFF4A72A5)
+                                        ? AppColors.infoBlue
                                         : AppColors.border)),
                             const SizedBox(height: 8),
                             Text('支持拖拽游戏文件夹或压缩包（.zip/.rar/.7z/.iso等）',
@@ -113,7 +113,7 @@ class FileInfoDisplay extends StatelessWidget {
               width: 80,
               height: 80,
               decoration: BoxDecoration(
-                  color: const Color(0xFFF5F1E8),
+                  color: AppColors.placeholderBg,
                   border: Border.all(color: AppColors.border, width: 1.6),
                   borderRadius: BorderRadius.circular(8)),
               alignment: Alignment.center,
@@ -133,20 +133,20 @@ class FileInfoDisplay extends StatelessWidget {
           Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
-                  color: const Color(0xFFF5F1E8),
+                  color: AppColors.placeholderBg,
                   border: Border.all(color: AppColors.border, width: 1),
                   borderRadius: BorderRadius.circular(10)),
               child: Text(controller.getFileLabel(fileType),
                   style: TextStyle(
                       fontFamily: 'Inter',
-                      fontSize: 11,
+                      fontSize: 12,
                       color: AppColors.secondaryText))),
           const SizedBox(height: 8),
           Flexible(
               child: Text(controller.selectedFilePath ?? '',
                   style: TextStyle(
                       fontFamily: 'Inter',
-                      fontSize: 10,
+                      fontSize: 12,
                       color: AppColors.placeholderText),
                   textAlign: TextAlign.center,
                   maxLines: 3,

@@ -487,6 +487,27 @@ class _SimpleYamlParser {
     if (_pos < input.length) _pos++;
   }
 
+  /// 跳过当前键对应的值（行内值或下一行嵌套结构）
+  /// 用于跳过 launch/when 等含"列表项为 map"复杂嵌套、且对存档备份无用的字段。
+  /// 这些字段若正常解析会导致 _pos 错乱、后续所有条目丢失。
+  void _skipValue(int baseIndent) {
+    if (_pos >= input.length) return;
+    if (_ch != '\n') {
+      // 行内有值，直接跳到行尾
+      _advanceToNextLine();
+      return;
+    }
+    // 值在下一行：跳过所有缩进大于 baseIndent 的行
+    _advanceToNextLine();
+    while (_pos < input.length) {
+      _skipBlankLinesAndComments();
+      if (_pos >= input.length) break;
+      final indent = _currentIndent();
+      if (indent <= baseIndent) break;
+      _advanceToNextLine();
+    }
+  }
+
   /// 判断当前位置是否在行首空白之后
   bool _isAtLineStart() {
     if (_pos == 0) return true;
@@ -665,6 +686,15 @@ class _SimpleYamlParser {
       if (_pos >= input.length || _ch != ':') break;
       _pos++; // 跳过冒号
       _skipWhitespace();
+
+      // 跳过 launch/when 字段：它们含"列表项为 map"的复杂嵌套结构，
+      // _SimpleYamlParser 无法正确解析，强行解析会导致 _pos 错乱、后续条目全部丢失。
+      // launch（启动 exe 路径）对存档备份无用；
+      // when（os/store/bit 平台条件）因 CTLIB 为 Windows-only 单平台恒为真，可安全忽略。
+      if (key == 'launch' || key == 'when') {
+        _skipValue(baseIndent);
+        continue;
+      }
 
       // 判断值类型
       if (_pos >= input.length || _ch == '\n') {

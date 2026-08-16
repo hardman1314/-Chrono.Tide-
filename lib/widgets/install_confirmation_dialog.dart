@@ -286,7 +286,8 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
-                                color: AppColors.selectedBlue.withOpacity(0.15),
+                                color:
+                                    AppColors.selectedAccent.withOpacity(0.15),
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: Text(
@@ -294,8 +295,8 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                                 style: TextStyle(
                                   fontFamily: 'Inter',
                                   fontWeight: FontWeight.w600,
-                                  fontSize: 11,
-                                  color: AppColors.selectedBlue,
+                                  fontSize: 12,
+                                  color: AppColors.selectedAccent,
                                 ),
                               ),
                             ))
@@ -349,7 +350,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                 style: TextStyle(
                   fontFamily: 'Inter',
                   fontWeight: FontWeight.w400,
-                  fontSize: 11,
+                  fontSize: 12,
                   color: AppColors.secondaryText.withOpacity(0.6),
                 ),
               ),
@@ -499,7 +500,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
             style: TextStyle(
               fontFamily: 'Inter',
               fontWeight: FontWeight.w600,
-              fontSize: 11,
+              fontSize: 12,
               color: AppColors.secondaryText.withOpacity(0.7),
             ),
           ),
@@ -566,7 +567,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
               decoration: BoxDecoration(
                 color: _pathValidationError != null
                     ? AppColors.secondaryText.withOpacity(0.3)
-                    : AppColors.selectedBlue,
+                    : AppColors.selectedAccent,
                 border: Border.all(color: const Color(0x1A000000), width: 1.4),
                 boxShadow: _pathValidationError != null
                     ? []

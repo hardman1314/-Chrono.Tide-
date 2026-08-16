@@ -4,6 +4,8 @@ import '../../theme/app_colors.dart';
 import '../../modules/auth/auth_service.dart';
 import '../../modules/auth/user_model.dart';
 import '../../widgets/interactive_wrapper.dart';
+import '../../widgets/focus_border.dart';
+import 'forgot_password_dialog.dart';
 
 class LoginPage extends StatefulWidget {
   final VoidCallback onLoginSuccess;
@@ -24,10 +26,12 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   String? _errorMessage;
+  // UX-04: 密码可见性切换
+  bool _passwordVisible = false;
 
   Future<void> _handleLogin() async {
     final email = _emailController.text.trim();
-    final password = _passwordController.text.trim();
+    final password = _passwordController.text;
 
     if (email.isEmpty) {
       setState(() => _errorMessage = '请输入邮箱地址');
@@ -154,14 +158,19 @@ class _LoginPageState extends State<LoginPage> {
           controller: _passwordController,
           hint: '密码',
           iconPath: 'assets/images/lock_icon.svg',
-          obscureText: true,
+          isPassword: true,
+          visible: _passwordVisible,
+          onToggleVisible: () =>
+              setState(() => _passwordVisible = !_passwordVisible),
         ),
+        const SizedBox(height: 10),
+        _buildForgotPasswordLink(),
         if (_errorMessage != null) ...[
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: const Color(0xFFFFE6EA),
+              color: AppColors.errorBg,
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: AppColors.dangerRed, width: 1),
             ),
@@ -196,28 +205,30 @@ class _LoginPageState extends State<LoginPage> {
     required String hint,
     required String iconPath,
     bool obscureText = false,
+    bool isPassword = false,
+    bool visible = false,
+    VoidCallback? onToggleVisible,
   }) {
-    return Container(
+    final effectiveObscure = isPassword ? !visible : obscureText;
+    // UX-38: 输入框获得焦点时边框高亮为主题强调色
+    return FocusBorder(
       width: double.infinity,
       height: 51,
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0x1A8B7355),
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
-      ),
+      bgColor: AppColors.background,
+      boxShadow: [
+        BoxShadow(
+          color: AppColors.borderLight,
+          offset: const Offset(2, 2),
+          blurRadius: 0,
+        ),
+      ],
       child: Stack(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(38, 10, 10, 10),
+            padding: EdgeInsets.fromLTRB(38, 10, isPassword ? 44 : 10, 10),
             child: TextField(
               controller: controller,
-              obscureText: obscureText,
+              obscureText: effectiveObscure,
               enabled: !_isLoading,
               style: TextStyle(
                 fontFamily: 'Inter',
@@ -232,11 +243,33 @@ class _LoginPageState extends State<LoginPage> {
                   fontFamily: 'Inter',
                   fontWeight: FontWeight.w500,
                   fontSize: 16,
-                  color: const Color(0x99A08264),
+                  color: AppColors.inputHint,
                 ),
                 border: InputBorder.none,
                 contentPadding: EdgeInsets.zero,
                 isDense: true,
+                // UX-04: 密码可见性切换按钮
+                suffixIcon: isPassword
+                    ? IconButton(
+                        icon: Icon(
+                          visible
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                          size: 20,
+                          color: AppColors.secondaryText,
+                        ),
+                        onPressed: onToggleVisible,
+                        splashRadius: 16,
+                        padding: EdgeInsets.zero,
+                        constraints:
+                            const BoxConstraints(minWidth: 36, minHeight: 36),
+                        tooltip: visible ? '隐藏密码' : '显示密码',
+                      )
+                    : null,
+                suffixIconConstraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
+                ),
               ),
             ),
           ),
@@ -258,8 +291,10 @@ class _LoginPageState extends State<LoginPage> {
         width: double.infinity,
         height: 55,
         decoration: BoxDecoration(
-          color: _isLoading ? const Color(0xFF9DBAEF) : AppColors.selectedBlue,
-          border: Border.all(color: const Color(0x1A000000), width: 1.6),
+          color: _isLoading
+              ? AppColors.infoBlue.withOpacity(0.7)
+              : AppColors.selectedAccent,
+          border: Border.all(color: AppColors.borderLight, width: 1.6),
           boxShadow: [
             BoxShadow(
               color: AppColors.primaryText,
@@ -308,6 +343,33 @@ class _LoginPageState extends State<LoginPage> {
             height: 20 / 14,
             color: AppColors.secondaryText,
             decoration: TextDecoration.underline,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// UX-FP: 忘记密码入口链接，右对齐小字，点击弹出找回账号/密码对话框。
+  Widget _buildForgotPasswordLink() {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: InteractiveWrapper(
+        onTap: () => ForgotPasswordDialog.show(context),
+        hoverScale: 1.0,
+        hoverOffset: const Offset(0, -1),
+        child: Padding(
+          padding: const EdgeInsets.only(right: 2),
+          child: Text(
+            '忘记密码？',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+              height: 18 / 13,
+              color: AppColors.secondaryText,
+              decoration: TextDecoration.underline,
+              decorationColor: AppColors.secondaryText,
+            ),
           ),
         ),
       ),

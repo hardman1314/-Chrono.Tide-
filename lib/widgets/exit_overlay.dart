@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../theme/app_colors.dart';
 
 class ExitOverlay {
   static OverlayEntry? _overlayEntry;
@@ -36,30 +37,11 @@ class _ExitWaitingWidget extends StatefulWidget {
   State<_ExitWaitingWidget> createState() => _ExitWaitingWidgetState();
 }
 
-class _ExitWaitingWidgetState extends State<_ExitWaitingWidget>
-    with TickerProviderStateMixin {
-  late AnimationController _rotationController;
-
-  @override
-  void initState() {
-    super.initState();
-
-    _rotationController = AnimationController(
-      duration: const Duration(milliseconds: 1000),
-      vsync: this,
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _rotationController.dispose();
-    super.dispose();
-  }
-
+class _ExitWaitingWidgetState extends State<_ExitWaitingWidget> {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: const Color(0xFFFDFBF7),
+      color: AppColors.background,
       child: Center(
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 40),
@@ -77,53 +59,45 @@ class _ExitWaitingWidgetState extends State<_ExitWaitingWidget>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              AnimatedBuilder(
-                animation: _rotationController,
-                builder: (context, child) {
-                  return Transform.rotate(
-                    angle: _rotationController.value * 6.28318,
-                    child: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 4,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          const Color(0xFF8B7355),
-                        ),
-                        backgroundColor:
-                            const Color(0xFF8B7355).withOpacity(0.15),
-                      ),
-                    ),
-                  );
-                },
+              // UX-29: 移除容器旋转动画，仅保留 CircularProgressIndicator 自转
+              SizedBox(
+                width: 48,
+                height: 48,
+                child: CircularProgressIndicator(
+                  strokeWidth: 4,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    AppColors.border,
+                  ),
+                  backgroundColor: AppColors.border.withOpacity(0.15),
+                ),
               ),
               const SizedBox(height: 28),
-              const Text(
+              Text(
                 '正在退出',
                 style: TextStyle(
-                  fontFamily: 'Zhi Mang Xing',
+                  fontFamily: 'ZhiMangXing',
                   fontSize: 22,
                   letterSpacing: 2,
-                  color: Color(0xFF8B7355),
+                  color: AppColors.border,
                 ),
               ),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 '请稍候…',
                 style: TextStyle(
                   fontFamily: 'Inter',
                   fontSize: 15,
                   fontWeight: FontWeight.w500,
-                  color: Color(0xFF6D5B4D),
+                  color: AppColors.primaryText,
                 ),
               ),
               const SizedBox(height: 20),
               Text(
                 '程序正在清理资源并安全关闭',
                 style: TextStyle(
-                  fontFamily: 'Mali',
+                  fontFamily: 'Inter',
                   fontSize: 13,
-                  color: const Color(0xFF8B7355).withOpacity(0.5),
+                  color: AppColors.border.withOpacity(0.5),
                 ),
               ),
             ],

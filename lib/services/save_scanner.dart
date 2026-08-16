@@ -239,16 +239,37 @@ class SaveScanner {
       '<winLocalAppData>/$gameName/',
       // 文档/My Games 下的游戏目录
       '<winDocuments>/My Games/$gameName/',
+      // 文档下的游戏目录（部分 Galgame 直接用 Documents/游戏名）
+      '<winDocuments>/$gameName/',
       // 游戏安装目录下的存档文件夹
       '<base>/save/',
       '<base>/saves/',
       '<base>/savedata/',
       '<base>/SaveData/',
       '<base>/Save/',
+      // Galgame 常见存档目录名
+      '<base>/セーブ/', // 日文"存档"
+      '<base>/data/save/',
+      '<base>/GameData/save/',
+      '<base>/SaveDir/',
+      '<base>/g_save/',
       // 游戏安装目录下的存档文件（glob 模式）
       '<base>/save*.dat',
       '<base>/save*.sav',
     ];
+
+    // 去副标题后的游戏名匹配
+    // Galgame 标题常含副标题（如"美少女万華鏡 -理と迷宮の少女-"），
+    // 但 AppData 下的存档目录名通常只有主标题
+    final shortName = _shortenGameName(gameName);
+    if (shortName != gameName && shortName.isNotEmpty) {
+      savePatterns.addAll([
+        '<winAppData>/$shortName/',
+        '<winLocalAppData>/$shortName/',
+        '<winDocuments>/$shortName/',
+        '<winDocuments>/My Games/$shortName/',
+      ]);
+    }
 
     for (final pattern in savePatterns) {
       final expanded = expandPlaceholders(
@@ -284,6 +305,117 @@ class SaveScanner {
       }
     }
 
+    // Galgame 专属：模糊扫描安装目录下含存档关键字的子目录
+    // 覆盖存档目录名不等于游戏标题的情况（日文原名/开发商名/哈希等）
+    final galgameResults = _scanGalgameSaveDirs(installDir);
+    for (final f in galgameResults) {
+      if (!results.any((r) => r.filePath == f.filePath)) {
+        results.add(f);
+      }
+    }
+
+    return results;
+  }
+
+  /// 去掉游戏名的副标题部分，返回简化版名称
+  ///
+  /// Galgame 标题常含副标题（如"美少女万華鏡 -理と迷宮の少女-"），
+  /// 但 AppData 下的存档目录名通常只有主标题。
+  /// 此方法去掉 ` - `、`～`、`::` 等分隔符后的内容。
+  static String _shortenGameName(String name) {
+    for (final sep in [' - ', ' — ', ' ～', '～', '::', ' 〜', ' Vol.']) {
+      final idx = name.indexOf(sep);
+      if (idx > 0) {
+        return name.substring(0, idx).trim();
+      }
+    }
+    return name;
+  }
+
+  /// Galgame 专属：模糊扫描安装目录下含存档关键字的子目录
+  ///
+  /// Galgame 存档目录名通常不等于游戏标题（日文原名/开发商名/哈希等），
+  /// 通用模式 `<winAppData>/$gameName/` 几乎无法命中。
+  /// 此方法扫描安装目录下的一级和二级子目录，匹配含存档关键字的目录名。
+  List<DetectedSaveFile> _scanGalgameSaveDirs(String installDir) {
+    final results = <DetectedSaveFile>[];
+    // 存档目录名关键字（小写匹配）
+    const saveKeywords = [
+      'save', 'savedata', 'save_data', 'savedir',
+      'セーブ', 'savegame',
+    ];
+    // 排除关键字（避免误报）
+    const excludeKeywords = ['screensaver', 'screenshot'];
+
+    try {
+      final gameDir = Directory(installDir);
+      if (!gameDir.existsSync()) return results;
+
+      // 扫描一级子目录
+      for (final entity in gameDir.listSync(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final dirName = path.basename(entity.path).toLowerCase();
+
+        final isSaveDir =
+            saveKeywords.any((kw) => dirName.contains(kw.toLowerCase()));
+        final isExcluded =
+            excludeKeywords.any((kw) => dirName.contains(kw));
+
+        if (isSaveDir && !isExcluded) {
+          final detected = _entityToDetected(entity, tag: 'save');
+          if (detected != null) results.add(detected);
+        }
+
+        // 扫描二级子目录（部分 Galgame 存档在 data/save 等二级目录）
+        if (results.length < 30) {
+          try {
+            for (final sub in entity.listSync(followLinks: false)) {
+              if (sub is! Directory) continue;
+              final subName = path.basename(sub.path).toLowerCase();
+              final subIsSave =
+                  saveKeywords.any((kw) => subName.contains(kw.toLowerCase()));
+              final subIsExcluded =
+                  excludeKeywords.any((kw) => subName.contains(kw));
+              if (subIsSave && !subIsExcluded) {
+                final detected = _entityToDetected(sub, tag: 'save');
+                if (detected != null) results.add(detected);
+              }
+            }
+          } catch (_) {
+            // 子目录遍历失败，跳过
+          }
+        }
+      }
+    } catch (_) {
+      // 安装目录遍历失败，返回空
+    }
+
+    return results;
+  }
+
+  /// 扫描用户自定义的存档路径
+  ///
+  /// 用户可在存档备份对话框的"自定义路径"Tab 中手动添加存档路径。
+  /// 路径可能含占位符（如 `<winAppData>/MyGame`），也可能是绝对路径
+  /// （如 `C:\Users\xxx\AppData\Roaming\MyGame`）。
+  ///
+  /// [customPaths] 用户手动添加的路径列表
+  /// [installDir]  游戏安装目录（用于展开 <base> 等占位符）
+  List<DetectedSaveFile> scanCustomPaths(
+    List<String> customPaths,
+    String installDir,
+  ) {
+    final results = <DetectedSaveFile>[];
+    for (final pathPattern in customPaths) {
+      final expanded = expandPlaceholders(
+        pathPattern,
+        gameName: '',
+        installDir: installDir,
+      );
+      for (final p in expanded) {
+        results.addAll(_resolveGlobAndCollect(p, tag: 'save'));
+      }
+    }
     return results;
   }
 

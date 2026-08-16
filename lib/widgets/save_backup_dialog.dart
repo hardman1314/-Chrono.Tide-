@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_colors.dart';
 import '../services/save_scanner.dart';
 import '../services/save_backup_service.dart';
@@ -127,6 +128,18 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
         manifestEntry: widget.manifestEntry,
       );
 
+      // 合并自定义路径扫描结果（去重）
+      if (_customPaths.isNotEmpty) {
+        final customResults =
+            scanner.scanCustomPaths(_customPaths, widget.installDir);
+        final existingPaths = results.map((f) => f.filePath).toSet();
+        for (final f in customResults) {
+          if (!existingPaths.contains(f.filePath)) {
+            results.add(f);
+          }
+        }
+      }
+
       if (!mounted) return;
       setState(() {
         _detectedFiles.addAll(results);
@@ -210,10 +223,10 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFFFDFBF7),
+        backgroundColor: AppColors.background,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: Color(0xFF8B7355), width: 2),
+          side: BorderSide(color: AppColors.border, width: 2),
         ),
         title: Text(
           '确认删除',
@@ -227,7 +240,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
         content: Text(
           '确定要删除备份「${backup.name}」吗？此操作不可撤销。',
           style: TextStyle(
-            fontFamily: 'Mali',
+            fontFamily: 'Inter',
             fontSize: 15,
             color: AppColors.primaryText,
             height: 1.5,
@@ -245,7 +258,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text('删除',
                 style: TextStyle(
-                    color: AppColors.dangerRed, fontWeight: FontWeight.w700)),
+                    color: AppColors.dangerRed, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -293,10 +306,10 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFFFDFBF7),
+        backgroundColor: AppColors.background,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: Color(0xFF8B7355), width: 2),
+          side: BorderSide(color: AppColors.border, width: 2),
         ),
         title: Text(
           '确认恢复',
@@ -312,7 +325,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
               ? '确定要恢复选中的 ${specificFiles.length} 个文件吗？当前同名文件将被覆盖。'
               : '确定要恢复备份「${backup.name}」的全部文件吗？当前同名文件将被覆盖。',
           style: TextStyle(
-            fontFamily: 'Mali',
+            fontFamily: 'Inter',
             fontSize: 15,
             color: AppColors.primaryText,
             height: 1.5,
@@ -330,8 +343,8 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text('恢复',
                 style: TextStyle(
-                    color: AppColors.selectedBlue,
-                    fontWeight: FontWeight.w700)),
+                    color: AppColors.selectedAccent,
+                    fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -355,11 +368,16 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
   // ============================================================
 
   Future<void> _loadCustomPaths() async {
-    // 从备份服务获取已知的存档路径
-    final savesDir = SaveBackupService.instance.getSavesDir(widget.gameName);
-    final dir = Directory(savesDir);
-    if (dir.existsSync()) {
-      // 已有备份目录，无需额外操作
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList('save_custom_paths_${widget.gameName}') ?? [];
+      if (mounted && saved.isNotEmpty) {
+        setState(() {
+          _customPaths.addAll(saved.where((p) => !_customPaths.contains(p)));
+        });
+      }
+    } catch (e) {
+      debugPrint('[SAVE-BACKUP] 加载自定义路径失败: $e');
     }
   }
 
@@ -391,11 +409,17 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
 
   Future<void> _savePathSettings() async {
     setState(() => _isSavingPaths = true);
-    // 模拟保存延迟
-    await Future.delayed(const Duration(milliseconds: 500));
-    if (!mounted) return;
-    setState(() => _isSavingPaths = false);
-    _showSnackBar('路径设置已保存');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('save_custom_paths_${widget.gameName}', _customPaths);
+      if (!mounted) return;
+      setState(() => _isSavingPaths = false);
+      _showSnackBar('路径设置已保存');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSavingPaths = false);
+      _showSnackBar('保存失败: $e');
+    }
   }
 
   // ============================================================
@@ -442,9 +466,9 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
             color: AppColors.background,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: AppColors.border, width: 2),
-            boxShadow: const [
+            boxShadow: [
               BoxShadow(
-                color: Color(0x218B7355),
+                color: AppColors.shadowColor,
                 offset: Offset(4, 5),
                 blurRadius: 0,
               ),
@@ -524,7 +548,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
         unselectedLabelColor: AppColors.secondaryText,
         labelStyle: const TextStyle(
           fontFamily: 'Inter',
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           fontSize: 14,
         ),
         unselectedLabelStyle: const TextStyle(
@@ -532,7 +556,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
           fontWeight: FontWeight.w600,
           fontSize: 14,
         ),
-        indicatorColor: AppColors.selectedBlue,
+        indicatorColor: AppColors.selectedAccent,
         indicatorWeight: 2.4,
         indicatorSize: TabBarIndicatorSize.tab,
         dividerColor: AppColors.borderLight,
@@ -734,14 +758,14 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
       decoration: BoxDecoration(
         color: AppColors.sidebarBackground,
         border: Border.all(
-          color: isSelected ? AppColors.selectedBlue : AppColors.borderLight,
+          color: isSelected ? AppColors.selectedAccent : AppColors.borderLight,
           width: isSelected ? 1.6 : 1.2,
         ),
         borderRadius: BorderRadius.circular(4),
         boxShadow: isSelected
             ? [
                 BoxShadow(
-                  color: AppColors.selectedBlue.withOpacity(0.15),
+                  color: AppColors.selectedAccent.withOpacity(0.15),
                   offset: const Offset(1, 2),
                   blurRadius: 0,
                 ),
@@ -777,7 +801,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                       }
                     });
                   },
-                  activeColor: AppColors.selectedBlue,
+                  activeColor: AppColors.selectedAccent,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   visualDensity: VisualDensity.compact,
                 ),
@@ -817,18 +841,18 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                           decoration: BoxDecoration(
                             color: file.tag == 'config'
                                 ? AppColors.secondaryText.withOpacity(0.12)
-                                : AppColors.selectedBlue.withOpacity(0.12),
+                                : AppColors.selectedAccent.withOpacity(0.12),
                             borderRadius: BorderRadius.circular(3),
                           ),
                           child: Text(
                             file.tag == 'config' ? '配置' : '存档',
                             style: TextStyle(
                               fontFamily: 'Inter',
-                              fontSize: 10,
+                              fontSize: 12,
                               fontWeight: FontWeight.w600,
                               color: file.tag == 'config'
                                   ? AppColors.secondaryText
-                                  : AppColors.selectedBlue,
+                                  : AppColors.selectedAccent,
                             ),
                           ),
                         ),
@@ -837,7 +861,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                           _formatSize(file.size),
                           style: TextStyle(
                             fontFamily: 'Inter',
-                            fontSize: 11,
+                            fontSize: 12,
                             color: AppColors.secondaryText,
                           ),
                         ),
@@ -846,7 +870,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                           _formatDate(file.lastModified),
                           style: TextStyle(
                             fontFamily: 'Inter',
-                            fontSize: 11,
+                            fontSize: 12,
                             color: AppColors.secondaryText,
                           ),
                         ),
@@ -934,10 +958,10 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
         color: AppColors.sidebarBackground,
         border: Border.all(color: AppColors.border, width: 1.4),
         borderRadius: BorderRadius.circular(4),
-        boxShadow: const [
+        boxShadow: [
           BoxShadow(
-            color: Color(0x108B7355),
-            offset: Offset(2, 2),
+            color: AppColors.shadowColor,
+            offset: const Offset(2, 2),
             blurRadius: 0,
           ),
         ],
@@ -976,7 +1000,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                                   backup.name,
                                   style: TextStyle(
                                     fontFamily: 'Inter',
-                                    fontWeight: FontWeight.w700,
+                                    fontWeight: FontWeight.w600,
                                     fontSize: 14,
                                     color: AppColors.primaryText,
                                   ),
@@ -990,7 +1014,8 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                                     horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
                                   color: backup.isAutoBackup
-                                      ? AppColors.selectedBlue.withOpacity(0.12)
+                                      ? AppColors.selectedAccent
+                                          .withOpacity(0.12)
                                       : AppColors.border.withOpacity(0.12),
                                   borderRadius: BorderRadius.circular(3),
                                 ),
@@ -998,10 +1023,10 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                                   backup.isAutoBackup ? '自动' : '手动',
                                   style: TextStyle(
                                     fontFamily: 'Inter',
-                                    fontSize: 10,
+                                    fontSize: 12,
                                     fontWeight: FontWeight.w600,
                                     color: backup.isAutoBackup
-                                        ? AppColors.selectedBlue
+                                        ? AppColors.selectedAccent
                                         : AppColors.border,
                                   ),
                                 ),
@@ -1015,7 +1040,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                               _formatDate(backup.timestamp),
                               style: TextStyle(
                                 fontFamily: 'Inter',
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: AppColors.secondaryText,
                               ),
                             ),
@@ -1024,7 +1049,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                               '${backup.fileCount} 个文件',
                               style: TextStyle(
                                 fontFamily: 'Inter',
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: AppColors.secondaryText,
                               ),
                             ),
@@ -1033,7 +1058,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                               _formatSize(backup.totalSize),
                               style: TextStyle(
                                 fontFamily: 'Inter',
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: AppColors.secondaryText,
                               ),
                             ),
@@ -1083,7 +1108,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
             padding: const EdgeInsets.symmetric(horizontal: 8),
             decoration: BoxDecoration(
               color: AppColors.background,
-              border: Border.all(color: AppColors.selectedBlue, width: 1.4),
+              border: Border.all(color: AppColors.selectedAccent, width: 1.4),
               borderRadius: BorderRadius.circular(4),
             ),
             child: TextField(
@@ -1141,7 +1166,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                 '文件列表',
                 style: TextStyle(
                   fontFamily: 'Inter',
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                   fontSize: 12,
                   color: AppColors.secondaryText,
                 ),
@@ -1179,7 +1204,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                           entry.key,
                           style: TextStyle(
                             fontFamily: 'Inter',
-                            fontSize: 11,
+                            fontSize: 12,
                             fontWeight: FontWeight.w500,
                             color: AppColors.primaryText,
                           ),
@@ -1190,7 +1215,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                           '→ ${entry.value}',
                           style: TextStyle(
                             fontFamily: 'Inter',
-                            fontSize: 10,
+                            fontSize: 12,
                             color: AppColors.secondaryText,
                           ),
                           maxLines: 1,
@@ -1239,7 +1264,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                   color: danger
                       ? AppColors.dangerRed
                       : primary
-                          ? AppColors.selectedBlue
+                          ? AppColors.selectedAccent
                           : AppColors.secondaryText,
                 ),
                 if (label != null) ...[
@@ -1248,10 +1273,10 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                     label,
                     style: TextStyle(
                       fontFamily: 'Inter',
-                      fontSize: 11,
+                      fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: primary
-                          ? AppColors.selectedBlue
+                          ? AppColors.selectedAccent
                           : AppColors.secondaryText,
                     ),
                   ),
@@ -1279,7 +1304,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
             '当前存档路径',
             style: TextStyle(
               fontFamily: 'Inter',
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               fontSize: 14,
               color: AppColors.border,
             ),
@@ -1359,7 +1384,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
             '添加存档路径',
             style: TextStyle(
               fontFamily: 'Inter',
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               fontSize: 14,
               color: AppColors.border,
             ),
@@ -1450,7 +1475,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
     bool fullWidth = false,
   }) {
     final bgColor =
-        primary ? AppColors.selectedBlue : AppColors.buttonBackground;
+        primary ? AppColors.selectedAccent : AppColors.buttonBackground;
     final textColor = primary ? Colors.white : AppColors.border;
     final borderColor =
         primary ? Colors.black.withOpacity(0.1) : AppColors.border;
@@ -1496,7 +1521,7 @@ class _SaveBackupDialogState extends State<SaveBackupDialog>
                   label,
                   style: TextStyle(
                     fontFamily: 'Inter',
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     fontSize: compact ? 12 : 14,
                     color: textColor,
                   ),

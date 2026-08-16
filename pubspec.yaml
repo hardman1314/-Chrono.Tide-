@@ -1,7 +1,7 @@
 name: chrono_tide
 description: "Chrono Tide - Galgame Manager"
 publish_to: 'none'
-version: 0.9.9
+version: 1.7.0
 
 environment:
   sdk: ^3.5.3
@@ -14,6 +14,8 @@ dependencies:
   flutter_svg: ^2.0.10
   pocketbase: ^0.23.2
   shared_preferences: ^2.2.3
+  shared_preferences_platform_interface: ^2.4.1
+  file: ^7.0.1
   file_picker: ^8.0.0
   auto_size_text: ^3.0.0
   dio: ^5.4.0
@@ -21,10 +23,18 @@ dependencies:
   path_provider: ^2.1.5
   package_info_plus: ^8.0.0
   cached_network_image: ^3.4.1
-  flutter_cache_manager: ^3.3.0
+  flutter_cache_manager: ^3.4.1
+  http: ^1.2.0
   desktop_drop: 0.7.1
+  system_tray: ^2.0.3
+  fl_chart: ^0.69.0
+  archive: ^3.6.1
+  ffi: ^2.1.2
   luna_metadata_sdk:
     path: lib/packages/luna_metadata_sdk
+
+dependency_overrides:
+  uuid: ^4.4.2
 
 dev_dependencies:
   flutter_test:
@@ -38,6 +48,7 @@ flutter:
     - assets/images/
     - assets/images/themes/
     - assets/images/batch_import/
+    - assets/images/app_icon.ico
     - assets/tools/rar_lz4_unzip.exe
     - assets/tools/bz.exe
     - assets/tools/UnRAR.exe
@@ -45,9 +56,12 @@ flutter:
     - assets/tools/ark.x64.dll
     - assets/tools/ark.x64.lgpl.dll
     - assets/tools/bdzshl.x64.dll
+    - assets/magpie/scaling_modes_template.json
+    - assets/data/vndb_tags_zh_cn.json
+    - assets/data/manifest.yaml
 
   fonts:
-    - family: Zhi Mang Xing
+    - family: ZhiMangXing
       fonts:
         - asset: assets/fonts/钟齐志莽行书.ttf
     - family: Mali

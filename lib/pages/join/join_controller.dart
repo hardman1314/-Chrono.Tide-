@@ -1,14 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:dio/dio.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import '../../services/local_game_registry.dart';
 import '../../services/extract_manager.dart';
 import '../../services/global_task_manager.dart';
 import '../../services/metadata_fetcher.dart';
 import 'package:luna_metadata_sdk/luna_metadata_sdk.dart';
 import '../../services/game_data_format.dart';
+import '../../services/screenshot_fetch_service.dart';
+import '../../services/cover_download_service.dart';
 
 enum ScrapeSource { bangumi, vndb }
 
@@ -53,6 +53,26 @@ class JoinController extends ChangeNotifier {
 
   List<Map<String, dynamic>> _scrapeResults = [];
   Map<String, dynamic>? _selectedResult;
+  List<String> _screenshotUrls = [];
+  int _scrapeCoverVersion = 0; // 元数据选择时的封面下载版本号
+  int _selectionGeneration = 0; // 元数据选择次数计数器，用于强制重建左侧UI
+
+  // 双标题管理：
+  // - _originalTitle：导入时从文件夹/文件名提取（不可变）
+  // - _metadataTitle：元数据抓取到的标准游戏名（抓取后赋值）
+  // - _usingMetadataTitle：nameController 当前显示的是否为元数据标题
+  //   抓取后默认切 true（用户已确认）；用户可通过 UI 切换回原标题
+  String _originalTitle = '';
+  String? _metadataTitle;
+  bool _usingMetadataTitle = false;
+
+  // 字段锁定状态：锁定后切换抓取平台时不会覆盖该字段
+  bool _coverLocked = false;
+  bool _nameLocked = false;
+  bool _tagsLocked = false;
+  bool _descLocked = false;
+  bool _developerLocked = false;
+  bool _screenshotLocked = false;
 
   static const List<String> _archiveExts = [
     '.zip',
@@ -86,13 +106,141 @@ class JoinController extends ChangeNotifier {
     this.onSuccess,
     this.onWarning,
     this.onInfo,
-  });
+  }) {
+    // ★ WYSIWYG：监听标题输入框，用户手动编辑时同步 _originalTitle。
+    // 仅在非元数据标题模式下更新，避免 selectScrapeResult / toggleTitlePreference
+    // 等程序化赋值污染 _originalTitle。这样切回"原标题"时拿到的是用户手动编辑
+    // 后的值，而非初始的文件夹名。
+    nameController.addListener(_onNameChanged);
+  }
+
+  /// 标题输入框变化监听：用户手动编辑时同步 _originalTitle
+  ///
+  /// 设计要点：
+  /// - 仅当 _usingMetadataTitle == false 时更新（即当前显示的不是元数据标题）
+  ///   这样 selectScrapeResult（会先置 _usingMetadataTitle=true 再赋值）和
+  ///   toggleTitlePreference 切到元数据标题时，不会污染 _originalTitle
+  /// - toggleTitlePreference 切回原标题时（_usingMetadataTitle=false），赋值
+  ///   _originalTitle 给 nameController，本监听器把它写回 _originalTitle，值不变
+  void _onNameChanged() {
+    if (!_usingMetadataTitle) {
+      _originalTitle = nameController.text;
+    }
+  }
 
   // Getters
   String? get coverFilePath => _coverFilePath;
   String? get selectedFilePath => _selectedFilePath;
   String? get selectedFileName => _selectedFileName;
   bool get isDragging => _isDragging;
+  List<String> get screenshotUrls => _screenshotUrls;
+  int get selectionGeneration => _selectionGeneration;
+
+  // 双标题 getter
+  /// 原标题：导入时从文件夹/文件名提取（不可变）
+  String get originalTitle => _originalTitle;
+
+  /// 元数据标题：抓取到的标准游戏名（未抓取时为 null）
+  String? get metadataTitle => _metadataTitle;
+
+  /// 当前 nameController 显示的是否为元数据标题
+  bool get usingMetadataTitle => _usingMetadataTitle;
+
+  /// 是否可在原标题与元数据标题间切换（有元数据标题且不同于原标题）
+  bool get canToggleTitle =>
+      _metadataTitle != null &&
+      _metadataTitle!.isNotEmpty &&
+      _metadataTitle != _originalTitle;
+
+  /// 递增选择代次计数器，强制左侧UI完整重建
+  /// 在选择元数据卡片、批量切换游戏、重置表单等场景中调用
+  void bumpGeneration() {
+    _selectionGeneration++;
+  }
+
+  // 字段锁定 getter
+  bool get coverLocked => _coverLocked;
+  bool get nameLocked => _nameLocked;
+  bool get tagsLocked => _tagsLocked;
+  bool get descLocked => _descLocked;
+  bool get developerLocked => _developerLocked;
+  bool get screenshotLocked => _screenshotLocked;
+
+  // 字段锁定 setter
+  void toggleCoverLock() {
+    _coverLocked = !_coverLocked;
+    notifyListeners();
+  }
+
+  void toggleNameLock() {
+    _nameLocked = !_nameLocked;
+    notifyListeners();
+  }
+
+  void toggleTagsLock() {
+    _tagsLocked = !_tagsLocked;
+    notifyListeners();
+  }
+
+  void toggleDescLock() {
+    _descLocked = !_descLocked;
+    notifyListeners();
+  }
+
+  void toggleDeveloperLock() {
+    _developerLocked = !_developerLocked;
+    notifyListeners();
+  }
+
+  void toggleScreenshotLock() {
+    _screenshotLocked = !_screenshotLocked;
+    notifyListeners();
+  }
+
+  // 一键解锁所有字段
+  void unlockAllFields() {
+    _coverLocked = false;
+    _nameLocked = false;
+    _tagsLocked = false;
+    _descLocked = false;
+    _developerLocked = false;
+    _screenshotLocked = false;
+    notifyListeners();
+  }
+
+  // ===== 双标题管理 =====
+
+  /// 设置双标题数据（批量切换游戏或单文件导入时调用）
+  ///
+  /// - [original] 原标题（文件夹/文件名）
+  /// - [metadata] 元数据标题（未抓取时传 null）
+  /// - [useMetadata] 当前是否使用元数据标题
+  void setTitles({
+    required String original,
+    String? metadata,
+    bool useMetadata = false,
+  }) {
+    _originalTitle = original;
+    _metadataTitle = metadata;
+    _usingMetadataTitle =
+        useMetadata && (metadata != null && metadata.isNotEmpty);
+    notifyListeners();
+  }
+
+  /// 切换标题偏好（原标题 ↔ 元数据标题）
+  ///
+  /// 在 originalTitle 与 metadataTitle 间切换 nameController 的显示。
+  /// 仅当 [canToggleTitle] 为 true 时有效。切换后强制重建左侧 UI
+  /// （bumpGeneration）以更新 NameInput 右下角的小字提示。
+  void toggleTitlePreference() {
+    if (!canToggleTitle) return;
+    _usingMetadataTitle = !_usingMetadataTitle;
+    nameController.text =
+        _usingMetadataTitle ? _metadataTitle! : _originalTitle;
+    bumpGeneration();
+    notifyListeners();
+  }
+
   bool get isSubmitting => _isSubmitting;
   bool get isScraping => _isScraping;
   String? get errorMessage => _errorMessage;
@@ -125,12 +273,16 @@ class JoinController extends ChangeNotifier {
   }
 
   void dispose() {
+    nameController.removeListener(_onNameChanged);
     nameController.dispose();
     tagsController.dispose();
     descController.dispose();
     developerController.dispose();
     final em = GlobalTaskManager.instance.dlCore.extractManager;
-    em.removeListeners();
+    em.removeStatusListener(_onExtractStatusChanged);
+    em.removeProgressListener(_onExtractProgress);
+    em.removeSuccessListener(_onExtractSuccess);
+    em.removeFailureListener(_onExtractFailure);
     super.dispose();
   }
 
@@ -214,6 +366,10 @@ class JoinController extends ChangeNotifier {
       _selectedFilePath = path;
       _selectedFileName = folderName;
       _errorMessage = null;
+      // 双标题：选新文件时更新原标题，清除旧元数据标题
+      _originalTitle = folderName;
+      _metadataTitle = null;
+      _usingMetadataTitle = false;
       notifyListeners();
 
       if (nameController.text.trim().isEmpty) {
@@ -244,6 +400,13 @@ class JoinController extends ChangeNotifier {
             ? fileName.substring(0, fileName.lastIndexOf('.'))
             : fileName;
         debugPrint('[ADD] 选择其他文件: $fileName → 游戏名: $gameName');
+      }
+
+      // 双标题：选新文件时更新原标题，清除旧元数据标题
+      if (gameName.isNotEmpty) {
+        _originalTitle = gameName;
+        _metadataTitle = null;
+        _usingMetadataTitle = false;
       }
 
       if (nameController.text.trim().isEmpty && gameName.isNotEmpty) {
@@ -391,133 +554,136 @@ class JoinController extends ChangeNotifier {
   void selectScrapeResult(Map<String, dynamic> result) {
     debugPrint('[SCRAPE] ========== 选择元数据 ==========');
 
+    // 递增选择计数器，强制左侧UI完整重建，防止快速点击时Element复用错乱
+    bumpGeneration();
+
     _selectedResult = result;
 
+    // 根据锁定状态决定是否覆盖各字段
     final gameName = result['game_name'];
-    if (gameName != null && gameName.isNotEmpty) {
-      nameController.text = gameName.toString();
-      debugPrint('[SCRAPE] ✓ 已填入游戏名: $gameName');
+    if (gameName != null && gameName.toString().isNotEmpty) {
+      // 双标题：记录元数据标题（无论是否锁定都记录，供用户后续切换）
+      _metadataTitle = gameName.toString();
+      if (!_nameLocked) {
+        // 用户已确认：选择元数据后默认显示元数据标题
+        _usingMetadataTitle = true;
+        nameController.text = gameName.toString();
+        debugPrint('[SCRAPE] ✓ 已填入游戏名（元数据标题）: $gameName');
+      } else {
+        debugPrint('[SCRAPE] 🔒 游戏名已锁定，跳过覆盖（但已记录 metadataTitle）');
+      }
     }
 
     final tags = result['tags'];
-    if (tags != null && tags is List && tags.isNotEmpty) {
+    if (tags != null && tags is List && tags.isNotEmpty && !_tagsLocked) {
       tagsController.text =
           tags.map((t) => t.toString()).where((t) => t.isNotEmpty).join(', ');
       debugPrint('[SCRAPE] ✓ 已填入标签: ${tagsController.text}');
+    } else if (_tagsLocked) {
+      debugPrint('[SCRAPE] 🔒 标签已锁定，跳过覆盖');
     }
 
     final summary = result['summary'];
-    if (summary != null && summary.toString().isNotEmpty) {
+    if (summary != null && summary.toString().isNotEmpty && !_descLocked) {
       descController.text = summary.toString();
       debugPrint('[SCRAPE] ✓ 已填入简介 (${descController.text.length}字)');
+    } else if (_descLocked) {
+      debugPrint('[SCRAPE] 🔒 简介已锁定，跳过覆盖');
     }
 
     final developer = result['developer'];
-    if (developer != null && developer.toString().isNotEmpty) {
+    if (developer != null &&
+        developer.toString().isNotEmpty &&
+        !_developerLocked) {
       developerController.text = developer.toString();
       debugPrint('[SCRAPE] ✓ 已填入会社: ${developerController.text}');
+    } else if (_developerLocked) {
+      debugPrint('[SCRAPE] 🔒 会社已锁定，跳过覆盖');
     }
 
+    // 提取截图URL列表
+    if (!_screenshotLocked) {
+      final screenshotUrls = result['screenshot_urls'];
+      if (screenshotUrls != null &&
+          screenshotUrls is List &&
+          screenshotUrls.isNotEmpty) {
+        _screenshotUrls = screenshotUrls
+            .map((e) => e.toString())
+            .where((e) => e.isNotEmpty)
+            .toList();
+        debugPrint('[SCRAPE] ✓ 已提取截图URL: ${_screenshotUrls.length}张');
+      } else {
+        _screenshotUrls = [];
+        debugPrint('[SCRAPE] 无截图数据');
+      }
+    } else {
+      debugPrint('[SCRAPE] 🔒 截图已锁定，跳过覆盖');
+    }
+
+    // 所有字段设置完毕后统一通知UI更新（避免中间状态渲染）
     notifyListeners();
 
     final coverUrl = result['cover_url'];
-    if (coverUrl != null && coverUrl.isNotEmpty) {
+    if (coverUrl != null && coverUrl.toString().isNotEmpty && !_coverLocked) {
       debugPrint('[SCRAPE] 开始下载封面...');
-      downloadAndSetCover(coverUrl.toString());
+      // 递增版本号，使之前并发的封面下载结果失效
+      _scrapeCoverVersion++;
+      final currentVersion = _scrapeCoverVersion;
+      downloadAndSetCover(coverUrl.toString(), validVersion: currentVersion);
+    } else if (_coverLocked) {
+      debugPrint('[SCRAPE] 🔒 封面已锁定，跳过下载');
     } else {
       debugPrint('[SCRAPE] 无封面URL，跳过下载');
     }
 
-    onSuccess?.call('已选择数据并填入表单');
+    // 统计跳过的字段
+    final lockedFields = <String>[
+      if (_nameLocked) '标题',
+      if (_tagsLocked) '标签',
+      if (_descLocked) '简介',
+      if (_developerLocked) '会社',
+      if (_coverLocked) '封面',
+    ];
+
+    if (lockedFields.isNotEmpty) {
+      onSuccess?.call('已填入数据（${lockedFields.join("、")}已锁定保留）');
+    } else {
+      onSuccess?.call('已选择数据并填入表单');
+    }
   }
 
-  Future<void> downloadAndSetCover(String url) async {
-    try {
-      debugPrint('[SCRAPE] 开始处理封面: $url');
+  Future<void> downloadAndSetCover(String url, {int? validVersion}) async {
+    // Phase 3.1: 委托给统一的 CoverDownloadService（含缓存优先 + 重试 + UA/Referer）
+    // 保留并发版本守卫，防止旧下载覆盖用户最新选择
+    final tempDir = Directory.systemTemp;
+    final ext = CoverDownloadService.detectExtension(url);
+    final fileName =
+        'scrape_cover_${DateTime.now().millisecondsSinceEpoch}.$ext';
 
-      final tempDir = Directory.systemTemp;
-      final ext = getImageExtensionFromUrl(url);
-      final tempFile = File(
-          '${tempDir.path}/scrape_cover_${DateTime.now().millisecondsSinceEpoch}.$ext');
+    final savedName = await CoverDownloadService.instance.downloadCover(
+      targetDir: tempDir.path,
+      coverUrl: url,
+      fileName: fileName,
+    );
 
-      bool downloaded = false;
+    // 写入状态前检查版本号，防止并发下载覆盖最新选择的结果
+    if (validVersion != null && validVersion != _scrapeCoverVersion) {
+      debugPrint('[SCRAPE] 封面下载版本不匹配，丢弃结果');
+      return;
+    }
 
-      try {
-        debugPrint('[SCRAPE] 尝试从 CachedNetworkImage 缓存获取...');
-        final cacheManager = DefaultCacheManager();
-        final fileInfo = await cacheManager.getFileFromCache(url);
-
-        if (fileInfo != null && fileInfo.file.existsSync()) {
-          debugPrint('[SCRAPE] ✅ 找到缓存文件，直接复制: ${fileInfo.file.path}');
-          await fileInfo.file.copy(tempFile.path);
-          downloaded = true;
-        } else {
-          debugPrint('[SCRAPE] ⚠️ 缓存中未找到，开始网络下载...');
-        }
-      } catch (cacheError) {
-        debugPrint('[SCRAPE] ⚠️ 缓存读取失败: $cacheError，改用网络下载');
-      }
-
-      if (!downloaded) {
-        debugPrint('[SCRAPE] 使用 Dio 下载封面...');
-
-        final dio = Dio();
-        dio.options.connectTimeout = const Duration(seconds: 15);
-        dio.options.receiveTimeout = const Duration(seconds: 30);
-        dio.options.headers = {
-          'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://bgm.tv/',
-        };
-
-        final response = await dio.get<List<int>>(
-          url,
-          options: Options(responseType: ResponseType.bytes),
-        );
-
-        if (response.statusCode == 200 && response.data != null) {
-          final bytes = response.data;
-
-          if (bytes == null || bytes.isEmpty) {
-            debugPrint('[SCRAPE] ⚠️ 封面数据为空');
-            return;
-          }
-
-          await tempFile.writeAsBytes(bytes);
-          downloaded = true;
-          debugPrint('[SCRAPE] ✅ 封面下载成功: ${tempFile.path}');
-        }
-      }
-
-      if (downloaded && tempFile.existsSync()) {
-        _tempCoverPath = tempFile.path;
-        _coverFilePath = tempFile.path;
+    if (savedName != null) {
+      final tempFilePath = '${tempDir.path}/$savedName';
+      if (File(tempFilePath).existsSync()) {
+        _tempCoverPath = tempFilePath;
+        _coverFilePath = tempFilePath;
         notifyListeners();
         debugPrint('[SCRAPE] ✅ 已更新UI显示封面');
       }
-    } on DioException catch (e) {
-      if (e.type == DioExceptionType.receiveTimeout ||
-          e.type == DioExceptionType.connectionTimeout) {
-        debugPrint('[SCRAPE] ❌ 封面下载超时 (${e.type})');
-        onWarning?.call('封面图片加载超时，请稍后重试');
-      } else {
-        debugPrint('[SCRAPE] ❌ 封面下载失败: ${e.message}');
-      }
-    } catch (e, stackTrace) {
-      debugPrint('[SCRAPE] ❌ 封面下载异常: $e');
-      debugPrint('[SCRAPE] 堆栈: $stackTrace');
+    } else {
+      debugPrint('[SCRAPE] ❌ 封面下载失败: $url');
+      onWarning?.call('封面图片加载失败，请稍后重试');
     }
-  }
-
-  String getImageExtensionFromUrl(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri != null && uri.path.contains('.')) {
-      final ext = uri.path.split('.').last.toLowerCase();
-      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].contains(ext)) {
-        return ext;
-      }
-    }
-    return 'jpg';
   }
 
   // Submit Logic
@@ -595,7 +761,7 @@ class JoinController extends ChangeNotifier {
     }
   }
 
-  void handleExtractSuccess() {
+  Future<void> handleExtractSuccess() async {
     if (_pendingCoverData != null) {
       final pending = _pendingCoverData!;
       final safeName =
@@ -616,7 +782,7 @@ class JoinController extends ChangeNotifier {
       }
 
       if (targetDir != null) {
-        writeStandardGameInfo(
+        await writeStandardGameInfo(
           targetDirPath: targetDir!,
           gameName: pending.gameName,
           tags: pending.tags,
@@ -628,20 +794,22 @@ class JoinController extends ChangeNotifier {
       _pendingCoverData = null;
     }
 
-    // 注意：这里不再调用 onInfo 和 onGameAdded
+    onGameAdded?.call();
+
+    // 注意：这里不再调用 onInfo
     // 因为 handleExtractSuccess 通常是被 startCopyFlow 或其他流程调用的中间步骤
     // 最终的成功通知应该由调用者（如 startCopyFlow）统一发出
     // 避免重复提示
   }
 
-  void writeStandardGameInfo({
+  Future<void> writeStandardGameInfo({
     required String targetDirPath,
     required String gameName,
     required List<String> tags,
     String? sourceFilePath,
     required String source,
     String developer = '',
-  }) {
+  }) async {
     try {
       final targetDir = Directory(targetDirPath);
       if (!targetDir.existsSync()) {
@@ -651,7 +819,7 @@ class JoinController extends ChangeNotifier {
 
       final detectedLaunchPath = detectLaunchExe(targetDirPath);
 
-      GameDataFormat.writeGameDir(
+      await GameDataFormat.writeGameDir(
         targetDir: targetDirPath,
         title: gameName,
         description: descController.text.trim(),
@@ -661,7 +829,19 @@ class JoinController extends ChangeNotifier {
         directoryPath: targetDirPath,
         source: 'local_import',
         developer: developer,
+        screenshotUrls: _screenshotUrls.isNotEmpty ? _screenshotUrls : null,
+        // 双标题持久化：_originalTitle 为空时用 gameName 兜底
+        originalTitle: _originalTitle.isNotEmpty ? _originalTitle : gameName,
+        metadataTitle: _metadataTitle,
+        metadataSource: _selectedResult?['platform']?.toString() ?? '',
+        metadataSourceId: _selectedResult?['platform_id']?.toString() ?? '',
       );
+
+      // 通知截图后台抓取服务（入库完成后异步下载截图）
+      if (_screenshotUrls.isNotEmpty) {
+        ScreenshotFetchService.instance
+            .enqueue(gameName, targetDirPath, _screenshotUrls);
+      }
     } catch (e) {
       debugPrint('[ADD] ✗ 写入解压游戏元数据失败: $e');
     }
@@ -690,13 +870,14 @@ class JoinController extends ChangeNotifier {
 
       final exeFileName = sourcePath.split('\\').last;
       final parentDir = File(sourcePath).parent.path;
-      final parentFolderName = parentDir.split('\\').last;
-      final safeParentName =
-          parentFolderName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
 
       launchPath = exeFileName;
       actualDirectoryPath = parentDir;
-      effectiveGameName = safeParentName.isNotEmpty ? safeParentName : safeName;
+      // ★ WYSIWYG：始终使用用户在标题输入框中填写/切换后的名称（safeName），
+      // 不再用父文件夹名覆盖。actualDirectoryPath 仍指向 EXE 所在的真实游戏目录。
+      // 旧实现 effectiveGameName = safeParentName 会无条件丢弃用户编辑的标题，
+      // 导致入库后标题变回文件夹名。
+      effectiveGameName = safeName;
     } else {
       throw Exception('不支持的文件类型，请选择游戏文件夹或 EXE 文件');
     }
@@ -723,6 +904,8 @@ class JoinController extends ChangeNotifier {
       tags: tags,
       launchPath: launchPath,
       developer: developerController.text.trim(),
+      metadataSource: _selectedResult?['platform']?.toString() ?? '',
+      metadataSourceId: _selectedResult?['platform_id']?.toString() ?? '',
     );
 
     updateProgress(1.0, '完成！');
@@ -733,7 +916,9 @@ class JoinController extends ChangeNotifier {
 
     await Future.delayed(const Duration(milliseconds: 500));
 
-    onInfo?.call('《$effectiveGameName》已成功入库');
+    onInfo?.call(_screenshotUrls.isNotEmpty
+        ? '《$effectiveGameName》已成功入库，截图将在后台自动获取'
+        : '《$effectiveGameName》已成功入库');
     onGameAdded?.call();
     resetForm();
   }
@@ -762,7 +947,19 @@ class JoinController extends ChangeNotifier {
       directoryPath: directoryPath,
       source: 'local_import',
       developer: developer,
+      screenshotUrls: _screenshotUrls.isNotEmpty ? _screenshotUrls : null,
+      // 双标题持久化：_originalTitle 为空时用 gameName 兜底
+      originalTitle: _originalTitle.isNotEmpty ? _originalTitle : gameName,
+      metadataTitle: _metadataTitle,
+      metadataSource: _selectedResult?['platform']?.toString() ?? '',
+      metadataSourceId: _selectedResult?['platform_id']?.toString() ?? '',
     );
+
+    // 通知截图后台抓取服务（入库完成后异步下载截图）
+    if (_screenshotUrls.isNotEmpty) {
+      ScreenshotFetchService.instance
+          .enqueue(gameName, targetDir.path, _screenshotUrls);
+    }
 
     return targetDir.path;
   }
@@ -825,6 +1022,7 @@ class JoinController extends ChangeNotifier {
   }
 
   void resetForm() {
+    bumpGeneration(); // 强制重建左侧UI，防止残留旧Element
     nameController.clear();
     tagsController.clear();
     descController.clear();
@@ -840,6 +1038,25 @@ class JoinController extends ChangeNotifier {
     _selectedScrapeSource = ScrapeSource.bangumi;
     _scrapeResults = [];
     _selectedResult = null;
+    _screenshotUrls = [];
+    // 清除双标题状态
+    _originalTitle = '';
+    _metadataTitle = null;
+    _usingMetadataTitle = false;
+    notifyListeners();
+  }
+
+  /// 清理元数据抓取结果（切换游戏时调用，避免残留）
+  void clearScrapeResults() {
+    _scrapeResults = [];
+    _selectedResult = null;
+    _screenshotUrls = [];
+    notifyListeners();
+  }
+
+  /// 恢复截图URL数据（批量模式切换游戏时使用）
+  void restoreScreenshotUrls(List<String> urls) {
+    _screenshotUrls = urls;
     notifyListeners();
   }
 

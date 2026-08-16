@@ -17,6 +17,9 @@ dependencies:
   # HTML 解析（用于 DLsite/ErogameScape）
   html: ^0.15.4
 
+  # 键值存储（用于 BangumiOAuth Token 持久化）
+  shared_preferences: ^2.2.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -68,7 +68,7 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
 
       switch (center.phase) {
         case InstallPhase.downloading:
-          _taskLabel = '下载中';
+          _taskLabel = '获取中';
           _speedText = center.progress.downloadSpeed;
           if (center.isRunning) _transitionTo(_BtnState.running);
           break;
@@ -96,7 +96,6 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
         (GlobalInstallCenter.instance.currentTask == null &&
             newPhase == InstallPhase.idle)) {
       if (_state != _BtnState.idle && !_isTerminalState()) {
-        debugPrint('[FLOAT-BTN] 全局无任务 → 回到idle');
         _transitionTo(_BtnState.idle);
       }
       return;
@@ -104,7 +103,7 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
 
     switch (newPhase) {
       case InstallPhase.downloading:
-        _taskLabel = '下载中';
+        _taskLabel = '获取中';
         _transitionTo(_BtnState.running);
         break;
       case InstallPhase.extracting:
@@ -130,24 +129,38 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
 
     final center = GlobalInstallCenter.instance;
 
-    setState(() {
-      switch (center.phase) {
-        case InstallPhase.downloading:
-          _displayPercent = newProgress.downloadPercent;
-          _speedText = newProgress.downloadSpeed;
-          break;
-        case InstallPhase.extracting:
-          _displayPercent = newProgress.extractPercent;
-          _speedText = '';
-          break;
-        default:
-          _displayPercent = newProgress.downloadPercent > 0
-              ? newProgress.downloadPercent
-              : newProgress.extractPercent;
-          _speedText = newProgress.downloadSpeed;
-          break;
-      }
-    });
+    // 性能优化：仅更新数据，不立即 setState
+    // 让 build 方法通过 RepaintBoundary 隔离重绘
+    final newPercent = center.phase == InstallPhase.downloading
+        ? newProgress.downloadPercent
+        : newProgress.extractPercent;
+
+    // 仅当百分比变化 >= 2% 时才触发重建，减少不必要的 UI 刷新
+    if ((newPercent - _displayPercent).abs() >= 2.0 ||
+        _speedText != newProgress.downloadSpeed) {
+      setState(() {
+        switch (center.phase) {
+          case InstallPhase.downloading:
+            _displayPercent = newProgress.downloadPercent;
+            _speedText = newProgress.downloadSpeed;
+            break;
+          case InstallPhase.extracting:
+            _displayPercent = newProgress.extractPercent;
+            _speedText = '';
+            break;
+          default:
+            _displayPercent = newProgress.downloadPercent > 0
+                ? newProgress.downloadPercent
+                : newProgress.extractPercent;
+            _speedText = newProgress.downloadSpeed;
+            break;
+        }
+      });
+    } else {
+      // 静默更新数据，下次重建时生效
+      _displayPercent = newPercent;
+      _speedText = newProgress.downloadSpeed;
+    }
   }
 
   bool _isTerminalState() =>
@@ -156,9 +169,7 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
   void _transitionTo(_BtnState newState) {
     if (_state == newState && newState != _BtnState.running) return;
 
-    final oldState = _state;
     _state = newState;
-    debugPrint('[FLOAT-BTN] 状态更新: $oldState → $newState');
 
     if (newState == _BtnState.idle) {
       _cancelAutoHideTimer();
@@ -181,17 +192,14 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
     setState(() {});
 
     if (newState == _BtnState.success) {
-      _startAutoHideTimer(3, '安装完成');
+      _startAutoHideTimer(3);
     } else if (newState == _BtnState.failed) {
-      _startAutoHideTimer(5, '安装失败');
+      _startAutoHideTimer(5);
     }
   }
 
-  void _startAutoHideTimer(int seconds, String reason) {
-    debugPrint('[FLOAT-BTN] 启动$seconds秒自动隐藏定时器 | $reason');
-
+  void _startAutoHideTimer(int seconds) {
     _autoHideTimer = Timer(Duration(seconds: seconds), () {
-      debugPrint('[FLOAT-BTN] ⏰ 定时器触发 → 淡出隐藏');
       if (mounted) {
         _transitionTo(_BtnState.idle);
       }
@@ -199,17 +207,11 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
   }
 
   void _cancelAutoHideTimer() {
-    if (_autoHideTimer != null) {
-      debugPrint('[FLOAT-BTN] 取消自动隐藏定时器');
-      _autoHideTimer?.cancel();
-      _autoHideTimer = null;
-    }
+    _autoHideTimer?.cancel();
+    _autoHideTimer = null;
   }
 
   void _handleTap() {
-    final center = GlobalInstallCenter.instance;
-    debugPrint(
-        '[FLOAT-BTN] 👆 点击触发 | 当前状态: $_state | 任务: ${center.currentTask?.title}');
     widget.onTap.call();
   }
 
@@ -219,6 +221,29 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
       return const SizedBox.shrink();
     }
 
+    // [BugFix 白屏] 移除内层的 Positioned
+    // 原因:外层 main_container 的 Stack 已经用 Positioned(left: 16, bottom: 16)
+    // 包裹本 Widget,这里再嵌一层 Positioned 会:
+    //   1. 找不到有效的 Stack 祖先(它在 AnimatedBuilder.builder 内,每次 rebuild 创建新实例)
+    //   2. applyParentData 时报错或被忽略
+    //   3. 同时这个失效的 Positioned 会让 AnimatedBuilder 内部 layout 出现意外行为
+    // 现在:RepaintBoundary 直接包裹 AnimatedBuilder 提供的 Opacity 动画
+    //     + InteractiveWrapper 容器即可,定位交给外层 Positioned
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _slideAnimation,
+        builder: (context, child) {
+          return Opacity(
+            opacity: _slideAnimation.value,
+            child: child!,
+          );
+        },
+        child: _buildContent(),
+      ),
+    );
+  }
+
+  Widget _buildContent() {
     Color borderColor;
     Color iconColor;
     IconData iconData;
@@ -226,20 +251,20 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
 
     switch (_state) {
       case _BtnState.success:
-        borderColor = const Color(0xFF4A7C59);
-        iconColor = const Color(0xFF4A7C59);
+        borderColor = AppColors.successGreen;
+        iconColor = AppColors.successGreen;
         iconData = Icons.check_circle_rounded;
         label = '安装完成';
         break;
       case _BtnState.failed:
-        borderColor = const Color(0xFFD4183D);
-        iconColor = const Color(0xFFD4183D);
+        borderColor = AppColors.dangerRed;
+        iconColor = AppColors.dangerRed;
         iconData = Icons.error_rounded;
         label = '安装失败';
         break;
       case _BtnState.running:
-        borderColor = const Color(0xFF4A72A5);
-        iconColor = const Color(0xFF4A72A5);
+        borderColor = AppColors.infoBlue;
+        iconColor = AppColors.infoBlue;
         iconData = Icons.downloading_rounded;
         label = '$_taskLabel ${_displayPercent.toStringAsFixed(0)}%';
         break;
@@ -252,85 +277,75 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
 
     final showArrow = _state == _BtnState.running;
 
-    return AnimatedBuilder(
-      animation: _slideAnimation,
-      builder: (context, child) {
-        return Positioned(
-          left: 16,
-          bottom: 16,
-          child: Opacity(
-            opacity: _slideAnimation.value,
-            child: child!,
-          ),
-        );
-      },
-      child: InteractiveWrapper(
-        onTap: _handleTap,
-        hoverScale: 1.05,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFDFBF7),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: borderColor, width: 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: borderColor.withOpacity(0.15),
-                offset: const Offset(2, 4),
-                blurRadius: 8,
+    // [BugFix 白屏] 不再嵌套 Positioned 和 Opacity/AnimatedBuilder
+    // 它们已经在外层 build() 中通过 AnimatedBuilder + Opacity 处理
+    // 这里只负责构建按钮本体的视觉内容
+    return InteractiveWrapper(
+      onTap: _handleTap,
+      hoverScale: 1.05,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: borderColor, width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: borderColor.withOpacity(0.15),
+              offset: const Offset(2, 4),
+              blurRadius: 8,
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_isTerminalState())
+              Icon(iconData, size: 18, color: iconColor)
+            else
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  valueColor: AlwaysStoppedAnimation<Color>(iconColor),
+                ),
               ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_isTerminalState())
-                Icon(iconData, size: 18, color: iconColor)
-              else
-                SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    valueColor: AlwaysStoppedAnimation<Color>(iconColor),
+            const SizedBox(width: 10),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primaryText,
+                    letterSpacing: 0.5,
                   ),
                 ),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+                if (_state == _BtnState.running && _speedText.isNotEmpty)
                   Text(
-                    label,
-                    style: const TextStyle(
-                      fontFamily: 'Mali',
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF6D5B4D),
-                      letterSpacing: 0.5,
+                    _speedText,
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 12,
+                      color: AppColors.secondaryText.withOpacity(0.5),
                     ),
                   ),
-                  if (_state == _BtnState.running && _speedText.isNotEmpty)
-                    Text(
-                      _speedText,
-                      style: TextStyle(
-                        fontFamily: 'Inter',
-                        fontSize: 10,
-                        color: AppColors.secondaryText.withOpacity(0.5),
-                      ),
-                    ),
-                ],
-              ),
-              if (showArrow) ...[
-                const SizedBox(width: 8),
-                Icon(
-                  Icons.arrow_forward_ios_rounded,
-                  size: 12,
-                  color: AppColors.secondaryText.withOpacity(0.6),
-                ),
               ],
+            ),
+            if (showArrow) ...[
+              const SizedBox(width: 8),
+              Icon(
+                Icons.arrow_forward_ios_rounded,
+                size: 12,
+                color: AppColors.secondaryText.withOpacity(0.6),
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );

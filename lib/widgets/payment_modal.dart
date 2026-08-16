@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import '../core/backend_config.dart';
 import '../theme/app_colors.dart';
 import 'interactive_wrapper.dart';
 
@@ -113,7 +112,6 @@ class _PaymentModalState extends State<PaymentModal> {
         textAlign: TextAlign.center,
         style: TextStyle(
           fontFamily: 'Inter',
-          fontWeight: FontWeight.w700,
           fontSize: 16,
           height: 24 / 16,
           color: AppColors.primaryText,
@@ -364,14 +362,14 @@ class _PaymentModalState extends State<PaymentModal> {
   }
 
   Widget _buildQRBottom() {
+    // UX-28: 明确提示用户应输入的具体金额，避免手动输错
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Text(
-        '请用微信扫码，手动输入对应金额完成赞赏',
+        '请用微信扫码，手动输入 ¥$_selectedAmount 完成赞赏',
         textAlign: TextAlign.center,
         style: TextStyle(
           fontFamily: 'Inter',
-          fontWeight: FontWeight.w500,
           fontSize: 14,
           height: 20 / 14,
           color: AppColors.secondaryText,

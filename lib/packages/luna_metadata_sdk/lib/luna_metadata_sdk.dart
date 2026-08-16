@@ -1,12 +1,15 @@
 /// Luna Metadata SDK - 元数据抓取库
 ///
 /// 支持的数据源：
-/// - Bangumi (镜像站，匿名访问)
+/// - Bangumi (原站，OAuth 优先 + 匿名兜底)
 /// - VNDB
 /// - Steam
 /// - DLsite
 /// - ErogameScape
 /// - 月幕GAL
+/// - TouchGal (需 Bearer Token)
+/// - Hikarinagi (需 OAuth client_credentials 凭证)
+/// - KunGal (公开 API)
 ///
 /// 使用示例：
 /// ```dart
@@ -35,3 +38,9 @@ export 'models/tags.dart';
 export 'services/metadata_base.dart';
 export 'services/bangumi_service.dart';
 export 'services/metadata_services.dart';
+export 'services/touchgal_service.dart';
+export 'services/tag_translator.dart';
+export 'services/rate_limiter.dart';
+export 'services/bangumi_oauth.dart';
+export 'services/hikarinagi_service.dart';
+export 'services/kun_service.dart';

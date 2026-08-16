@@ -5,6 +5,7 @@ import '../theme/app_colors.dart';
 import '../services/update/update_service.dart';
 import '../services/process_cleanup_service.dart';
 import 'interactive_wrapper.dart';
+import 'custom_title_bar.dart';
 
 OverlayEntry? _updateOverlayEntry;
 
@@ -95,7 +96,13 @@ class _UpdateDialogState extends State<UpdateDialog> {
       if (!mounted) return;
       final cancelled = e is DioException && e.type == DioExceptionType.cancel;
       if (cancelled) {
-        UpdateDialog.dismiss();
+        // 取消下载后回到初始状态（而非直接关闭弹窗），让用户可以重新选择
+        // 部分文件清理已由 UpdateService.downloadUpdate 内部完成
+        setState(() {
+          _downloading = false;
+          _progress = 0;
+          _cancelToken = null;
+        });
         return;
       }
       setState(() {
@@ -117,7 +124,30 @@ class _UpdateDialogState extends State<UpdateDialog> {
 
   Future<void> _openInstaller() async {
     if (_savePath == null) return;
-    await UpdateService.instance.installUpdate(_savePath!);
+    try {
+      await UpdateService.instance.installUpdate(_savePath!);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('启动安装程序失败: $e')),
+      );
+      return;
+    }
+    // 走正常的干净退出流程（显示退出遮罩、清理资源、销毁窗口、退出）
+    // 跳过任务检查，因为用户已明确选择安装更新
+    // 安装包缓存将在新版本启动时由 cleanupOldInstallerCache() 延迟清理
+    // （安装程序运行期间 Windows 文件锁，无法立即删除）
+    if (!mounted) return;
+    await CustomTitleBar.performCleanExit(context);
+  }
+
+  /// 用户选择不立即安装：清理已下载的安装包并关闭弹窗
+  Future<void> _cancelInstall() async {
+    if (_savePath != null) {
+      await UpdateService.instance.cleanupDownloadArtifacts(_savePath!);
+      _savePath = null;
+    }
+    if (!mounted) return;
     UpdateDialog.dismiss();
   }
 
@@ -131,7 +161,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
             color: Colors.transparent,
             child: Container(
               width: 440,
-              constraints: const BoxConstraints(minHeight: 300),
+              constraints: BoxConstraints(
+                minHeight: 300,
+                maxHeight: MediaQuery.of(context).size.height * 0.82,
+              ),
               decoration: BoxDecoration(
                 color: AppColors.background,
                 borderRadius: BorderRadius.circular(12),
@@ -174,7 +207,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
         Text(
           '发现新版本',
           style: TextStyle(
-            fontFamily: 'Zhi Mang Xing',
+            fontFamily: 'ZhiMangXing',
             fontSize: 22,
             letterSpacing: 1.5,
             color: AppColors.border,
@@ -205,26 +238,26 @@ class _UpdateDialogState extends State<UpdateDialog> {
         context: context,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFFFDFBF7),
+          backgroundColor: AppColors.background,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xFF8B7355), width: 2),
+            side: BorderSide(color: AppColors.border, width: 2),
           ),
           title: Text(
             '正在下载更新',
-            style: const TextStyle(
-              fontFamily: 'Zhi Mang Xing',
+            style: TextStyle(
+              fontFamily: 'ZhiMangXing',
               fontSize: 22,
               letterSpacing: 1.5,
-              color: Color(0xFF8B7355),
+              color: AppColors.border,
             ),
           ),
           content: Text(
             '更新包正在下载中，关闭窗口将取消下载并删除临时文件，确定要关闭吗？',
-            style: const TextStyle(
-              fontFamily: 'Mali',
+            style: TextStyle(
+              fontFamily: 'Inter',
               fontSize: 15,
-              color: Color(0xFF6D5B4D),
+              color: AppColors.primaryText,
               height: 1.5,
             ),
           ),
@@ -234,7 +267,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
               child: Text(
                 '继续下载',
                 style: TextStyle(
-                  color: Color(0xFF4A72A5),
+                  color: AppColors.infoBlue,
                   fontWeight: FontWeight.w700,
                   fontSize: 15,
                 ),
@@ -242,10 +275,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
             ),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text(
+              child: Text(
                 '取消并关闭',
                 style: TextStyle(
-                  color: Color(0xFFD4183D),
+                  color: AppColors.dangerRed,
                   fontWeight: FontWeight.w700,
                   fontSize: 15,
                 ),
@@ -258,6 +291,11 @@ class _UpdateDialogState extends State<UpdateDialog> {
       if (result != true) return;
 
       _cancelDownload();
+      // 取消后部分文件由 downloadUpdate 内部清理，直接关闭弹窗
+    } else if (_downloadComplete && _savePath != null) {
+      // 下载已完成但用户选择不安装：清理已下载的安装包缓存
+      await UpdateService.instance.cleanupDownloadArtifacts(_savePath!);
+      _savePath = null;
     }
 
     UpdateDialog.dismiss();
@@ -287,29 +325,31 @@ class _UpdateDialogState extends State<UpdateDialog> {
               style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w800,
-                  color: AppColors.selectedBlue)),
+                  color: AppColors.selectedAccent)),
         ],
       ),
     );
   }
 
   Widget _buildUpdateLog() {
-    return Container(
-      width: double.infinity,
-      constraints: const BoxConstraints(maxHeight: 140),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(8),
-        border:
-            Border.all(color: AppColors.borderLight.withOpacity(0.5), width: 1),
-      ),
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        child: Text(
-          widget.updateLog,
-          style: TextStyle(
-              fontSize: 13, color: AppColors.primaryText, height: 1.6),
+    return Flexible(
+      child: Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(minHeight: 60),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(8),
+          border:
+              Border.all(color: AppColors.borderLight.withOpacity(0.5), width: 1),
+        ),
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Text(
+            widget.updateLog,
+            style: TextStyle(
+                fontSize: 13, color: AppColors.primaryText, height: 1.6),
+          ),
         ),
       ),
     );
@@ -363,8 +403,8 @@ class _UpdateDialogState extends State<UpdateDialog> {
         height: 38,
         padding: const EdgeInsets.symmetric(horizontal: 28),
         decoration: BoxDecoration(
-          color: AppColors.selectedBlue,
-          border: Border.all(color: const Color(0x1A000000), width: 1.6),
+          color: AppColors.selectedAccent,
+          border: Border.all(color: AppColors.borderLight, width: 1.6),
           boxShadow: [
             BoxShadow(
                 color: AppColors.primaryText.withOpacity(0.25),
@@ -399,7 +439,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
             value: _progress,
             minHeight: 10,
             backgroundColor: AppColors.buttonBackground,
-            valueColor: AlwaysStoppedAnimation<Color>(AppColors.selectedBlue),
+            valueColor: AlwaysStoppedAnimation<Color>(AppColors.selectedAccent),
           ),
         ),
         const SizedBox(height: 10),
@@ -438,21 +478,28 @@ class _UpdateDialogState extends State<UpdateDialog> {
             maxLines: 2,
             overflow: TextOverflow.ellipsis),
         const SizedBox(height: 14),
-        InteractiveWrapper(
-          onTap: _startDownload,
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            decoration: BoxDecoration(
-                color: AppColors.selectedBlue,
-                borderRadius: BorderRadius.circular(8)),
-            alignment: Alignment.center,
-            child: Text('重试',
-                style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white)),
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _buildTextButton('关闭', UpdateDialog.dismiss),
+            const SizedBox(width: 14),
+            InteractiveWrapper(
+              onTap: _startDownload,
+              child: Container(
+                height: 36,
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                decoration: BoxDecoration(
+                    color: AppColors.selectedAccent,
+                    borderRadius: BorderRadius.circular(8)),
+                alignment: Alignment.center,
+                child: Text('重试',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white)),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -461,46 +508,53 @@ class _UpdateDialogState extends State<UpdateDialog> {
   Widget _buildCompleteSection() {
     return Column(
       children: [
-        Icon(Icons.check_circle, size: 42, color: Colors.green[600]),
+        Icon(Icons.check_circle, size: 42, color: AppColors.successGreen),
         const SizedBox(height: 10),
         Text('下载完成！',
             style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w800,
-                color: Colors.green[700])),
+                color: AppColors.successGreen)),
         const SizedBox(height: 6),
         Text('安装包已就绪，是否立即安装？',
             style: TextStyle(fontSize: 13, color: AppColors.secondaryText)),
         const SizedBox(height: 16),
-        InteractiveWrapper(
-          onTap: _openInstaller,
-          child: Container(
-            height: 42,
-            padding: const EdgeInsets.symmetric(horizontal: 36),
-            decoration: BoxDecoration(
-              color: Colors.green[600],
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(0.15),
-                    offset: Offset(2, 3),
-                    blurRadius: 0)
-              ],
-              borderRadius: BorderRadius.circular(8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _buildTextButton('稍后安装', _cancelInstall),
+            const SizedBox(width: 14),
+            InteractiveWrapper(
+              onTap: _openInstaller,
+              child: Container(
+                height: 42,
+                padding: const EdgeInsets.symmetric(horizontal: 36),
+                decoration: BoxDecoration(
+                  color: AppColors.successGreen,
+                  boxShadow: [
+                    BoxShadow(
+                        color: AppColors.shadowColor,
+                        offset: Offset(2, 3),
+                        blurRadius: 0)
+                  ],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                alignment: Alignment.center,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.install_desktop, size: 18, color: Colors.white),
+                    const SizedBox(width: 8),
+                    Text('立即安装',
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white)),
+                  ],
+                ),
+              ),
             ),
-            alignment: Alignment.center,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.install_desktop, size: 18, color: Colors.white),
-                const SizedBox(width: 8),
-                Text('立即安装',
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white)),
-              ],
-            ),
-          ),
+          ],
         ),
       ],
     );

@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'interactive_wrapper.dart';
 import '../theme/app_colors.dart';
-import '../theme/app_styles.dart';
 
 class DownloadButton extends StatelessWidget {
   final void Function()? onTap;
+  final void Function()? onLaunch;
+  final void Function()? onUninstall;
   final bool isDownloading;
   final bool isCompleted;
   final bool isExtracting;
@@ -14,6 +15,8 @@ class DownloadButton extends StatelessWidget {
   const DownloadButton({
     super.key,
     required this.onTap,
+    this.onLaunch,
+    this.onUninstall,
     this.isDownloading = false,
     this.isCompleted = false,
     this.isExtracting = false,
@@ -40,126 +43,123 @@ class DownloadButton extends StatelessWidget {
     }
   }
 
-  Widget _buildDownloadButton() {
+  /// 通用按钮外壳：宽度自适应内容，最大 260，最小 160，高度 56
+  Widget _buildButtonShell({
+    required Widget child,
+    required Color bgColor,
+    required Color borderColor,
+    double height = 56,
+  }) {
     return InteractiveWrapper(
       onTap: onTap,
       child: Container(
-        width: 218,
-        height: 67,
+        constraints: const BoxConstraints(
+          minWidth: 160,
+          maxWidth: 260,
+        ),
+        height: height,
         decoration: BoxDecoration(
-          color: const Color(0xFFE6F0FF),
-          border: Border.all(color: const Color(0xFF4A72A5), width: 2),
+          color: bgColor,
+          border: Border.all(color: borderColor, width: 2),
+          borderRadius: BorderRadius.circular(6),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF4A72A5),
+              color: borderColor,
               offset: const Offset(2, 3),
               blurRadius: 0,
             ),
           ],
         ),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 14),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SvgPicture.asset(
-              'assets/images/download_btn_icon.svg',
-              width: 24,
-              height: 24,
-              colorFilter: ColorFilter.mode(
-                const Color(0xFF4A72A5),
-                BlendMode.srcIn,
-              ),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _buildDownloadButton() {
+    return _buildButtonShell(
+      bgColor: AppColors.infoBg,
+      borderColor: AppColors.infoBlue,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SvgPicture.asset(
+            'assets/images/download_btn_icon.svg',
+            width: 22,
+            height: 22,
+            colorFilter: ColorFilter.mode(
+              AppColors.infoBlue,
+              BlendMode.srcIn,
             ),
-            const SizedBox(width: 12),
-            Text('下 载 游 戏',
-                style: AppStyles.heading.copyWith(
-                  fontSize: 24,
-                  letterSpacing: 2.0,
-                  color: const Color(0xFF4A72A5),
-                )),
-          ],
-        ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '获取作品',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 3.0,
+              color: AppColors.infoBlue,
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildCancelButton() {
-    return InteractiveWrapper(
-      onTap: onTap,
-      child: Container(
-        width: 218,
-        height: 67,
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFE6EA),
-          border: Border.all(color: AppColors.dangerRed, width: 2),
-          boxShadow: [
-            BoxShadow(
+    return _buildButtonShell(
+      bgColor: AppColors.errorBg,
+      borderColor: AppColors.dangerRed,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.close_rounded, size: 20, color: AppColors.dangerRed),
+          const SizedBox(width: 10),
+          Text(
+            '取消获取',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 3.0,
               color: AppColors.dangerRed,
-              offset: const Offset(2, 3),
-              blurRadius: 0,
             ),
-          ],
-        ),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 14),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.close_rounded, size: 20, color: AppColors.dangerRed),
-            const SizedBox(width: 12),
-            Text('取 消 下 载',
-                style: AppStyles.heading.copyWith(
-                  fontSize: 24,
-                  letterSpacing: 2.0,
-                  color: AppColors.dangerRed,
-                )),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildOpenLibraryButton() {
-    return InteractiveWrapper(
-      onTap: onTap,
-      child: Container(
-        width: 218,
-        height: 67,
-        decoration: BoxDecoration(
-          color: const Color(0xFFE6F0FF),
-          border: Border.all(color: const Color(0xFF4A72A5), width: 2),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF4A72A5),
-              offset: const Offset(2, 3),
-              blurRadius: 0,
+    return _buildButtonShell(
+      bgColor: AppColors.infoBg,
+      borderColor: AppColors.infoBlue,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SvgPicture.asset(
+            'assets/images/download_btn_icon.svg',
+            width: 22,
+            height: 22,
+            colorFilter: ColorFilter.mode(
+              AppColors.infoBlue,
+              BlendMode.srcIn,
             ),
-          ],
-        ),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 14),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SvgPicture.asset(
-              'assets/images/download_btn_icon.svg',
-              width: 24,
-              height: 24,
-              colorFilter: ColorFilter.mode(
-                const Color(0xFF4A72A5),
-                BlendMode.srcIn,
-              ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '前往库查看',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 2.5,
+              color: AppColors.infoBlue,
             ),
-            const SizedBox(width: 12),
-            Text('前 往 库 查 看',
-                style: AppStyles.heading.copyWith(
-                  fontSize: 22,
-                  letterSpacing: 1.8,
-                  color: const Color(0xFF4A72A5),
-                )),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -168,9 +168,9 @@ class DownloadButton extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _buildActionButton('启 动', AppColors.primaryText, () {}),
+        _buildActionButton('启动', AppColors.primaryText, onLaunch ?? () {}),
         const SizedBox(width: 16),
-        _buildActionButton('卸 载', AppColors.dangerRed, () {}),
+        _buildActionButton('卸载', AppColors.dangerRed, onUninstall ?? () {}),
       ],
     );
   }
@@ -180,11 +180,12 @@ class DownloadButton extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        width: 100,
-        height: 67,
+        width: 96,
+        height: 56,
         decoration: BoxDecoration(
           color: AppColors.buttonBackground,
           border: Border.all(color: AppColors.border, width: 2),
+          borderRadius: BorderRadius.circular(6),
           boxShadow: [
             BoxShadow(
               color: AppColors.border,
@@ -194,44 +195,40 @@ class DownloadButton extends StatelessWidget {
           ],
         ),
         alignment: Alignment.center,
-        child: Text(label, style: AppStyles.heading.copyWith(fontSize: 20)),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontFamily: 'Inter',
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 2.0,
+            color: color,
+          ),
+        ),
       ),
     );
   }
 
   Widget _buildRetryButton() {
-    return InteractiveWrapper(
-      onTap: onTap,
-      child: Container(
-        width: 218,
-        height: 67,
-        decoration: BoxDecoration(
-          color: const Color(0xFFF0E6D2),
-          border: Border.all(color: AppColors.border, width: 2),
-          boxShadow: [
-            BoxShadow(
+    return _buildButtonShell(
+      bgColor: AppColors.buttonBackground,
+      borderColor: AppColors.border,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.refresh_rounded, size: 20, color: AppColors.border),
+          const SizedBox(width: 10),
+          Text(
+            '重新尝试',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 3.0,
               color: AppColors.border,
-              offset: const Offset(2, 3),
-              blurRadius: 0,
             ),
-          ],
-        ),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 14),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.refresh_rounded,
-                size: 20, color: const Color(0xFF8B7355)),
-            const SizedBox(width: 12),
-            Text('重 新 尝 试',
-                style: AppStyles.heading.copyWith(
-                  fontSize: 24,
-                  letterSpacing: 2.0,
-                  color: const Color(0xFF8B7355),
-                )),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

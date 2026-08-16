@@ -16,6 +16,12 @@ class GameLauncherDetector {
 
   static const int _minValidExeSize = 1024 * 1024;
 
+  /// ★ 扫描文件数量上限，避免超大目录（如包含大量小文件的游戏）卡住
+  static const int _maxScanEntries = 50000;
+
+  /// ★ 单次扫描超时时间，避免网络驱动器等慢速存储卡住整个导入流程
+  static const Duration _scanTimeout = Duration(seconds: 30);
+
   static Future<LauncherDetectionResult> detect(String gameDirectory) async {
     debugPrint('');
     debugPrint('[LAUNCHER-DETECTOR] ═══════════════════════════════');
@@ -29,23 +35,49 @@ class GameLauncherDetector {
     }
 
     final allExes = <_ExeInfo>[];
-    await for (final entity in dir.list(recursive: true, followLinks: false)) {
-      if (entity is File && entity.path.toLowerCase().endsWith('.exe')) {
-        try {
-          final stat = await entity.stat();
-          final size = stat.size;
-          final modified = stat.modified;
+    int scannedCount = 0;
+    bool reachedLimit = false;
+    final scanStartTime = DateTime.now();
 
-          allExes.add(_ExeInfo(
-            path: entity.path,
-            fileName: entity.uri.pathSegments.last,
-            size: size,
-            modified: modified,
-          ));
-        } catch (e) {
-          debugPrint('[LAUNCHER-DETECTOR] ⚠️ 无法读取文件信息: ${entity.path} | $e');
+    try {
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+        // ★ 超时保护：避免网络驱动器/慢速存储卡住整个导入流程
+        if (DateTime.now().difference(scanStartTime) > _scanTimeout) {
+          debugPrint(
+              '[LAUNCHER-DETECTOR] ⚠️ 扫描超时(${_scanTimeout.inSeconds}s)，使用已扫描结果');
+          break;
+        }
+        // ★ 文件数量上限保护：避免超大目录卡住
+        if (scannedCount >= _maxScanEntries) {
+          if (!reachedLimit) {
+            reachedLimit = true;
+            debugPrint(
+                '[LAUNCHER-DETECTOR] ⚠️ 达到文件数量上限($_maxScanEntries)，停止扫描');
+          }
+          break;
+        }
+        scannedCount++;
+
+        if (entity is File && entity.path.toLowerCase().endsWith('.exe')) {
+          try {
+            final stat = entity.statSync();
+            final size = stat.size;
+            final modified = stat.modified;
+
+            allExes.add(_ExeInfo(
+              path: entity.path,
+              fileName: entity.uri.pathSegments.last,
+              size: size,
+              modified: modified,
+            ));
+          } catch (e) {
+            debugPrint(
+                '[LAUNCHER-DETECTOR] ⚠️ 无法读取文件信息: ${entity.path} | $e');
+          }
         }
       }
+    } catch (e) {
+      debugPrint('[LAUNCHER-DETECTOR] ⚠️ 扫描异常: $e');
     }
 
     debugPrint('[LAUNCHER-DETECTOR] 发现 ${allExes.length} 个 EXE 文件');

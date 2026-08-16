@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 
 class PathHelper {
@@ -53,9 +54,75 @@ class PathHelper {
   static String get logsDir => path.join(exeDir, 'logs');
   static String get dataDir => path.join(exeDir, 'data');
 
+  // ========== 便携式存储子目录（统一置于 data/ 下，不污染安装根目录） ==========
+  // 所有应用产生的缓存/数据/图片均存放于此，避免占用系统 C 盘。
+  static String get prefsDir => path.join(dataDir, 'prefs');
+  static String get prefsFilePath =>
+      path.join(prefsDir, 'shared_preferences.json');
+  static String get gameConfigsDir => path.join(dataDir, 'game_configs');
+  static String get userThemesDir => path.join(dataDir, 'user_themes');
+  static String get userBackgroundsDir =>
+      path.join(dataDir, 'user_backgrounds');
+  static String get imageCacheDir => path.join(dataDir, 'cache', 'images');
+  static String get portableTmpDir => path.join(dataDir, 'tmp');
+  static String get lockDir => path.join(dataDir, 'lock');
+  static String get lockFilePath =>
+      path.join(lockDir, 'chrono_tide_instance.lock');
+  static String get launchRequestDir =>
+      path.join(lockDir, 'chrono_tide_launch_requests');
+  static String get migrationDir => path.join(dataDir, 'migration');
+
+  // ========== 安装目录可写性探针 ==========
+  // 装在只读位置（如 Program Files）时返回 false，所有便携存储降级回系统目录。
+  static bool? _portableWritable;
+
+  /// 同步探针：在 dataDir 下创建并删除测试文件，结果缓存复用。
+  /// 供 main.dart 顶层（无法 await）解析锁文件路径使用。
+  static bool get isPortableWritableSync {
+    if (_portableWritable != null) return _portableWritable!;
+    try {
+      final dir = Directory(dataDir);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final probe = File(path.join(dataDir, '.writable_test'));
+      probe.writeAsStringSync('probe');
+      probe.deleteSync();
+      _portableWritable = true;
+    } catch (_) {
+      _portableWritable = false;
+    }
+    return _portableWritable!;
+  }
+
+  /// 异步探针（复用同步结果，便于异步调用方使用）。
+  static Future<bool> isPortableWritable() async => isPortableWritableSync;
+
+  /// 创建所有便携子目录（每步独立 try-catch，失败仅 debugPrint 不抛错）。
+  static Future<void> ensurePortableDirs() async {
+    final dirs = [
+      prefsDir,
+      gameConfigsDir,
+      userThemesDir,
+      userBackgroundsDir,
+      imageCacheDir,
+      portableTmpDir,
+      lockDir,
+      launchRequestDir,
+      migrationDir,
+    ];
+    for (final d in dirs) {
+      try {
+        final dir = Directory(d);
+        if (!dir.existsSync()) await dir.create(recursive: true);
+      } catch (e) {
+        debugPrint('[PathHelper] 创建目录失败 $d: $e');
+      }
+    }
+  }
+
   // ========== 辅助方法 ==========
-  static String get rarLz4UnzipExePath =>
-      path.join(toolsDir, 'rar_lz4_unzip.exe');
+  // .rar.lz4 解压：Dart 原生调用 bz.exe(Bandizip) 解 LZ4 外层 + UnRAR.exe 解 RAR 内层
+  static String get bandizipExePath => path.join(toolsDir, 'bz.exe');
+  static String get unrarExePath => path.join(toolsDir, 'UnRAR.exe');
 
   static String getDownloadFilePath(String fileName) {
     return path.join(downloadsDir, fileName);

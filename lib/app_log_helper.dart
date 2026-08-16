@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'services/storage/log_rotation_service.dart';
+
 class AppLogHelper {
   static File? _logFile;
   static bool _initDone = false;
@@ -41,7 +43,7 @@ class AppLogHelper {
       }
 
       // 如果没找到logs文件夹，就在exe同级创建
-      if (logDirPath.isEmpty) {
+      if (logDirPath == null) {
         logDirPath = "${exeDir.path}\\logs";
         print("⚠️ 未找到logs文件夹，将在：$logDirPath 创建");
       }
@@ -86,10 +88,36 @@ class AppLogHelper {
     if (_logFile == null) return;
     try {
       await _logFile!.writeAsString(text, mode: FileMode.append);
+      // 写入后异步检查大小,超 50MB 触发切分(不阻塞日志写入)
+      _checkAndRotate();
     } catch (e) {
       // 如果写入失败，打印到控制台但不崩溃
       print("❌ 日志写入失败：$e");
     }
+  }
+
+  /// 异步检查当前日志文件大小,超 50MB 时触发切分。
+  /// fire-and-forget,不影响日志写入主流程。
+  static void _checkAndRotate() {
+    Future(() async {
+      try {
+        if (_logFile == null || !await _logFile!.exists()) return;
+        final size = await _logFile!.length();
+        if (size > 50 * 1024 * 1024) {
+          await LogRotationService.instance.rotateBySize(
+            _logFile!.path,
+            50 * 1024 * 1024,
+            keep: 3,
+          );
+          // 切分后原文件已被 rename,需要重新创建空文件供后续写入
+          if (!await _logFile!.exists()) {
+            await _logFile!.writeAsString('');
+          }
+        }
+      } catch (e) {
+        print("⚠️ 日志轮转检查失败：$e");
+      }
+    });
   }
 
   // 这里的方法名是 runCatch，和 update_service.dart 里的调用完全对应

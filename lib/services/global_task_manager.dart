@@ -53,7 +53,7 @@ class GlobalTaskInfo {
   String get taskLabel {
     switch (phase) {
       case GlobalTaskPhase.downloading:
-        return '下载中';
+        return '获取中';
       case GlobalTaskPhase.extracting:
         return '解压中';
       case GlobalTaskPhase.completed:

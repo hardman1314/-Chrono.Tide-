@@ -1,6 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/scheduler.dart';
+import 'background_image_config.dart';
+import 'theme_registry.dart';
+import 'theme_storage.dart';
 
+/// 内置主题枚举（保留作为内置主题 id 来源与分组依据）
+///
+/// v3.0 P0 重构说明：
+/// - `CTTheme` 枚举保留，每个枚举值的 name 即为对应内置主题的 String id
+///   （例如 CTTheme.warmSun.name == 'warmSun'）
+/// - `AppThemeManager` 内部从 `CTTheme` 改为 `String` id 驱动
+/// - 内置主题 id = 枚举 name；用户主题 id = UUID
+/// - 公开 API `currentTheme` / `setTheme(CTTheme)` / `standardThemes` /
+///   `featuredThemes` / `themeData(CTTheme)` 全部保留，向后兼容
 enum CTTheme {
   warmSun,
   darkNight,
@@ -10,13 +22,34 @@ enum CTTheme {
   twilight,
 }
 
+/// 主题来源
+enum CTThemeSource {
+  /// 内置主题（编译期 const 定义）
+  builtin,
+
+  /// 用户自定义主题（runtime fromJson 构造）
+  user,
+}
+
 class CTThemeData {
+  /// 主题唯一 id。内置主题 = CTTheme 枚举 name；用户主题 = UUID
+  final String id;
+
+  /// 主题来源
+  final CTThemeSource source;
+
   final String name;
   final String emoji;
   final String? description;
   final bool isFeatured;
-  final String? backgroundImagePath;
-  final double backgroundOverlayOpacity;
+
+  /// 背景图配置（v3.0 P0：收敛原 backgroundImagePath + backgroundOverlayOpacity）
+  final BackgroundImageConfig backgroundImage;
+
+  /// Material 3 ColorScheme 的种子色，用于动态生成与主题配套的配色方案
+  /// 修复 BUG-01：原实现中 ColorScheme.fromSeed 硬编码为 0xFF8B7355，
+  /// 导致 Material 组件在所有主题中显示暖棕色
+  final Color seedColor;
   final Color background;
   final Color sidebarBackground;
   final Color titleBarBackground;
@@ -25,7 +58,7 @@ class CTThemeData {
   final Color border;
   final Color borderLight;
   final Color buttonBackground;
-  final Color selectedBlue;
+  final Color selectedAccent;
   final Color dangerRed;
   final Color placeholderText;
   final Color placeholderBg;
@@ -44,15 +77,25 @@ class CTThemeData {
   final Color toggleBg;
   final Color toggleBorder;
   final Color toggleIcon;
+  final Color placeholderCover;
+  final Color titleBrown;
+  final Color starGold;
+  final Color infoBlue;
+  final Color brandBlue;
+
+  /// BUG-06: 信息按钮背景色（浅蓝系），用于下载/前往库等 info 变体按钮
+  final Color infoBg;
   final Brightness brightness;
 
   const CTThemeData({
+    required this.id,
+    this.source = CTThemeSource.builtin,
     required this.name,
     required this.emoji,
     this.description,
     this.isFeatured = false,
-    this.backgroundImagePath,
-    this.backgroundOverlayOpacity = 0.0,
+    this.backgroundImage = const BackgroundImageConfig.none(),
+    required this.seedColor,
     required this.background,
     required this.sidebarBackground,
     required this.titleBarBackground,
@@ -61,7 +104,7 @@ class CTThemeData {
     required this.border,
     required this.borderLight,
     required this.buttonBackground,
-    required this.selectedBlue,
+    required this.selectedAccent,
     required this.dangerRed,
     required this.placeholderText,
     required this.placeholderBg,
@@ -80,11 +123,457 @@ class CTThemeData {
     required this.toggleBg,
     required this.toggleBorder,
     required this.toggleIcon,
+    required this.placeholderCover,
+    required this.titleBrown,
+    required this.starGold,
+    required this.infoBlue,
+    required this.brandBlue,
+    required this.infoBg,
     required this.brightness,
   });
 
-  bool get hasBackgroundImage =>
-      backgroundImagePath != null && backgroundImagePath!.isNotEmpty;
+  // ============ 兼容旧 API（backgroundImagePath / backgroundOverlayOpacity / hasBackgroundImage） ============
+
+  /// 兼容旧 API：返回 bundled asset 路径
+  /// 注意：仅 bundled 来源时返回路径；file 来源应通过 BackgroundImageResolver 处理
+  String? get backgroundImagePath => backgroundImage.legacyAssetPath;
+
+  /// 兼容旧 API：背景遮罩透明度
+  double get backgroundOverlayOpacity => backgroundImage.legacyOverlayOpacity;
+
+  /// 兼容旧 API：是否有背景图
+  bool get hasBackgroundImage => backgroundImage.hasImage;
+
+  bool get isUserTheme => source == CTThemeSource.user;
+
+  /// BUG-04: 主题切换颜色插值，用于实现 250ms 渐变过渡动画。
+  /// 所有 Color 字段通过 Color.lerp 线性插值；
+  /// 非颜色字段（id/name/emoji/路径/brightness/source）在 t=0.5 时切换。
+  static CTThemeData lerp(CTThemeData a, CTThemeData b, double t) {
+    // 非颜色字段在过渡中点切换
+    final useB = t >= 0.5;
+    return CTThemeData(
+      id: useB ? b.id : a.id,
+      source: useB ? b.source : a.source,
+      name: useB ? b.name : a.name,
+      emoji: useB ? b.emoji : a.emoji,
+      description: useB ? b.description : a.description,
+      isFeatured: useB ? b.isFeatured : a.isFeatured,
+      backgroundImage: useB ? b.backgroundImage : a.backgroundImage,
+      seedColor: Color.lerp(a.seedColor, b.seedColor, t)!,
+      background: Color.lerp(a.background, b.background, t)!,
+      sidebarBackground:
+          Color.lerp(a.sidebarBackground, b.sidebarBackground, t)!,
+      titleBarBackground:
+          Color.lerp(a.titleBarBackground, b.titleBarBackground, t)!,
+      primaryText: Color.lerp(a.primaryText, b.primaryText, t)!,
+      secondaryText: Color.lerp(a.secondaryText, b.secondaryText, t)!,
+      border: Color.lerp(a.border, b.border, t)!,
+      borderLight: Color.lerp(a.borderLight, b.borderLight, t)!,
+      buttonBackground: Color.lerp(a.buttonBackground, b.buttonBackground, t)!,
+      selectedAccent: Color.lerp(a.selectedAccent, b.selectedAccent, t)!,
+      dangerRed: Color.lerp(a.dangerRed, b.dangerRed, t)!,
+      placeholderText: Color.lerp(a.placeholderText, b.placeholderText, t)!,
+      placeholderBg: Color.lerp(a.placeholderBg, b.placeholderBg, t)!,
+      addCoverBg: Color.lerp(a.addCoverBg, b.addCoverBg, t)!,
+      shadowColor: Color.lerp(a.shadowColor, b.shadowColor, t)!,
+      successGreen: Color.lerp(a.successGreen, b.successGreen, t)!,
+      successBg: Color.lerp(a.successBg, b.successBg, t)!,
+      errorBg: Color.lerp(a.errorBg, b.errorBg, t)!,
+      hoverCloseBg: Color.lerp(a.hoverCloseBg, b.hoverCloseBg, t)!,
+      hoverCloseBorder: Color.lerp(a.hoverCloseBorder, b.hoverCloseBorder, t)!,
+      inputHint: Color.lerp(a.inputHint, b.inputHint, t)!,
+      cardHoverBg: Color.lerp(a.cardHoverBg, b.cardHoverBg, t)!,
+      navActiveBg: Color.lerp(a.navActiveBg, b.navActiveBg, t)!,
+      navActiveBorder: Color.lerp(a.navActiveBorder, b.navActiveBorder, t)!,
+      navInactiveBorder:
+          Color.lerp(a.navInactiveBorder, b.navInactiveBorder, t)!,
+      toggleBg: Color.lerp(a.toggleBg, b.toggleBg, t)!,
+      toggleBorder: Color.lerp(a.toggleBorder, b.toggleBorder, t)!,
+      toggleIcon: Color.lerp(a.toggleIcon, b.toggleIcon, t)!,
+      placeholderCover: Color.lerp(a.placeholderCover, b.placeholderCover, t)!,
+      titleBrown: Color.lerp(a.titleBrown, b.titleBrown, t)!,
+      starGold: Color.lerp(a.starGold, b.starGold, t)!,
+      infoBlue: Color.lerp(a.infoBlue, b.infoBlue, t)!,
+      brandBlue: Color.lerp(a.brandBlue, b.brandBlue, t)!,
+      infoBg: Color.lerp(a.infoBg, b.infoBg, t)!,
+      brightness: useB ? b.brightness : a.brightness,
+    );
+  }
+
+  // ============ JSON 序列化（v3.0 P0 新增） ============
+
+  static const int schemaVersion = 1;
+
+  Map<String, dynamic> toJson() => {
+        'schemaVersion': schemaVersion,
+        'id': id,
+        'source': source.name,
+        'name': name,
+        'emoji': emoji,
+        'description': description,
+        'isFeatured': isFeatured,
+        'brightness': brightness.name,
+        'seedColor': _colorToJson(seedColor),
+        'colors': {
+          'background': _colorToJson(background),
+          'sidebarBackground': _colorToJson(sidebarBackground),
+          'titleBarBackground': _colorToJson(titleBarBackground),
+          'primaryText': _colorToJson(primaryText),
+          'secondaryText': _colorToJson(secondaryText),
+          'border': _colorToJson(border),
+          'borderLight': _colorToJson(borderLight),
+          'buttonBackground': _colorToJson(buttonBackground),
+          'selectedAccent': _colorToJson(selectedAccent),
+          'dangerRed': _colorToJson(dangerRed),
+          'placeholderText': _colorToJson(placeholderText),
+          'placeholderBg': _colorToJson(placeholderBg),
+          'addCoverBg': _colorToJson(addCoverBg),
+          'shadowColor': _colorToJson(shadowColor),
+          'successGreen': _colorToJson(successGreen),
+          'successBg': _colorToJson(successBg),
+          'errorBg': _colorToJson(errorBg),
+          'hoverCloseBg': _colorToJson(hoverCloseBg),
+          'hoverCloseBorder': _colorToJson(hoverCloseBorder),
+          'inputHint': _colorToJson(inputHint),
+          'cardHoverBg': _colorToJson(cardHoverBg),
+          'navActiveBg': _colorToJson(navActiveBg),
+          'navActiveBorder': _colorToJson(navActiveBorder),
+          'navInactiveBorder': _colorToJson(navInactiveBorder),
+          'toggleBg': _colorToJson(toggleBg),
+          'toggleBorder': _colorToJson(toggleBorder),
+          'toggleIcon': _colorToJson(toggleIcon),
+          'placeholderCover': _colorToJson(placeholderCover),
+          'titleBrown': _colorToJson(titleBrown),
+          'starGold': _colorToJson(starGold),
+          'infoBlue': _colorToJson(infoBlue),
+          'brandBlue': _colorToJson(brandBlue),
+          'infoBg': _colorToJson(infoBg),
+        },
+        if (backgroundImage.hasImage)
+          'backgroundImage': backgroundImage.toJson(),
+      };
+
+  factory CTThemeData.fromJson(Map<String, dynamic> json) {
+    final colors = (json['colors'] as Map<String, dynamic>?) ?? {};
+    final bgJson = json['backgroundImage'] as Map<String, dynamic>?;
+    return CTThemeData(
+      id: json['id'] as String,
+      source: CTThemeSource.values.firstWhere(
+        (e) => e.name == (json['source'] as String? ?? 'user'),
+        orElse: () => CTThemeSource.user,
+      ),
+      name: json['name'] as String,
+      emoji: json['emoji'] as String,
+      description: json['description'] as String?,
+      isFeatured: (json['isFeatured'] as bool?) ?? false,
+      backgroundImage: bgJson != null
+          ? BackgroundImageConfig.fromJson(bgJson)
+          : const BackgroundImageConfig.none(),
+      brightness: (json['brightness'] as String?) == 'dark'
+          ? Brightness.dark
+          : Brightness.light,
+      seedColor: _colorFromJson(colors['seedColor']) ?? const Color(0xFF8B7355),
+      background:
+          _colorFromJson(colors['background']) ?? const Color(0xFFFDFBF7),
+      sidebarBackground: _colorFromJson(colors['sidebarBackground']) ??
+          const Color(0xFFFBF6EF),
+      titleBarBackground: _colorFromJson(colors['titleBarBackground']) ??
+          const Color(0xFFFBF6EF),
+      primaryText:
+          _colorFromJson(colors['primaryText']) ?? const Color(0xFF5C4A3D),
+      secondaryText:
+          _colorFromJson(colors['secondaryText']) ?? const Color(0xFF7D6348),
+      border: _colorFromJson(colors['border']) ?? const Color(0xFF8B7355),
+      borderLight:
+          _colorFromJson(colors['borderLight']) ?? const Color(0x338B7355),
+      buttonBackground:
+          _colorFromJson(colors['buttonBackground']) ?? const Color(0xFFF0E6D2),
+      selectedAccent:
+          _colorFromJson(colors['selectedAccent']) ?? const Color(0xFFB4D4FF),
+      dangerRed: _colorFromJson(colors['dangerRed']) ?? const Color(0xFFD4183D),
+      placeholderText:
+          _colorFromJson(colors['placeholderText']) ?? const Color(0xFF9A8A76),
+      placeholderBg:
+          _colorFromJson(colors['placeholderBg']) ?? const Color(0xFFF5F1E8),
+      addCoverBg:
+          _colorFromJson(colors['addCoverBg']) ?? const Color(0xFFE9E0D1),
+      shadowColor:
+          _colorFromJson(colors['shadowColor']) ?? const Color(0x408B7355),
+      successGreen:
+          _colorFromJson(colors['successGreen']) ?? const Color(0xFF4CAF50),
+      successBg: _colorFromJson(colors['successBg']) ?? const Color(0xFFE8F5E9),
+      errorBg: _colorFromJson(colors['errorBg']) ?? const Color(0xFFFFE6EA),
+      hoverCloseBg:
+          _colorFromJson(colors['hoverCloseBg']) ?? const Color(0xFFFFEBEE),
+      hoverCloseBorder:
+          _colorFromJson(colors['hoverCloseBorder']) ?? const Color(0xFFEF5350),
+      inputHint: _colorFromJson(colors['inputHint']) ?? const Color(0x997D6348),
+      cardHoverBg:
+          _colorFromJson(colors['cardHoverBg']) ?? const Color(0xFFF5EDE6),
+      navActiveBg:
+          _colorFromJson(colors['navActiveBg']) ?? const Color(0xFFFFFFFF),
+      navActiveBorder:
+          _colorFromJson(colors['navActiveBorder']) ?? const Color(0xFFA07840),
+      navInactiveBorder: _colorFromJson(colors['navInactiveBorder']) ??
+          const Color(0xFFC8B49A),
+      toggleBg: _colorFromJson(colors['toggleBg']) ?? const Color(0xFFE8E0D0),
+      toggleBorder:
+          _colorFromJson(colors['toggleBorder']) ?? const Color(0xFFC8B49A),
+      toggleIcon:
+          _colorFromJson(colors['toggleIcon']) ?? const Color(0xFF5C3A1A),
+      placeholderCover:
+          _colorFromJson(colors['placeholderCover']) ?? const Color(0xFFE9E0D1),
+      titleBrown:
+          _colorFromJson(colors['titleBrown']) ?? const Color(0xFF5C4A3D),
+      starGold: _colorFromJson(colors['starGold']) ?? const Color(0xFFD4A017),
+      infoBlue: _colorFromJson(colors['infoBlue']) ?? const Color(0xFF4A72A5),
+      brandBlue: _colorFromJson(colors['brandBlue']) ?? const Color(0xFF6B9EAD),
+      infoBg: _colorFromJson(colors['infoBg']) ?? const Color(0xFFE6F0FF),
+    );
+  }
+
+  /// 将 CTThemeData 的某个颜色字段替换为新值，返回新实例（immutable 模式）
+  /// [tokenField] 为字段名（如 'background' / 'sidebarBackground'）
+  CTThemeData withColor(String tokenField, Color newColor) {
+    switch (tokenField) {
+      case 'seedColor':
+        return _copyWith(seedColor: newColor);
+      case 'background':
+        return _copyWith(background: newColor);
+      case 'sidebarBackground':
+        return _copyWith(sidebarBackground: newColor);
+      case 'titleBarBackground':
+        return _copyWith(titleBarBackground: newColor);
+      case 'primaryText':
+        return _copyWith(primaryText: newColor);
+      case 'secondaryText':
+        return _copyWith(secondaryText: newColor);
+      case 'border':
+        return _copyWith(border: newColor);
+      case 'borderLight':
+        return _copyWith(borderLight: newColor);
+      case 'buttonBackground':
+        return _copyWith(buttonBackground: newColor);
+      case 'selectedAccent':
+        return _copyWith(selectedAccent: newColor);
+      case 'dangerRed':
+        return _copyWith(dangerRed: newColor);
+      case 'placeholderText':
+        return _copyWith(placeholderText: newColor);
+      case 'placeholderBg':
+        return _copyWith(placeholderBg: newColor);
+      case 'addCoverBg':
+        return _copyWith(addCoverBg: newColor);
+      case 'shadowColor':
+        return _copyWith(shadowColor: newColor);
+      case 'successGreen':
+        return _copyWith(successGreen: newColor);
+      case 'successBg':
+        return _copyWith(successBg: newColor);
+      case 'errorBg':
+        return _copyWith(errorBg: newColor);
+      case 'hoverCloseBg':
+        return _copyWith(hoverCloseBg: newColor);
+      case 'hoverCloseBorder':
+        return _copyWith(hoverCloseBorder: newColor);
+      case 'inputHint':
+        return _copyWith(inputHint: newColor);
+      case 'cardHoverBg':
+        return _copyWith(cardHoverBg: newColor);
+      case 'navActiveBg':
+        return _copyWith(navActiveBg: newColor);
+      case 'navActiveBorder':
+        return _copyWith(navActiveBorder: newColor);
+      case 'navInactiveBorder':
+        return _copyWith(navInactiveBorder: newColor);
+      case 'toggleBg':
+        return _copyWith(toggleBg: newColor);
+      case 'toggleBorder':
+        return _copyWith(toggleBorder: newColor);
+      case 'toggleIcon':
+        return _copyWith(toggleIcon: newColor);
+      case 'placeholderCover':
+        return _copyWith(placeholderCover: newColor);
+      case 'titleBrown':
+        return _copyWith(titleBrown: newColor);
+      case 'starGold':
+        return _copyWith(starGold: newColor);
+      case 'infoBlue':
+        return _copyWith(infoBlue: newColor);
+      case 'brandBlue':
+        return _copyWith(brandBlue: newColor);
+      case 'infoBg':
+        return _copyWith(infoBg: newColor);
+      default:
+        return this;
+    }
+  }
+
+  /// 浅拷贝（用于编辑器预览修改）
+  CTThemeData _copyWith({
+    Color? seedColor,
+    Color? background,
+    Color? sidebarBackground,
+    Color? titleBarBackground,
+    Color? primaryText,
+    Color? secondaryText,
+    Color? border,
+    Color? borderLight,
+    Color? buttonBackground,
+    Color? selectedAccent,
+    Color? dangerRed,
+    Color? placeholderText,
+    Color? placeholderBg,
+    Color? addCoverBg,
+    Color? shadowColor,
+    Color? successGreen,
+    Color? successBg,
+    Color? errorBg,
+    Color? hoverCloseBg,
+    Color? hoverCloseBorder,
+    Color? inputHint,
+    Color? cardHoverBg,
+    Color? navActiveBg,
+    Color? navActiveBorder,
+    Color? navInactiveBorder,
+    Color? toggleBg,
+    Color? toggleBorder,
+    Color? toggleIcon,
+    Color? placeholderCover,
+    Color? titleBrown,
+    Color? starGold,
+    Color? infoBlue,
+    Color? brandBlue,
+    Color? infoBg,
+    BackgroundImageConfig? backgroundImage,
+    String? name,
+    String? emoji,
+    String? description,
+  }) {
+    return CTThemeData(
+      id: id,
+      source: source,
+      name: name ?? this.name,
+      emoji: emoji ?? this.emoji,
+      description: description ?? this.description,
+      isFeatured: isFeatured,
+      backgroundImage: backgroundImage ?? this.backgroundImage,
+      brightness: brightness,
+      seedColor: seedColor ?? this.seedColor,
+      background: background ?? this.background,
+      sidebarBackground: sidebarBackground ?? this.sidebarBackground,
+      titleBarBackground: titleBarBackground ?? this.titleBarBackground,
+      primaryText: primaryText ?? this.primaryText,
+      secondaryText: secondaryText ?? this.secondaryText,
+      border: border ?? this.border,
+      borderLight: borderLight ?? this.borderLight,
+      buttonBackground: buttonBackground ?? this.buttonBackground,
+      selectedAccent: selectedAccent ?? this.selectedAccent,
+      dangerRed: dangerRed ?? this.dangerRed,
+      placeholderText: placeholderText ?? this.placeholderText,
+      placeholderBg: placeholderBg ?? this.placeholderBg,
+      addCoverBg: addCoverBg ?? this.addCoverBg,
+      shadowColor: shadowColor ?? this.shadowColor,
+      successGreen: successGreen ?? this.successGreen,
+      successBg: successBg ?? this.successBg,
+      errorBg: errorBg ?? this.errorBg,
+      hoverCloseBg: hoverCloseBg ?? this.hoverCloseBg,
+      hoverCloseBorder: hoverCloseBorder ?? this.hoverCloseBorder,
+      inputHint: inputHint ?? this.inputHint,
+      cardHoverBg: cardHoverBg ?? this.cardHoverBg,
+      navActiveBg: navActiveBg ?? this.navActiveBg,
+      navActiveBorder: navActiveBorder ?? this.navActiveBorder,
+      navInactiveBorder: navInactiveBorder ?? this.navInactiveBorder,
+      toggleBg: toggleBg ?? this.toggleBg,
+      toggleBorder: toggleBorder ?? this.toggleBorder,
+      toggleIcon: toggleIcon ?? this.toggleIcon,
+      placeholderCover: placeholderCover ?? this.placeholderCover,
+      titleBrown: titleBrown ?? this.titleBrown,
+      starGold: starGold ?? this.starGold,
+      infoBlue: infoBlue ?? this.infoBlue,
+      brandBlue: brandBlue ?? this.brandBlue,
+      infoBg: infoBg ?? this.infoBg,
+    );
+  }
+
+  /// 用于编辑器：复制此主题为新的用户主题（新 id、source=user）
+  CTThemeData asUserThemeCopy({
+    required String newId,
+    String? name,
+    String? emoji,
+    String? description,
+  }) {
+    return CTThemeData(
+      id: newId,
+      source: CTThemeSource.user,
+      name: name ?? this.name,
+      emoji: emoji ?? this.emoji,
+      description: description ?? this.description,
+      isFeatured: false,
+      backgroundImage: backgroundImage,
+      brightness: brightness,
+      seedColor: seedColor,
+      background: background,
+      sidebarBackground: sidebarBackground,
+      titleBarBackground: titleBarBackground,
+      primaryText: primaryText,
+      secondaryText: secondaryText,
+      border: border,
+      borderLight: borderLight,
+      buttonBackground: buttonBackground,
+      selectedAccent: selectedAccent,
+      dangerRed: dangerRed,
+      placeholderText: placeholderText,
+      placeholderBg: placeholderBg,
+      addCoverBg: addCoverBg,
+      shadowColor: shadowColor,
+      successGreen: successGreen,
+      successBg: successBg,
+      errorBg: errorBg,
+      hoverCloseBg: hoverCloseBg,
+      hoverCloseBorder: hoverCloseBorder,
+      inputHint: inputHint,
+      cardHoverBg: cardHoverBg,
+      navActiveBg: navActiveBg,
+      navActiveBorder: navActiveBorder,
+      navInactiveBorder: navInactiveBorder,
+      toggleBg: toggleBg,
+      toggleBorder: toggleBorder,
+      toggleIcon: toggleIcon,
+      placeholderCover: placeholderCover,
+      titleBrown: titleBrown,
+      starGold: starGold,
+      infoBlue: infoBlue,
+      brandBlue: brandBlue,
+      infoBg: infoBg,
+    );
+  }
+
+  /// v3.0 P1：替换背景图配置，返回新实例（用于"应用自定义背景"功能）
+  CTThemeData withBackgroundImage(BackgroundImageConfig newConfig) {
+    return _copyWith(backgroundImage: newConfig);
+  }
+
+  static String _colorToJson(Color c) {
+    return '#${c.value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+  }
+
+  static Color? _colorFromJson(dynamic v) {
+    if (v == null) return null;
+    if (v is String) {
+      var s = v.trim();
+      if (s.startsWith('#')) s = s.substring(1);
+      if (s.length == 6) s = 'FF$s';
+      if (s.length == 8) {
+        final argb = int.tryParse(s, radix: 16);
+        if (argb != null) return Color(argb);
+      }
+    } else if (v is int) {
+      return Color(v);
+    }
+    return null;
+  }
 }
 
 class AppThemeManager extends ChangeNotifier {
@@ -93,254 +582,252 @@ class AppThemeManager extends ChangeNotifier {
 
   AppThemeManager._();
 
-  CTTheme _currentTheme = CTTheme.warmSun;
-  CTTheme get currentTheme => _currentTheme;
+  /// 当前激活主题 id（v3.0 P0：从 CTTheme 改为 String）
+  /// 内置主题 id = CTTheme 枚举 name；用户主题 id = UUID
+  String _currentThemeId = CTTheme.warmSun.name;
+  String get currentThemeId => _currentThemeId;
 
-  static const Map<CTTheme, CTThemeData> _themes = {
-    CTTheme.warmSun: CTThemeData(
-      name: '暖阳',
-      emoji: '🌞',
-      description: '经典暖棕复古风格',
-      isFeatured: false,
-      brightness: Brightness.light,
-      background: Color(0xFFFDFBF7),
-      sidebarBackground: Color(0xFFFBF6EF),
-      titleBarBackground: Color(0xFFFBF6EF),
-      primaryText: Color(0xFF5C4A3D),
-      secondaryText: Color(0xFFA08264),
-      border: Color(0xFF8B7355),
-      borderLight: Color(0x338B7355),
-      buttonBackground: Color(0xFFF0E6D2),
-      selectedBlue: Color(0xFFB4D4FF),
-      dangerRed: Color(0xFFD4183D),
-      placeholderText: Color(0xFFC4B3A1),
-      placeholderBg: Color(0xFFF5F1E8),
-      addCoverBg: Color(0xFFE9E0D1),
-      shadowColor: Color(0x408B7355),
-      successGreen: Color(0xFF4CAF50),
-      successBg: Color(0xFFE8F5E9),
-      errorBg: Color(0xFFFFE6EA),
-      hoverCloseBg: Color(0xFFFFEBEE),
-      hoverCloseBorder: Color(0xFFEF5350),
-      inputHint: Color(0x99A08264),
-      cardHoverBg: Color(0xFFF5EDE6),
-      navActiveBg: Color(0xFFFFFFFF),
-      navActiveBorder: Color(0xFFA07840),
-      navInactiveBorder: Color(0xFFC8B49A),
-      toggleBg: Color(0xFFE8E0D0),
-      toggleBorder: Color(0xFFC8B49A),
-      toggleIcon: Color(0xFF5C3A1A),
-    ),
-    CTTheme.darkNight: CTThemeData(
-      name: '暗夜',
-      emoji: '🌙',
-      description: '深色护眼模式',
-      isFeatured: false,
-      brightness: Brightness.dark,
-      background: Color(0xFF1A1714),
-      sidebarBackground: Color(0xFF242019),
-      titleBarBackground: Color(0xFF242019),
-      primaryText: Color(0xFFE8E0D0),
-      secondaryText: Color(0xFF9B9080),
-      border: Color(0xFF3D3530),
-      borderLight: Color(0x333D3530),
-      buttonBackground: Color(0xFF2D2824),
-      selectedBlue: Color(0xFF5A7A9B),
-      dangerRed: Color(0xFFE05555),
-      placeholderText: Color(0xFF6D6358),
-      placeholderBg: Color(0xFF2A2520),
-      addCoverBg: Color(0xFF2D2824),
-      shadowColor: Color(0x40000000),
-      successGreen: Color(0xFF66BB6A),
-      successBg: Color(0xFF1B3A1B),
-      errorBg: Color(0xFF3A1B1B),
-      hoverCloseBg: Color(0xFF3A1B1B),
-      hoverCloseBorder: Color(0xFFE05555),
-      inputHint: Color(0x999B9080),
-      cardHoverBg: Color(0xFF2D2824),
-      navActiveBg: Color(0xFFFFFFFF),
-      navActiveBorder: Color(0xFF5A4A3A),
-      navInactiveBorder: Color(0xFF3D3530),
-      toggleBg: Color(0xFF2D2824),
-      toggleBorder: Color(0xFF3D3530),
-      toggleIcon: Color(0xFFC4B3A1),
-    ),
-    CTTheme.mint: CTThemeData(
-      name: '墨绿金',
-      emoji: '🌊',
-      description: '神秘墨绿流金，奢华魔幻',
-      isFeatured: true,
-      backgroundImagePath: 'assets/images/themes/dark_emerald_gold.png',
-      backgroundOverlayOpacity: 0.20,
-      brightness: Brightness.dark,
-      background: Color(0xFF1A3D35),
-      sidebarBackground: Color(0xFF15302A),
-      titleBarBackground: Color(0xFF15302A),
-      primaryText: Color(0xFFF0F4EC),
-      secondaryText: Color(0xFFB8D4C0),
-      border: Color(0xFF4A9B6A),
-      borderLight: Color(0x334A9B6A),
-      buttonBackground: Color(0x99D4AF37),
-      selectedBlue: Color(0xFFE8C84A),
-      dangerRed: Color(0xFFE86A6A),
-      placeholderText: Color(0xFF7A9B88),
-      placeholderBg: Color(0x25D4AF37),
-      addCoverBg: Color(0x30D4AF37),
-      shadowColor: Color(0x70D4AF37),
-      successGreen: Color(0xFF8DDD8D),
-      successBg: Color(0x252A5A3E),
-      errorBg: Color(0x255A2A2A),
-      hoverCloseBg: Color(0x255A2A2A),
-      hoverCloseBorder: Color(0xFFE86A6A),
-      inputHint: Color(0x99B8D4C0),
-      cardHoverBg: Color(0x18FFFFFF),
-      navActiveBg: Color(0xD01A3D35),
-      navActiveBorder: Color(0xFFE8C84A),
-      navInactiveBorder: Color(0x604A9B6A),
-      toggleBg: Color(0x99D4AF37),
-      toggleBorder: Color(0xFF4A9B6A),
-      toggleIcon: Color(0xFFE8C84A),
-    ),
-    CTTheme.sakura: CTThemeData(
-      name: '樱花浪漫',
-      emoji: '🌸',
-      description: '粉色樱花飘落，梦幻唯美',
-      isFeatured: true,
-      backgroundImagePath: 'assets/images/themes/sakura.png',
-      backgroundOverlayOpacity: 0.25,
-      brightness: Brightness.light,
-      background: Color(0xFFFDF2F6),
-      sidebarBackground: Color(0xFFF9ECF1),
-      titleBarBackground: Color(0xFFF9ECF1),
-      primaryText: Color(0xFF5C2E3E),
-      secondaryText: Color(0xFFB07A90),
-      border: Color(0xFFD4849A),
-      borderLight: Color(0x33D4849A),
-      buttonBackground: Color(0xCCFFB7C5),
-      selectedBlue: Color(0xFFE88BA0),
-      dangerRed: Color(0xFFC44060),
-      placeholderText: Color(0xFFCC99AA),
-      placeholderBg: Color(0x1AFFB7C5),
-      addCoverBg: Color(0x25FFB7C5),
-      shadowColor: Color(0x40D4849A),
-      successGreen: Color(0xFF4CAF50),
-      successBg: Color(0x20E8F5E9),
-      errorBg: Color(0x20FFE6EA),
-      hoverCloseBg: Color(0x20FFE6EA),
-      hoverCloseBorder: Color(0xFFEF5350),
-      inputHint: Color(0x99B07A90),
-      cardHoverBg: Color(0x10FFB7C5),
-      navActiveBg: Color(0xE0FDF2F6),
-      navActiveBorder: Color(0xFFE88BA0),
-      navInactiveBorder: Color(0x80D4849A),
-      toggleBg: Color(0xCCFFB7C5),
-      toggleBorder: Color(0xFFD4849A),
-      toggleIcon: Color(0xFFC44060),
-    ),
-    CTTheme.ocean: CTThemeData(
-      name: '蓝天白云',
-      emoji: '☁️',
-      description: '清新蓝天白云，自由开阔',
-      isFeatured: true,
-      backgroundImagePath: 'assets/images/themes/blue_sky.png',
-      backgroundOverlayOpacity: 0.20,
-      brightness: Brightness.light,
-      background: Color(0xFFE8F4FC),
-      sidebarBackground: Color(0xFFDEEBF7),
-      titleBarBackground: Color(0xFFDEEBF7),
-      primaryText: Color(0xFF2A4A6A),
-      secondaryText: Color(0xFF6A8FA8),
-      border: Color(0xFF7BAACC),
-      borderLight: Color(0x337BAACC),
-      buttonBackground: Color(0xBFE8F4FC),
-      selectedBlue: Color(0xFF4A90D9),
-      dangerRed: Color(0xFFD44040),
-      placeholderText: Color(0xFF8BB8CC),
-      placeholderBg: Color(0x1587CEEB),
-      addCoverBg: Color(0x2087CEEB),
-      shadowColor: Color(0x407BAACC),
-      successGreen: Color(0xFF3A9D5A),
-      successBg: Color(0x20E8F5E9),
-      errorBg: Color(0x20FFE6EA),
-      hoverCloseBg: Color(0x20FFE6EA),
-      hoverCloseBorder: Color(0xFFEF5350),
-      inputHint: Color(0x996A8FA8),
-      cardHoverBg: Color(0x1087CEEB),
-      navActiveBg: Color(0xDDE8F4FC),
-      navActiveBorder: Color(0xFF4A90D9),
-      navInactiveBorder: Color(0x607BAACC),
-      toggleBg: Color(0xBFE8F4FC),
-      toggleBorder: Color(0xFF7BAACC),
-      toggleIcon: Color(0xFF2A5A8A),
-    ),
-    CTTheme.twilight: CTThemeData(
-      name: '暮光',
-      emoji: '🔮',
-      description: '深邃紫调优雅',
-      isFeatured: false,
-      brightness: Brightness.dark,
-      background: Color(0xFF1A1520),
-      sidebarBackground: Color(0xFF241D2A),
-      titleBarBackground: Color(0xFF241D2A),
-      primaryText: Color(0xFFE0D8E8),
-      secondaryText: Color(0xFF9B8AA8),
-      border: Color(0xFF4A3D55),
-      borderLight: Color(0x334A3D55),
-      buttonBackground: Color(0xFF2D2435),
-      selectedBlue: Color(0xFF7A6A9B),
-      dangerRed: Color(0xFFE05555),
-      placeholderText: Color(0xFF6D5E7A),
-      placeholderBg: Color(0xFF2A2230),
-      addCoverBg: Color(0xFF2D2435),
-      shadowColor: Color(0x40000000),
-      successGreen: Color(0xFF66BB6A),
-      successBg: Color(0xFF1B3A1B),
-      errorBg: Color(0xFF3A1B2A),
-      hoverCloseBg: Color(0xFF3A1B2A),
-      hoverCloseBorder: Color(0xFFE05555),
-      inputHint: Color(0x999B8AA8),
-      cardHoverBg: Color(0xFF2D2435),
-      navActiveBg: Color(0xFFFFFFFF),
-      navActiveBorder: Color(0xFF6A5580),
-      navInactiveBorder: Color(0xFF4A3D55),
-      toggleBg: Color(0xFF2D2435),
-      toggleBorder: Color(0xFF4A3D55),
-      toggleIcon: Color(0xFFC4B3D4),
-    ),
-  };
+  /// v3.0 P0：所有主题（内置 + 用户）的统一注册表
+  /// 由 ThemeRegistry 维护，AppThemeManager 通过 register/unregister 接口接收
+  final Map<String, CTThemeData> _themes = {};
 
-  CTThemeData get current => _themes[_currentTheme]!;
-
-  static CTThemeData get colors => instance.current;
-
-  static CTThemeData themeData(CTTheme theme) => _themes[theme]!;
-
-  static List<CTTheme> get allThemes => CTTheme.values;
-
-  static List<CTTheme> get featuredThemes =>
-      CTTheme.values.where((t) => _themes[t]!.isFeatured).toList();
-
-  static List<CTTheme> get standardThemes =>
-      CTTheme.values.where((t) => !_themes[t]!.isFeatured).toList();
-
-  Future<void> setTheme(CTTheme theme) async {
-    if (_currentTheme == theme) return;
-    _currentTheme = theme;
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('app_theme', theme.name);
+  /// 注册主题（由 ThemeRegistry 启动时调用）
+  void registerTheme(CTThemeData data) {
+    _themes[data.id] = data;
   }
 
-  Future<void> loadSavedTheme() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString('app_theme');
-    if (saved != null) {
-      final theme = CTTheme.values.firstWhere(
-        (t) => t.name == saved,
-        orElse: () => CTTheme.warmSun,
-      );
-      _currentTheme = theme;
-      notifyListeners();
+  /// v3.0.1 修复：公开的通知接口
+  ///
+  /// `notifyListeners` 是 ChangeNotifier 的 @protected 方法，
+  /// 外部直接调用会产生 `invalid_use_of_protected_member` warning。
+  /// 本方法作为公开入口供外部调用方（如设置页、主题编辑器）触发刷新，
+  /// 同时保留未来在通知前插入日志/批量合并等扩展点。
+  void notifyThemeChanged() => notifyListeners();
+
+  /// 取消注册
+  ///
+  /// v3.0.1 修复：若被删除的是当前激活主题，原实现直接 notifyListeners
+  /// 无过渡动画，视觉上会"跳"到 warmSun。本版本通过 setThemeById 走标准
+  /// 250ms 过渡（setThemeById 内部会处理 _themes 已不含 id 的降级）。
+  Future<void> unregisterTheme(String id) async {
+    final wasActive = _currentThemeId == id;
+    _themes.remove(id);
+    if (wasActive) {
+      // 切换到 warmSun 并触发过渡动画
+      await setThemeById(CTTheme.warmSun.name);
     }
+  }
+
+  /// 获取所有已注册主题 id
+  List<String> get allThemeIds => _themes.keys.toList();
+
+  /// 通过 id 获取主题数据
+  CTThemeData? themeDataById(String id) => _themes[id];
+
+  // ============ 兼容旧 API ============
+
+  /// 兼容旧 API：返回当前激活的 CTTheme 枚举
+  /// 若当前是用户主题，则回退到 warmSun
+  CTTheme get currentTheme {
+    for (final t in CTTheme.values) {
+      if (t.name == _currentThemeId) return t;
+    }
+    return CTTheme.warmSun;
+  }
+
+  /// 兼容旧 API：通过 CTTheme 枚举获取主题数据
+  static CTThemeData themeData(CTTheme theme) =>
+      instance._themes[theme.name] ?? instance._themes[CTTheme.warmSun.name]!;
+
+  /// 兼容旧 API：所有内置 CTTheme 枚举
+  static List<CTTheme> get allThemes => CTTheme.values;
+
+  /// 兼容旧 API：特色主题（isFeatured=true）
+  static List<CTTheme> get featuredThemes => CTTheme.values.where((t) {
+        final data = instance._themes[t.name];
+        return data != null && data.isFeatured;
+      }).toList();
+
+  /// 兼容旧 API：标准主题（isFeatured=false）
+  static List<CTTheme> get standardThemes => CTTheme.values.where((t) {
+        final data = instance._themes[t.name];
+        return data != null && !data.isFeatured;
+      }).toList();
+
+  // ============ 过渡动画状态（保留原逻辑） ============
+
+  static const Duration _transitionDuration = Duration(milliseconds: 250);
+  bool _isTransitioning = false;
+  Duration? _transitionStartTimestamp;
+  CTThemeData? _transitionFrom;
+  CTThemeData? _transitionTo;
+  CTThemeData? _currentInterpolated;
+  int? _frameCallbackId;
+
+  /// 当前生效的主题数据。过渡动画期间返回插值结果，否则返回目标主题。
+  CTThemeData get current {
+    if (_isTransitioning && _currentInterpolated != null) {
+      return _currentInterpolated!;
+    }
+    return _themes[_currentThemeId] ?? _themes[CTTheme.warmSun.name]!;
+  }
+
+  /// 过渡动画期间返回插值后的 CTThemeData，否则返回目标主题。
+  static CTThemeData get colors => instance.current;
+
+  // ============ 主题切换 API ============
+
+  /// 兼容旧 API：通过 CTTheme 枚举设置主题
+  Future<void> setTheme(CTTheme theme) async {
+    await setThemeById(theme.name);
+  }
+
+  /// v3.0 P0 新增：通过 String id 设置主题
+  Future<void> setThemeById(String id) async {
+    if (_currentThemeId == id) return;
+    if (!_themes.containsKey(id)) {
+      debugPrint('[Theme] 主题 id 不存在: $id, 回退到 warmSun');
+      id = CTTheme.warmSun.name;
+    }
+
+    _cancelFrameCallback();
+
+    final fromData = _isTransitioning && _currentInterpolated != null
+        ? _currentInterpolated!
+        : (_themes[_currentThemeId] ?? _themes[CTTheme.warmSun.name]!);
+
+    _currentThemeId = id;
+    _transitionFrom = fromData;
+    _transitionTo = _themes[id]!;
+    _isTransitioning = true;
+    _transitionStartTimestamp = null;
+
+    _frameCallbackId =
+        SchedulerBinding.instance.scheduleFrameCallback(_onTransitionFrame);
+
+    notifyListeners();
+
+    await ThemeStorage.saveActiveThemeId(id);
+  }
+
+  /// v3.0 P0 新增：应用自定义主题（编辑器"应用"按钮调用）
+  ///
+  /// 接收一个完整的 CTThemeData（通常是编辑器预览状态的快照），
+  /// 注册到 _themes（若 id 不存在）并切换为激活主题。
+  ///
+  /// v3.0.1 修复（严重 BUG）：原实现直接调用 setThemeById(data.id)，
+  /// 但 setThemeById 在 `_currentThemeId == id` 时会提前 return 不触发
+  /// notifyListeners，导致编辑当前激活主题点"应用"后 UI 不刷新。
+  /// 本版本显式区分两种场景：
+  /// - 同 id（编辑当前主题）：直接 notifyListeners，触发全应用重建
+  /// - 不同 id（切换主题）：走 setThemeById 触发 250ms 过渡动画
+  Future<void> applyCustomTheme(CTThemeData data) async {
+    final isCurrentlyActive = _currentThemeId == data.id;
+    _themes[data.id] = data;
+
+    if (isCurrentlyActive) {
+      // 编辑当前激活主题：数据已更新，直接通知监听者重建 UI
+      // （无过渡动画，因为是同一主题的颜色调整，过渡反而会让用户困惑）
+      notifyListeners();
+    } else {
+      // 切换到不同主题：走标准过渡动画路径
+      await setThemeById(data.id);
+    }
+  }
+
+  /// v3.0 P0 新增：直接更新当前主题的某个颜色字段（编辑器实时预览用，无过渡动画）
+  ///
+  /// 注意：此方法仅用于编辑器内部"应用"前的局部修改，
+  /// 不触发持久化。持久化由 applyCustomTheme 完成。
+  void updateCurrentColor(String tokenField, Color newColor) {
+    final current = _themes[_currentThemeId];
+    if (current == null) return;
+    _themes[_currentThemeId] = current.withColor(tokenField, newColor);
+    notifyListeners();
+  }
+
+  void _onTransitionFrame(Duration timestamp) {
+    if (!_isTransitioning) return;
+
+    _transitionStartTimestamp ??= timestamp;
+    final elapsed = timestamp - _transitionStartTimestamp!;
+    final t = (elapsed.inMicroseconds / _transitionDuration.inMicroseconds)
+        .clamp(0.0, 1.0);
+
+    final easedT = Curves.easeOutCubic.transform(t);
+    _currentInterpolated =
+        CTThemeData.lerp(_transitionFrom!, _transitionTo!, easedT);
+    notifyListeners();
+
+    if (t < 1.0) {
+      _frameCallbackId =
+          SchedulerBinding.instance.scheduleFrameCallback(_onTransitionFrame);
+    } else {
+      _stopTransition();
+    }
+  }
+
+  void _cancelFrameCallback() {
+    if (_frameCallbackId != null) {
+      SchedulerBinding.instance.cancelFrameCallbackWithId(_frameCallbackId!);
+      _frameCallbackId = null;
+    }
+  }
+
+  void _stopTransition() {
+    _cancelFrameCallback();
+    _isTransitioning = false;
+    _currentInterpolated = null;
+    _transitionFrom = null;
+    _transitionTo = null;
+    _transitionStartTimestamp = null;
+    notifyListeners();
+  }
+
+  /// 加载持久化的激活主题 id
+  ///
+  /// v3.0 P0 启动流程（按顺序执行）：
+  /// 1. 注册 6 个内置主题（id = CTTheme 枚举 name）
+  /// 2. 加载所有用户主题 JSON 文件（在 isolate 中执行）
+  /// 3. 读取 SharedPreferences 中的激活主题 id
+  /// 4. 兼容老版本：若值为 CTTheme 枚举 name，直接作为内置主题 id
+  /// 5. 降级：若激活主题 id 不存在（用户主题被外部删除等），回退到 warmSun
+  Future<void> loadSavedTheme() async {
+    // 1. 注册内置主题（幂等）
+    ThemeRegistry.registerBuiltinThemes();
+
+    // 2. 加载用户主题（不阻塞主线程）
+    try {
+      final userThemes = await ThemeStorage.loadAllUserThemes();
+      for (final data in userThemes) {
+        _themes[data.id] = data;
+      }
+    } catch (e) {
+      debugPrint('[Theme] 加载用户主题失败(忽略): $e');
+    }
+
+    // 3. 读取激活 id
+    final saved = await ThemeStorage.loadActiveThemeId();
+    if (saved != null && _themes.containsKey(saved)) {
+      _currentThemeId = saved;
+      notifyListeners();
+      return;
+    }
+
+    if (saved != null) {
+      // 4. 兼容：尝试匹配 CTTheme 枚举 name
+      for (final t in CTTheme.values) {
+        if (t.name == saved && _themes.containsKey(t.name)) {
+          _currentThemeId = t.name;
+          notifyListeners();
+          return;
+        }
+      }
+      // 5. 降级
+      debugPrint('[Theme] 激活主题 id "$saved" 不存在, 回退到 warmSun');
+    }
+
+    _currentThemeId = CTTheme.warmSun.name;
+    notifyListeners();
   }
 }

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
-import '../core/backend_config.dart';
 import '../theme/app_colors.dart';
 import '../modules/auth/user_model.dart';
 import '../services/user_cache_service.dart';
@@ -13,6 +12,7 @@ class UserProfileModal extends StatefulWidget {
   final VoidCallback onLogout;
   final VoidCallback? onOpenSettings;
   final VoidCallback? onCharge;
+  final VoidCallback? onOpenBigPicture;
   final UserModel? user;
   const UserProfileModal(
       {super.key,
@@ -20,6 +20,7 @@ class UserProfileModal extends StatefulWidget {
       required this.onLogout,
       this.onOpenSettings,
       this.onCharge,
+      this.onOpenBigPicture,
       this.user});
 
   @override
@@ -27,7 +28,6 @@ class UserProfileModal extends StatefulWidget {
 }
 
 class _UserProfileModalState extends State<UserProfileModal> {
-  bool _closeHovered = false;
   String get _displayName => widget.user?.name ?? 'Kiyoko';
   String get _displayUid => widget.user?.id.isNotEmpty == true
       ? 'UID: ${widget.user!.id}'
@@ -62,8 +62,8 @@ class _UserProfileModalState extends State<UserProfileModal> {
             children: [
               _buildHeader(),
               const SizedBox(height: 77),
-              if (BackendConfig.isBackendAvailable) _buildChargeSection(),
-              if (BackendConfig.isBackendAvailable) const SizedBox(height: 73),
+              _buildChargeSection(),
+              const SizedBox(height: 73),
               _buildBottomButtons(),
             ],
           ),
@@ -86,32 +86,35 @@ class _UserProfileModalState extends State<UserProfileModal> {
                 width: 80,
                 height: 80,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF0E6D2),
+                  color: AppColors.placeholderCover,
                   shape: BoxShape.circle,
-                  border:
-                      Border.all(color: const Color(0xFF8B7355), width: 1.6),
-                  boxShadow: const [
+                  border: Border.all(color: AppColors.border, width: 1.6),
+                  boxShadow: [
                     BoxShadow(
-                      color: Color(0xFF8B7355),
+                      color: AppColors.shadowColor,
                       offset: Offset(2, 3),
                       blurRadius: 0,
                     ),
                   ],
                 ),
-                padding: const EdgeInsets.fromLTRB(3.5, 3.5, 3.5, 1.6),
+                padding: const EdgeInsets.all(3.5),
                 child: Container(
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: const Color(0xFFFBF6EF),
-                    border:
-                        Border.all(color: const Color(0xFF8B7355), width: 1),
+                    color: AppColors.sidebarBackground,
+                    border: Border.all(color: AppColors.border, width: 1),
                   ),
-                  padding: const EdgeInsets.fromLTRB(1, 1, 1, 0.8),
+                  alignment: Alignment.center,
                   child: ClipOval(
-                    child: UserCacheService.buildUserAvatar(
-                      size: 71,
-                      defaultAvatar: _buildDefaultAvatar(),
-                      avatarUrl: widget.user?.avatarUrl,
+                    child: SizedBox(
+                      width: 71,
+                      height: 71,
+                      child: UserCacheService.buildUserAvatar(
+                        size: 71,
+                        defaultAvatar: _buildDefaultAvatar(),
+                        avatarBytes: widget.user?.avatarBytes,
+                        avatarUrl: widget.user?.avatarUrl,
+                      ),
                     ),
                   ),
                 ),
@@ -147,47 +150,25 @@ class _UserProfileModalState extends State<UserProfileModal> {
               ),
             ],
           ),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            onEnter: (_) => setState(() => _closeHovered = true),
-            onExit: (_) => setState(() => _closeHovered = false),
-            child: GestureDetector(
-              onTap: widget.onClose,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: _closeHovered
-                      ? AppColors.primaryText.withOpacity(0.1)
-                      : AppColors.background,
-                  border: Border.all(
-                    color: _closeHovered
-                        ? AppColors.border
-                        : AppColors.border.withOpacity(0.5),
-                    width: _closeHovered ? 2 : 1.6,
-                  ),
-                  borderRadius: BorderRadius.circular(5),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.border,
-                      offset: _closeHovered
-                          ? const Offset(1, 2)
-                          : const Offset(2, 3),
-                      blurRadius: 0,
-                    ),
-                  ],
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // v1.2: 大屏模式入口改为右上角小图标按钮,与关闭按钮并列
+              //       不再作为底部第三按钮挤压原布局
+              if (widget.onOpenBigPicture != null) ...[
+                _HeaderIconButton(
+                  icon: Icons.fullscreen_rounded,
+                  onTap: widget.onOpenBigPicture!,
+                  tooltip: '大屏模式 (F11)',
                 ),
-                alignment: Alignment.center,
-                child: Icon(
-                  Icons.close,
-                  size: 18,
-                  color: _closeHovered
-                      ? AppColors.primaryText
-                      : AppColors.secondaryText,
-                ),
+                const SizedBox(width: 8),
+              ],
+              _HeaderIconButton(
+                icon: Icons.close,
+                onTap: widget.onClose,
+                tooltip: '关闭',
               ),
-            ),
+            ],
           ),
         ],
       ),
@@ -203,7 +184,7 @@ class _UserProfileModalState extends State<UserProfileModal> {
         border: Border.all(color: AppColors.border, width: 1.6),
         boxShadow: [
           BoxShadow(
-            color: const Color(0x338B7355),
+            color: AppColors.shadowColor,
             offset: const Offset(2, 2),
             blurRadius: 0,
           ),
@@ -236,7 +217,6 @@ class _UserProfileModalState extends State<UserProfileModal> {
               '如果 Chrono Tide 给你带来了快乐，请不要吝啬地用零花钱喂饱开发者吧！您的支持是我们持续为纯爱发光发热的动力～（´,,•ω•,,）♡',
               style: TextStyle(
                 fontFamily: 'Inter',
-                fontWeight: FontWeight.w500,
                 fontSize: 14,
                 height: 22.75 / 14,
                 color: AppColors.primaryText,
@@ -291,7 +271,7 @@ class _UserProfileModalState extends State<UserProfileModal> {
   }
 
   Widget _buildBottomButtons() {
-    final isBackendAvailable = BackendConfig.isBackendAvailable;
+    // v1.2: 大屏模式入口已移至右上角图标按钮,底部恢复原两按钮布局
     return SizedBox(
       width: 449,
       height: 55,
@@ -301,23 +281,21 @@ class _UserProfileModalState extends State<UserProfileModal> {
             child: _ProfileButton(
               label: '个人设置',
               onTap: widget.onOpenSettings ?? () {},
-              baseColor: AppColors.selectedBlue,
+              baseColor: AppColors.selectedAccent,
               textColor: AppColors.primaryText,
               shadowColor: AppColors.primaryText,
             ),
           ),
-          if (isBackendAvailable) ...[
-            const SizedBox(width: 12),
-            Expanded(
-              child: _ProfileButton(
-                label: '退出登录',
-                onTap: widget.onLogout,
-                baseColor: AppColors.background,
-                textColor: AppColors.border,
-                shadowColor: AppColors.border,
-              ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _ProfileButton(
+              label: '退出登录',
+              onTap: widget.onLogout,
+              baseColor: AppColors.background,
+              textColor: AppColors.border,
+              shadowColor: AppColors.border,
             ),
-          ],
+          ),
         ],
       ),
     );
@@ -329,7 +307,7 @@ class _UserProfileModalState extends State<UserProfileModal> {
         'assets/images/user_avatar_icon.svg',
         width: 28,
         height: 28,
-        colorFilter: const ColorFilter.mode(Color(0xFFA08264), BlendMode.srcIn),
+        colorFilter: ColorFilter.mode(AppColors.secondaryText, BlendMode.srcIn),
       ),
     );
   }
@@ -372,16 +350,15 @@ class _ProfileButtonState extends State<_ProfileButton> {
           duration: const Duration(milliseconds: 200),
           height: 55,
           decoration: BoxDecoration(
-            color: _hovered ? const Color(0xFFF5EDE6) : widget.baseColor,
+            color: _hovered ? AppColors.cardHoverBg : widget.baseColor,
             border: Border.all(
-              color:
-                  _hovered ? const Color(0xFF8B7355) : const Color(0x1A000000),
+              color: _hovered ? AppColors.border : AppColors.borderLight,
               width: _hovered ? 2.0 : 1.6,
             ),
             boxShadow: _hovered
                 ? [
                     BoxShadow(
-                      color: const Color(0x338B7355),
+                      color: AppColors.shadowColor,
                       offset: const Offset(0, 2),
                       blurRadius: 8,
                     ),
@@ -403,6 +380,75 @@ class _ProfileButtonState extends State<_ProfileButton> {
               fontSize: 18,
               height: 28 / 18,
               color: widget.textColor,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 用户窗口右上角小图标按钮 (v1.2)
+///
+/// 32x32 带悬停态的工具图标按钮,用于关闭按钮与大屏模式入口,
+/// 复用同一视觉规范避免重复代码。
+class _HeaderIconButton extends StatefulWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  final String tooltip;
+
+  const _HeaderIconButton({
+    required this.icon,
+    required this.onTap,
+    required this.tooltip,
+  });
+
+  @override
+  State<_HeaderIconButton> createState() => _HeaderIconButtonState();
+}
+
+class _HeaderIconButtonState extends State<_HeaderIconButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: widget.tooltip,
+      waitDuration: const Duration(milliseconds: 400),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: _hovered
+                  ? AppColors.primaryText.withOpacity(0.1)
+                  : AppColors.background,
+              border: Border.all(
+                color: _hovered
+                    ? AppColors.border
+                    : AppColors.border.withOpacity(0.5),
+                width: _hovered ? 2 : 1.6,
+              ),
+              borderRadius: BorderRadius.circular(5),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.border,
+                  offset: _hovered ? const Offset(1, 2) : const Offset(2, 3),
+                  blurRadius: 0,
+                ),
+              ],
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              widget.icon,
+              size: 18,
+              color: _hovered ? AppColors.primaryText : AppColors.secondaryText,
             ),
           ),
         ),

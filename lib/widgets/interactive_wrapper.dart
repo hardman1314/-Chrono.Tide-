@@ -33,14 +33,21 @@ class _InteractiveWrapperState extends State<InteractiveWrapper> {
 
   @override
   Widget build(BuildContext context) {
-    final scale =
-        _pressed ? widget.pressScale : (_hovered ? widget.hoverScale : 1.0);
-    final offset = _pressed
-        ? widget.pressOffset
-        : (_hovered ? widget.hoverOffset : Offset.zero);
+    // UX-27: onTap 为 null 时视为禁用态——不应用 hover 缩放/位移，光标改为 basic，
+    // 避免禁用按钮（如"即将推出"）呈现可点击的悬停效果造成误导。
+    final disabled = widget.onTap == null;
+    final scale = disabled
+        ? 1.0
+        : (_pressed ? widget.pressScale : (_hovered ? widget.hoverScale : 1.0));
+    final offset = disabled
+        ? Offset.zero
+        : (_pressed
+            ? widget.pressOffset
+            : (_hovered ? widget.hoverOffset : Offset.zero));
+    final effectiveCursor = disabled ? SystemMouseCursors.basic : widget.cursor;
 
     return MouseRegion(
-      cursor: widget.cursor,
+      cursor: effectiveCursor,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() {
         _hovered = false;

@@ -1,28 +1,64 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../core/pb_config.dart';
 import '../core/path_helper.dart';
-import '../core/backend_config.dart';
 
 class OpenListService {
-  static final String _configRecordId = BackendConfig.openlistConfigRecordId;
+  static const String _configRecordId = 'tj9z6skib6207if';
 
   static bool _isRunning = false;
   static Process? _process;
   static int? _processPid;
   static String? _authToken;
 
+  /// 空闲自动关闭定时器
+  static Timer? _idleTimer;
+  /// 空闲超时时间（10分钟无请求则自动关闭）
+  static const Duration _idleTimeout = Duration(minutes: 10);
+  /// 是否正在启动中（防止并发启动）
+  static bool _isBooting = false;
+
   static bool get isRunning => _isRunning;
   static int? get processPid => _processPid;
   static String? get authToken => _authToken;
 
-  static Future<void> boot() async {
-    // 后端不可用时跳过 OpenList 启动
-    if (!BackendConfig.isBackendAvailable || !BackendConfig.isOpenlistConfigured) {
-      debugPrint('[OpenList] 后端未配置，跳过 OpenList 启动');
+  /// 标记 OpenList 被使用，重置空闲计时器
+  static void _markUsed() {
+    _idleTimer?.cancel();
+    _idleTimer = Timer(_idleTimeout, () {
+      debugPrint('[OL-IDLE] ⏰ 空闲超时 (${_idleTimeout.inMinutes}分钟)，自动关闭 OpenList');
+      stop();
+    });
+  }
+
+  /// 按需启动：仅在需要时调用
+  /// 如果已在运行或正在启动中，直接返回
+  static Future<void> ensureRunning() async {
+    if (_isRunning) {
+      _markUsed();
       return;
     }
+    if (_isBooting) {
+      // 等待启动完成
+      while (_isBooting) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      _markUsed();
+      return;
+    }
+
+    _isBooting = true;
+    try {
+      await boot();
+    } finally {
+      _isBooting = false;
+    }
+    _markUsed();
+  }
+
+  static Future<void> boot() async {
     debugPrint('[OL-BOOT] ========== OpenList 配置同步 & 启动 ==========');
 
     await _ensureOpenListFiles();
@@ -507,30 +543,30 @@ class OpenListService {
 
       final psScript = '''
         \$ErrorActionPreference = "Stop"
-
+        
         Write-Host "开始解压..."
         Write-Host "源文件: $zipPath"
         Write-Host "目标目录: $targetDir"
-
+        
         if (-not (Test-Path "$zipPath")) {
             Write-Host "ERROR: 源文件不存在"
             exit 1
         }
-
+        
         if (-not (Test-Path "$targetDir")) {
             New-Item -ItemType Directory -Path "$targetDir" -Force | Out-Null
         }
-
+        
         try {
             Expand-Archive -LiteralPath "$zipPath" -DestinationPath "$targetDir" -Force
-
+            
             \$files = Get-ChildItem -Path "$targetDir" -Recurse -File
             Write-Host ("提取文件数: " + \$files.Count)
-
+            
             foreach (\$file in \$files) {
                 Write-Host ("  FILE: " + \$file.Name + " (" + \$file.Length + " bytes)")
             }
-
+            
             exit 0
         } catch {
             Write-Host ("ERROR: " + \$_.Exception.Message)
@@ -697,8 +733,8 @@ class OpenListService {
                     hasValidUser = true;
                   }
 
-                  if (username == BackendConfig.openlistAdminUsername && password == BackendConfig.openlistAdminPassword) {
-                    debugPrint('   ℹ️ 使用配置中的凭据');
+                  if (username == 'admin' && password == 'admin') {
+                    debugPrint('   ℹ️ 使用默认凭据(admin/admin)');
                   }
                 }
               }
@@ -1019,7 +1055,8 @@ class OpenListService {
 
     List<Map<String, String>> credentialsList = [
       _readCredentialsFromConfig(),
-      {'username': BackendConfig.openlistAdminUsername, 'password': BackendConfig.openlistAdminPassword},
+      {'username': 'admin', 'password': 'admin'},
+      {'username': 'admin', 'password': ''},
       {'username': '', 'password': ''},
     ];
 
@@ -1148,19 +1185,24 @@ class OpenListService {
   static Map<String, String> _readCredentials() {
     return _readCredentialsFromConfig().isNotEmpty
         ? _readCredentialsFromConfig()
-        : {'username': BackendConfig.openlistAdminUsername, 'password': BackendConfig.openlistAdminPassword};
+        : {'username': 'admin', 'password': 'admin'};
   }
 
-  static Future<String?> getGameDownloadUrl(String gamePath) async {
+  static Future<String?> getGameDownloadUrl(String gamePath, {int retryCount = 0}) async {
     debugPrint('[OL-LINK] 收到游戏路径: $gamePath');
+
+    // ★ 按需启动：如果 OpenList 未运行，自动启动
+    if (!_isRunning) {
+      debugPrint('[OL-LINK] OpenList未运行，按需启动...');
+      await ensureRunning();
+      if (!_isRunning) {
+        debugPrint('[OL-LINK] ❌ 按需启动失败');
+        return null;
+      }
+    }
 
     const requestUrl = 'http://127.0.0.1:5244/api/fs/get';
     debugPrint('[OL-LINK] 请求 OpenList 接口: $requestUrl');
-
-    if (!_isRunning) {
-      debugPrint('[OL-LINK] ❌ OpenList未运行');
-      return null;
-    }
 
     try {
       final client = HttpClient()
@@ -1195,8 +1237,8 @@ class OpenListService {
           debugPrint('[OL-LINK] ❌ 401 Token失效，尝试重新登录...');
           _authToken = null;
           await _login();
-          if (_authToken != null) {
-            return getGameDownloadUrl(gamePath);
+          if (_authToken != null && retryCount < 2) {
+            return getGameDownloadUrl(gamePath, retryCount: retryCount + 1);
           }
         }
         debugPrint('[OL-LINK] ❌ HTTP错误 (${response.statusCode})');
@@ -1215,6 +1257,7 @@ class OpenListService {
 
       if (rawUrl.isNotEmpty) {
         debugPrint('[OL-LINK] ✅ 解析 raw_url 成功 (${rawUrl.length}字符)');
+        _markUsed(); // 成功使用，重置空闲计时器
         return rawUrl;
       } else {
         debugPrint('[OL-LINK] 解析 raw_url 失败：字段不存在 / 为空');
@@ -1227,6 +1270,8 @@ class OpenListService {
   }
 
   static void stop() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
     if (_process != null) {
       _process!.kill();
       _process = null;
@@ -1245,63 +1290,35 @@ class OpenListService {
   static Future<void> dispose() async {
     debugPrint('[OL-BOOT] ═══════════ 开始强制清理OpenList进程 ═══════════');
 
-    stop();
+    _idleTimer?.cancel();
+    _idleTimer = null;
 
-    for (int attempt = 1; attempt <= 3; attempt++) {
-      debugPrint('[OL-BOOT] 清理尝试 $attempt/3...');
-      await Future.delayed(Duration(milliseconds: 500 * attempt));
-
-      bool stillRunning = await _isProcessStillRunning();
-      if (!stillRunning) {
-        debugPrint('[OL-BOOT] ✅ OpenList进程已完全终止 (尝试$attempt)');
-        break;
-      }
-
-      debugPrint('[OL-BOOT] ⚠️ 进程仍在运行，执行强力终止...');
-
+    // 1. 通过 Process 引用直接 kill
+    if (_process != null) {
       try {
-        final result = await Process.run(
-          'taskkill',
-          ['/IM', 'openlist.exe', '/F', '/T'],
-        );
-
-        if (result.exitCode == 0) {
-          debugPrint('[OL-BOOT] ✅ taskkill 成功 (尝试$attempt)');
-        } else {
-          final stderr = result.stderr.toString().trim();
-          if (stderr.toLowerCase().contains('not found') || stderr.isEmpty) {
-            debugPrint('[OL-BOOT] ✅ 无残留openlist.exe进程');
-            break;
-          } else {
-            debugPrint('[OL-BOOT] ⚠️ taskkill 返回: $stderr');
-          }
-        }
-      } catch (e) {
-        debugPrint('[OL-BOOT] ❌ taskkill 异常: $e');
-      }
-
-      if (attempt == 3) {
-        debugPrint('[OL-BOOT] ❌ 3次尝试后OpenList可能仍未完全终止');
-      }
+        _process!.kill(ProcessSignal.sigkill);
+      } catch (_) {}
+      _process = null;
     }
+
+    // 2. 通过 PID 强制终止（同步，不等待）
+    if (_processPid != null) {
+      debugPrint('[OL-BOOT] 终止OpenList进程 PID=$_processPid');
+      try {
+        Process.runSync('taskkill', ['/PID', '$_processPid', '/F', '/T']);
+      } catch (_) {}
+      _processPid = null;
+    }
+
+    // 3. 兜底：按名称强制杀死所有 openlist.exe（同步，不等待）
+    try {
+      Process.runSync('taskkill', ['/IM', 'openlist.exe', '/F', '/T']);
+    } catch (_) {}
 
     _isRunning = false;
     _process = null;
     _processPid = null;
     _authToken = null;
     debugPrint('[OL-BOOT] ═══════════ OpenList清理完成 ═══════════');
-  }
-
-  static Future<bool> _isProcessStillRunning() async {
-    try {
-      final result = await Process.run(
-        'tasklist',
-        ['/FI', 'IMAGENAME eq openlist.exe', '/NH', '/FO', 'CSV'],
-      );
-      final output = result.stdout.toString().trim();
-      return output.toLowerCase().contains('openlist.exe');
-    } catch (_) {
-      return false;
-    }
   }
 }

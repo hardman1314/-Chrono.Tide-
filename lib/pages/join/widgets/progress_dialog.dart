@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../join_controller.dart';
 import '../../../theme/app_colors.dart';
 import '../../../services/global_task_manager.dart';
+import '../../../widgets/custom_title_bar.dart' show kTitleBarHeight;
 
 class JoinProgressDialog extends StatelessWidget {
   final JoinController controller;
@@ -14,38 +15,53 @@ class JoinProgressDialog extends StatelessWidget {
     final isFailed = controller.isProgressFailed;
     final isInProgress = !isSuccess && !isFailed;
 
-    return Material(
-      color: Colors.black54,
-      child: Center(
-        child: Container(
-          width: 380,
-          padding: const EdgeInsets.all(28),
-          decoration: BoxDecoration(
-            color: AppColors.background,
-            border: Border.all(color: AppColors.border, width: 1.6),
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.25),
-                offset: const Offset(4, 8),
-                blurRadius: 24,
-              )
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (isInProgress) ...[
-                _buildProgressContent(),
-              ] else if (isSuccess) ...[
-                _buildSuccessContent(),
-              ] else if (isFailed) ...[
-                _buildFailedContent(),
-              ]
-            ],
+    return Stack(
+      children: [
+        // 遮罩从标题栏下方开始，确保标题栏在进度对话框打开时仍可交互
+        Positioned(
+          top: kTitleBarHeight,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Container(color: Colors.black54),
+        ),
+        Positioned(
+          top: kTitleBarHeight,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Center(
+            child: Container(
+              width: 380,
+              padding: const EdgeInsets.all(28),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                border: Border.all(color: AppColors.border, width: 1.6),
+                borderRadius: BorderRadius.circular(8),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.25),
+                    offset: const Offset(4, 8),
+                    blurRadius: 24,
+                  )
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isInProgress) ...[
+                    _buildProgressContent(),
+                  ] else if (isSuccess) ...[
+                    _buildSuccessContent(),
+                  ] else if (isFailed) ...[
+                    _buildFailedContent(),
+                  ]
+                ],
+              ),
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 
@@ -57,7 +73,7 @@ class JoinProgressDialog extends StatelessWidget {
           height: 44,
           child: CircularProgressIndicator(
             strokeWidth: 3,
-            valueColor: AlwaysStoppedAnimation<Color>(const Color(0xFF4A72A5)),
+            valueColor: AlwaysStoppedAnimation<Color>(AppColors.infoBlue),
             value:
                 controller.progressValue > 0 ? controller.progressValue : null,
           ),
@@ -65,7 +81,7 @@ class JoinProgressDialog extends StatelessWidget {
         const SizedBox(height: 20),
         Text('正在入库...',
             style: TextStyle(
-                fontFamily: 'Zhi Mang Xing',
+                fontFamily: 'ZhiMangXing',
                 fontSize: 18,
                 color: AppColors.primaryText)),
         const SizedBox(height: 10),
@@ -76,7 +92,7 @@ class JoinProgressDialog extends StatelessWidget {
             value:
                 controller.progressValue > 0 ? controller.progressValue : null,
             backgroundColor: AppColors.buttonBackground,
-            valueColor: AlwaysStoppedAnimation<Color>(const Color(0xFF4A72A5)),
+            valueColor: AlwaysStoppedAnimation<Color>(AppColors.infoBlue),
           ),
         ),
         const SizedBox(height: 8),
@@ -120,16 +136,16 @@ class JoinProgressDialog extends StatelessWidget {
             width: 56,
             height: 56,
             decoration: BoxDecoration(
-                color: const Color(0xFFE8F5E9), shape: BoxShape.circle),
+                color: AppColors.successBg, shape: BoxShape.circle),
             alignment: Alignment.center,
             child: Icon(Icons.check_rounded,
-                size: 32, color: const Color(0xFF4CAF50))),
+                size: 32, color: AppColors.successGreen)),
         const SizedBox(height: 16),
         Text('入库成功！',
             style: TextStyle(
-                fontFamily: 'Zhi Mang Xing',
+                fontFamily: 'ZhiMangXing',
                 fontSize: 20,
-                color: const Color(0xFF4CAF50))),
+                color: AppColors.successGreen)),
         const SizedBox(height: 8),
         Text('《${controller.nameController.text}》已添加到库中',
             style: TextStyle(
@@ -146,15 +162,15 @@ class JoinProgressDialog extends StatelessWidget {
         Container(
             width: 56,
             height: 56,
-            decoration: BoxDecoration(
-                color: const Color(0xFFFFF0F0), shape: BoxShape.circle),
+            decoration:
+                BoxDecoration(color: AppColors.errorBg, shape: BoxShape.circle),
             alignment: Alignment.center,
             child: Icon(Icons.error_rounded,
                 size: 32, color: AppColors.dangerRed)),
         const SizedBox(height: 16),
         Text('入库失败',
             style: TextStyle(
-                fontFamily: 'Zhi Mang Xing',
+                fontFamily: 'ZhiMangXing',
                 fontSize: 20,
                 color: AppColors.dangerRed)),
         const SizedBox(height: 8),
@@ -185,7 +201,7 @@ class JoinProgressDialog extends StatelessWidget {
                   style: TextStyle(
                       fontFamily: 'Inter',
                       fontSize: 13,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w600,
                       color: AppColors.dangerRed)),
             ),
           ),

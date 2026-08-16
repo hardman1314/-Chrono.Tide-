@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import '../core/path_helper.dart';
 import 'game_data_format.dart';
+import 'storage/cleanup_utils.dart';
 
 class InterruptCleanup {
   static final String _downloadsDir = PathHelper.downloadsDir;
@@ -222,5 +224,130 @@ class InterruptCleanup {
       debugPrint('[INFO] [STARTUP-SCAN] 无残留文件，环境干净');
     }
     debugPrint('[INFO] [INTERRUPT-CLEANUP] ========== 启动扫描结束 ==========');
+  }
+
+  /// 快路径:仅清理已知活动任务的残留,带超时。
+  ///
+  /// 不做全目录扫描,只删具体路径,典型 < 100ms。
+  /// 用于软件退出时,仅当有正在进行的下载/解压任务时调用。
+  /// 超时后放弃(残留靠下次启动 startupScan 兜底)。
+  static Future<void> cleanupActiveTaskResidue({
+    String? downloadedFilePath,
+    String? targetGameDir,
+    String? actualGameDir,
+    Duration timeout = const Duration(milliseconds: 800),
+  }) async {
+    debugPrint('[INTERRUPT-CLEANUP] ========== 开始活动任务残留清理(快路径) ==========');
+
+    try {
+      // 用 Future.any + 超时控制,避免拖慢退出
+      await _doCleanupActiveTaskResidue(
+        downloadedFilePath: downloadedFilePath,
+        targetGameDir: targetGameDir,
+        actualGameDir: actualGameDir,
+      ).timeout(timeout);
+    } on TimeoutException {
+      debugPrint('[INTERRUPT-CLEANUP] ⚠️ 活动任务清理超时(${timeout.inMilliseconds}ms),残留靠下次启动扫描兜底');
+    } catch (e) {
+      debugPrint('[INTERRUPT-CLEANUP] ⚠️ 活动任务清理异常: $e');
+    }
+
+    debugPrint('[INTERRUPT-CLEANUP] ========== 活动任务残留清理结束 ==========');
+  }
+
+  static Future<void> _doCleanupActiveTaskResidue({
+    String? downloadedFilePath,
+    String? targetGameDir,
+    String? actualGameDir,
+  }) async {
+    final tasks = <Future<void>>[];
+
+    // 1. 删除已下载的文件(可能是压缩包或未合并的分片)
+    if (downloadedFilePath != null && downloadedFilePath.isNotEmpty) {
+      tasks.add(() async {
+        final ok = await CleanupUtils.deleteWithRetry(
+          File(downloadedFilePath),
+          retries: 1,
+          reason: 'exit_cleanup_downloaded',
+        );
+        debugPrint('[INTERRUPT-CLEANUP]   下载文件: ${ok ? "已删除" : "跳过"}');
+      }());
+    }
+
+    // 2. 删除实际解压目录(用户自定义路径,优先于元数据目录)
+    if (actualGameDir != null && actualGameDir.isNotEmpty) {
+      tasks.add(() async {
+        final dir = Directory(actualGameDir);
+        if (await dir.exists()) {
+          // 安全检查:仅当不含游戏数据文件时才删除
+          try {
+            final entities = await dir.list().toList();
+            bool hasGameData = false;
+            for (final e in entities) {
+              if (e is File) {
+                final fname = e.path.toLowerCase();
+                if (fname.endsWith('.exe') ||
+                    fname.endsWith('.ctgame') ||
+                    fname.endsWith('.xp3') ||
+                    fname.endsWith('.ks')) {
+                  hasGameData = true;
+                  break;
+                }
+              }
+            }
+            if (!hasGameData) {
+              await CleanupUtils.deleteWithRetry(
+                dir, retries: 1, reason: 'exit_cleanup_actual_dir',
+              );
+              debugPrint('[INTERRUPT-CLEANUP]   实际解压目录: 已删除');
+            } else {
+              debugPrint('[INTERRUPT-CLEANUP]   实际解压目录: 含游戏数据,保留');
+            }
+          } catch (e) {
+            debugPrint('[INTERRUPT-CLEANUP]   实际解压目录: 检查异常 $e');
+          }
+        }
+      }());
+    }
+
+    // 3. 删除元数据目录(若与实际解压目录不同)
+    if (targetGameDir != null &&
+        targetGameDir.isNotEmpty &&
+        targetGameDir != actualGameDir) {
+      tasks.add(() async {
+        final dir = Directory(targetGameDir);
+        if (await dir.exists()) {
+          await CleanupUtils.deleteWithRetry(
+            dir, retries: 1, reason: 'exit_cleanup_target_dir',
+          );
+          debugPrint('[INTERRUPT-CLEANUP]   元数据目录: 已删除');
+        }
+      }());
+    }
+
+    // 4. 删除 _temp_layer_* 临时目录(Games 目录下)
+    tasks.add(() async {
+      final gamesDir = Directory(_gamesDir);
+      if (await gamesDir.exists()) {
+        int deleted = 0;
+        await for (final entity in gamesDir.list(followLinks: false)) {
+          if (entity is Directory) {
+            final name = entity.path.split('/').last.split('\\').last;
+            if (name.contains('_temp_layer_')) {
+              final ok = await CleanupUtils.deleteWithRetry(
+                entity, retries: 0, reason: 'exit_cleanup_temp_layer',
+              );
+              if (ok) deleted++;
+            }
+          }
+        }
+        if (deleted > 0) {
+          debugPrint('[INTERRUPT-CLEANUP]   临时层: 已删除 $deleted 个');
+        }
+      }
+    }());
+
+    // 并行执行所有清理任务
+    await Future.wait(tasks);
   }
 }

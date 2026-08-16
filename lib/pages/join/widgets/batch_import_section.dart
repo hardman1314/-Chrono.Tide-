@@ -1,12 +1,17 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../../../core/portable_image_cache_manager.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import '../batch_import_controller.dart';
 import '../join_controller.dart';
 import '../../../theme/app_colors.dart';
 import '../../../widgets/interactive_wrapper.dart';
+import '../../../widgets/confirm_dialog.dart';
+import '../../../services/scan_logger.dart';
+import 'platform_badge.dart';
 
 class BatchImportSection extends StatefulWidget {
   final BatchImportController batchController;
@@ -26,6 +31,145 @@ class _BatchImportSectionState extends State<BatchImportSection> {
   bool _isCenterIconHovered = false;
   bool _isDragging = false; // 新增：拖拽状态跟踪
 
+  // ===== 扫描摘要可折叠状态 =====
+  bool _isScanSummaryExpanded = true;
+  Timer? _scanSummaryTimer;
+  ScanSummary? _lastSeenSummary;
+
+  // ===== 进度 ETA 追踪 =====
+  DateTime? _progressStartTime;
+  int _lastCompletedCount = 0;
+  double _avgTimePerItem = 0; // 秒/项，EMA 平滑
+
+  // ===== 新增按钮悬停 =====
+  bool _isAddBtnHovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.batchController.addListener(_onControllerChanged);
+  }
+
+  @override
+  void dispose() {
+    _scanSummaryTimer?.cancel();
+    widget.batchController.removeListener(_onControllerChanged);
+    super.dispose();
+  }
+
+  /// 监听 controller 变化：检测新扫描摘要到达 → 展开并启动自动收起计时
+  void _onControllerChanged() {
+    if (!mounted) return;
+    final current = widget.batchController.lastScanSummary;
+    if (current != null && !identical(current, _lastSeenSummary)) {
+      // 新扫描摘要到达
+      _lastSeenSummary = current;
+      _isScanSummaryExpanded = true;
+      _startScanSummaryTimer();
+    } else if (current == null && _lastSeenSummary != null) {
+      // 摘要被清空（新扫描开始）
+      _lastSeenSummary = null;
+      _isScanSummaryExpanded = true;
+      _scanSummaryTimer?.cancel();
+    }
+    _updateProgressTracking();
+  }
+
+  void _startScanSummaryTimer() {
+    _scanSummaryTimer?.cancel();
+    _scanSummaryTimer = Timer(const Duration(seconds: 7), () {
+      if (mounted) {
+        setState(() => _isScanSummaryExpanded = false);
+      }
+    });
+  }
+
+  void _toggleScanSummary() {
+    setState(() {
+      _isScanSummaryExpanded = !_isScanSummaryExpanded;
+      if (_isScanSummaryExpanded) {
+        _startScanSummaryTimer();
+      } else {
+        _scanSummaryTimer?.cancel();
+      }
+    });
+  }
+
+  /// 追踪进度起始时间和平均每项耗时（EMA 平滑），供 ETA 计算
+  void _updateProgressTracking() {
+    final isProcessing =
+        widget.batchController.isProcessingQueue ||
+            widget.batchController.isImporting;
+
+    if (isProcessing && _progressStartTime == null) {
+      _progressStartTime = DateTime.now();
+      _lastCompletedCount = 0;
+      _avgTimePerItem = 0;
+    } else if (!isProcessing && _progressStartTime != null) {
+      _progressStartTime = null;
+      _lastCompletedCount = 0;
+      _avgTimePerItem = 0;
+    }
+
+    if (_progressStartTime != null) {
+      final completed = widget.batchController.isImporting
+          ? widget.batchController.importProgressCurrent
+          : widget.batchController.finishedCount;
+      if (completed > _lastCompletedCount) {
+        final elapsed =
+            DateTime.now().difference(_progressStartTime!).inSeconds;
+        if (completed > 0 && elapsed > 0) {
+          final instantRate = elapsed / completed;
+          _avgTimePerItem = _avgTimePerItem == 0
+              ? instantRate
+              : _avgTimePerItem * 0.7 + instantRate * 0.3;
+        }
+        _lastCompletedCount = completed;
+      }
+    }
+  }
+
+  /// 计算 ETA 文案
+  String _getEtaText() {
+    if (_progressStartTime == null || _avgTimePerItem == 0) return '';
+
+    final ctrl = widget.batchController;
+    final completed = ctrl.isImporting
+        ? ctrl.importProgressCurrent
+        : ctrl.finishedCount;
+    final total = ctrl.isImporting
+        ? ctrl.importProgressTotal
+        : ctrl.totalCount;
+
+    if (total <= 0) return '';
+    final remaining = total - completed;
+    if (remaining <= 0) return '即将完成';
+
+    final etaSeconds = (_avgTimePerItem * remaining).round();
+    if (etaSeconds < 30) return '即将完成';
+    if (etaSeconds < 60) return '预计剩余 ${etaSeconds}秒';
+    return '预计剩余 ${(etaSeconds / 60).ceil()}分钟';
+  }
+
+  /// 获取当前进度阶段的图标和标签
+  ({IconData icon, String label, int current, int total}) _getPhaseInfo() {
+    final ctrl = widget.batchController;
+    if (ctrl.isImporting && ctrl.importProgressTotal > 0) {
+      return (
+        icon: Icons.save_outlined,
+        label: '正在入库',
+        current: ctrl.importProgressCurrent,
+        total: ctrl.importProgressTotal,
+      );
+    }
+    return (
+      icon: Icons.cloud_download_outlined,
+      label: '正在抓取元数据',
+      current: ctrl.finishedCount,
+      total: ctrl.totalCount,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -34,9 +178,194 @@ class _BatchImportSectionState extends State<BatchImportSection> {
         color: AppColors.background,
         border: Border.all(color: AppColors.border, width: 1.6),
       ),
-      child: widget.batchController.hasGames
-          ? _buildGamesList(context)
-          : _buildEmptyState(context),
+      child: Column(
+        children: [
+          // 扫描摘要条：扫描完成后展示，7 秒后自动收起为迷你胶囊
+          if (widget.batchController.lastScanSummary != null)
+            _buildScanSummaryBanner(widget.batchController.lastScanSummary!),
+          // 预览确认条：扫描后暂停，等待用户点击"开始处理"
+          if (widget.batchController.isAwaitingConfirmation)
+            _buildPreviewConfirmationBar(),
+          Expanded(
+            child: widget.batchController.hasGames
+                ? _buildGamesList(context)
+                : _buildEmptyState(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 扫描摘要条（可折叠信息胶囊）
+  ///
+  /// 展开态：左侧 3px 彩色竖条 + 极淡背景 + 图标 + 完整文案，高度 ~32px
+  /// 收起态：迷你胶囊，仅彩色圆点 + 浓缩文案，高度 ~24px
+  /// - 有识别到游戏：绿色（successGreen）
+  /// - 未识别到游戏：蓝色（infoBlue）
+  /// 扫描完成后 7 秒自动收起，点击收起态可重新展开
+  Widget _buildScanSummaryBanner(ScanSummary summary) {
+    final hasAccepted = summary.accepted > 0;
+    final accentColor =
+        hasAccepted ? AppColors.successGreen : AppColors.infoBlue;
+    // 收起态浓缩文案
+    final collapsedText =
+        hasAccepted ? '✓ ${summary.accepted} 个新游戏' : '未发现游戏';
+
+    return GestureDetector(
+      onTap: _toggleScanSummary,
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+        alignment: Alignment.topCenter,
+        child: AnimatedOpacity(
+          opacity: 1.0,
+          duration: const Duration(milliseconds: 200),
+          child: _isScanSummaryExpanded
+              ? _buildExpandedSummary(summary, accentColor)
+              : _buildCollapsedSummary(collapsedText, accentColor),
+        ),
+      ),
+    );
+  }
+
+  /// 展开态：轻量化设计，左侧彩色竖条 + 极淡背景
+  Widget _buildExpandedSummary(ScanSummary summary, Color accentColor) {
+    final hasAccepted = summary.accepted > 0;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: accentColor.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(4),
+        // 左侧 3px 彩色竖条替代完整边框
+        border: Border(
+          left: BorderSide(color: accentColor, width: 3),
+          top: BorderSide(color: accentColor.withOpacity(0.15), width: 0.5),
+          bottom: BorderSide(color: accentColor.withOpacity(0.15), width: 0.5),
+          right:
+              BorderSide(color: accentColor.withOpacity(0.15), width: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            hasAccepted ? Icons.check_circle_outline : Icons.info_outline,
+            size: 14,
+            color: accentColor,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              summary.humanReadable,
+              style: TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 12,
+                color: AppColors.secondaryText,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          // 收起指示
+          Icon(Icons.keyboard_arrow_up, size: 14, color: AppColors.secondaryText),
+        ],
+      ),
+    );
+  }
+
+  /// 收起态：迷你胶囊，彩色圆点 + 浓缩文案
+  Widget _buildCollapsedSummary(String text, Color accentColor) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: accentColor.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: accentColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 11,
+              color: AppColors.secondaryText,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.keyboard_arrow_down,
+              size: 12, color: AppColors.secondaryText),
+        ],
+      ),
+    );
+  }
+
+  /// 预览确认条
+  ///
+  /// 扫描完成后展示，告知用户待处理游戏数量，并提供"开始处理"按钮。
+  /// 用户确认后才触发元数据抓取（[BatchImportController.confirmAndProcess]）。
+  /// 预览期间用户可点击卡片编辑、删除、修改路径。
+  Widget _buildPreviewConfirmationBar() {
+    final count = widget.batchController.pendingConfirmationCount;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.infoBlue.withOpacity(0.1),
+        border: Border.all(color: AppColors.infoBlue, width: 1.5),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.preview, size: 16, color: AppColors.infoBlue),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '已识别 $count 个游戏，请确认列表后开始处理',
+              style: TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 12,
+                color: AppColors.primaryText,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          InteractiveWrapper(
+            onTap: () => widget.batchController.confirmAndProcess(),
+            hoverScale: 1.04,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.infoBlue,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.play_arrow, size: 14, color: Colors.white),
+                  const SizedBox(width: 4),
+                  Text('开始处理',
+                      style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -60,17 +389,17 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               const SizedBox(height: 20),
               Text('批量置入游戏文件',
                   style: TextStyle(
-                      fontFamily: 'Zhi Mang Xing',
+                      fontFamily: 'ZhiMangXing',
                       fontSize: 24,
                       letterSpacing: 2.0,
-                      color: const Color(0xFF8B7355))),
+                      color: AppColors.border)),
               const SizedBox(height: 8),
               Text('支持选择或拖入多个游戏文件夹',
                   style: TextStyle(
                       fontFamily: 'Inter',
                       fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFFA08264))),
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.secondaryText)),
             ],
           ),
         ),
@@ -90,7 +419,7 @@ class _BatchImportSectionState extends State<BatchImportSection> {
         decoration: BoxDecoration(
           color: _isCenterIconHovered
               ? const Color(0xFFFFF3CD) // 悬停时：浅黄色
-              : const Color(0xFFF5F1E8), // 默认时：米色
+              : AppColors.placeholderBg, // 默认时：米色
           borderRadius: BorderRadius.circular(12), // 圆角处理
           border: Border.all(
             color: _isCenterIconHovered
@@ -162,25 +491,24 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               ? const Color(0xFFE8F4E8) // 拖拽时：浅绿色背景
               : Colors.transparent,
           border: _isDragging
-              ? Border.all(color: const Color(0xFF4CAF50), width: 3) // 拖拽时：绿色边框
+              ? Border.all(color: AppColors.successGreen, width: 3) // 拖拽时：绿色边框
               : null,
         ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 26),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 26),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // 固定头部栏：新增按钮 + 游戏计数（不随列表滚动）
+              _buildStickyAddHeader(),
+              const SizedBox(height: 8),
               Expanded(
+                // BatchGameCard 的 InteractiveWrapper 已关闭 hoverScale（1.0）
+                // 和 hoverOffset（zero），从源头消除 transform 溢出，无需 Clip.none
                 child: ListView.builder(
-                  itemCount:
-                      widget.batchController.games.length + 1, // +1 为新增按钮
+                  itemCount: widget.batchController.games.length,
                   itemBuilder: (context, index) {
-                    // 第一个位置是新增按钮
-                    if (index == 0) {
-                      return _buildAddNewButton(context);
-                    }
-
-                    final game = widget.batchController.games[index - 1];
+                    final game = widget.batchController.games[index];
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 20),
                       child: BatchGameCard(
@@ -192,12 +520,22 @@ class _BatchImportSectionState extends State<BatchImportSection> {
                             widget.batchController.removeGame(game.id),
                         onConfirm: () =>
                             widget.batchController.confirmCurrentSelection(),
+                        onRestore: () =>
+                            widget.batchController.restoreSelectedGame(),
+                        onToggleTitle: () => widget.batchController
+                            .toggleTitlePreference(game.id),
+                        onRetry: () =>
+                            widget.batchController.retryGame(game.id),
+                        onPathUpdate: (newPath) => widget.batchController
+                            .updateGamePath(game.id, newPath),
                       ),
                     );
                   },
                 ),
               ),
-              if (widget.batchController.isProcessingQueue)
+              // 进度条：元数据抓取 + 入库两阶段统一显示
+              if (widget.batchController.isProcessingQueue ||
+                  widget.batchController.isImporting)
                 _buildProgressIndicator(),
             ],
           ),
@@ -206,39 +544,62 @@ class _BatchImportSectionState extends State<BatchImportSection> {
     );
   }
 
-  Widget _buildAddNewButton(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: InteractiveWrapper(
+  /// 固定头部栏：新增按钮 + 游戏计数
+  ///
+  /// 从原 ListView 第 0 项移出，改为列表区域上方的固定栏，
+  /// 始终可见不随列表滚动。风格与游戏卡片协调（棕色边框，非蓝色）。
+  Widget _buildStickyAddHeader() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _isAddBtnHovered = true),
+      onExit: (_) => setState(() => _isAddBtnHovered = false),
+      child: GestureDetector(
         onTap: () => widget.batchController.pickFolders(),
-        child: Container(
-          constraints: const BoxConstraints(minWidth: 136, minHeight: 31),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.white,
-            border: Border.all(color: const Color(0xFF4A72A5), width: 1.8),
+            color: _isAddBtnHovered ? AppColors.cardHoverBg : AppColors.background,
             borderRadius: BorderRadius.circular(4),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x304A72A5),
-                offset: Offset(1.5, 2),
-                blurRadius: 3,
-                spreadRadius: 0,
-              )
-            ],
+            border: Border(
+              bottom: BorderSide(
+                color: AppColors.border.withOpacity(0.5),
+                width: 1,
+              ),
+            ),
           ),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.create_new_folder,
-                  size: 17, color: const Color(0xFF4A72A5)),
-              const SizedBox(width: 10),
-              Text('新增',
-                  style: TextStyle(
-                      fontFamily: 'Zhi Mang Xing',
-                      fontSize: 18,
-                      letterSpacing: 1.8,
-                      color: const Color(0xFF4A72A5))),
+              Icon(
+                Icons.add,
+                size: 16,
+                color: _isAddBtnHovered
+                    ? AppColors.infoBlue
+                    : AppColors.secondaryText,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '新增文件夹',
+                style: TextStyle(
+                  fontFamily: 'ZhiMangXing',
+                  fontSize: 15,
+                  letterSpacing: 1.2,
+                  color: _isAddBtnHovered
+                      ? AppColors.infoBlue
+                      : AppColors.secondaryText,
+                ),
+              ),
+              const Spacer(),
+              // 右侧游戏计数
+              Text(
+                '共 ${widget.batchController.games.length} 个',
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 11,
+                  color: AppColors.secondaryText,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
             ],
           ),
         ),
@@ -246,23 +607,93 @@ class _BatchImportSectionState extends State<BatchImportSection> {
     );
   }
 
+  /// 统一智能进度条
+  ///
+  /// 两阶段自适应：元数据抓取 / 入库
+  /// 布局：图标+状态文字（左）+ ETA（右），下方 2px 细线进度条
   Widget _buildProgressIndicator() {
-    return Column(
-      children: [
-        LinearProgressIndicator(
-          value: widget.batchController.overallProgress > 0
-              ? widget.batchController.overallProgress
-              : null,
-          backgroundColor: AppColors.buttonBackground,
-          valueColor: AlwaysStoppedAnimation<Color>(const Color(0xFF4A72A5)),
-        ),
-        const SizedBox(height: 8),
-        Text(widget.batchController.batchStatusMessage,
-            style: TextStyle(
-                fontFamily: 'Inter',
-                fontSize: 12,
-                color: AppColors.secondaryText)),
-      ],
+    final ctrl = widget.batchController;
+    final phase = _getPhaseInfo();
+    final eta = _getEtaText();
+    final progress = ctrl.overallProgress;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 文字行：图标 + 阶段标签 + 进度计数 + 当前游戏名（左） | ETA（右）
+          Row(
+            children: [
+              Icon(phase.icon, size: 13, color: AppColors.infoBlue),
+              const SizedBox(width: 5),
+              Text(
+                phase.label,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.secondaryText,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${phase.current}/${phase.total}',
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primaryText,
+                ),
+              ),
+              // 当前处理的游戏名（省略号截断）
+              if (ctrl.batchStatusMessage.isNotEmpty &&
+                  ctrl.batchStatusMessage != '准备就绪') ...[
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '· ${ctrl.batchStatusMessage}',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 11,
+                      color: AppColors.secondaryText,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ] else
+                const Spacer(),
+              // ETA（右对齐）
+              if (eta.isNotEmpty)
+                Text(
+                  eta,
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 11,
+                    color: AppColors.secondaryText,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          // 2px 细线进度条
+          ClipRRect(
+            borderRadius: BorderRadius.circular(1),
+            child: SizedBox(
+              height: 2,
+              child: LinearProgressIndicator(
+                value: progress > 0 ? progress : null,
+                backgroundColor: AppColors.buttonBackground,
+                minHeight: 2,
+                valueColor:
+                    AlwaysStoppedAnimation<Color>(AppColors.infoBlue),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -273,6 +704,10 @@ class BatchGameCard extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onDelete;
   final VoidCallback? onConfirm;
+  final VoidCallback? onRestore;
+  final VoidCallback? onToggleTitle; // 双标题切换
+  final VoidCallback? onRetry; // 失败重试
+  final ValueChanged<String>? onPathUpdate;
 
   const BatchGameCard({
     super.key,
@@ -281,6 +716,10 @@ class BatchGameCard extends StatefulWidget {
     this.onTap,
     this.onDelete,
     this.onConfirm,
+    this.onRestore,
+    this.onToggleTitle,
+    this.onRetry,
+    this.onPathUpdate,
   });
 
   @override
@@ -294,6 +733,8 @@ class _BatchGameCardState extends State<BatchGameCard> {
   @override
   Widget build(BuildContext context) {
     return InteractiveWrapper(
+      hoverScale: 1.0,
+      hoverOffset: Offset.zero,
       child: Listener(
         behavior: HitTestBehavior.opaque,
         onPointerUp: (event) {
@@ -306,23 +747,26 @@ class _BatchGameCardState extends State<BatchGameCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           decoration: BoxDecoration(
-            color: const Color(0xFFFDFBF7),
+            color: AppColors.background,
             border: Border.all(
               color: widget.isSelected
-                  ? const Color(0xFF555D8B) // 选中态：蓝色边框
-                  : const Color(0xFF8B7355), // 普通态：棕色边框
+                  ? AppColors.infoBlue // 选中态：蓝色边框
+                  : AppColors.border, // 普通态：棕色边框
               width: widget.isSelected ? 4 : 2,
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF8B7355).withOpacity(0.15),
+                color: AppColors.borderLight,
                 offset: const Offset(2, 3),
                 blurRadius: 0,
               )
             ],
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          height: 82, // 增加高度以容纳路径框
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          // 使用 minHeight 而非固定 height，让卡片根据内容自适应：
+          // 封面恢复 44×58 后：cover 58 + path ~28 + padding 6 ≈ 92
+          // 双标题态约 104，minHeight 92 保证最小高度，单屏可见更多卡片
+          constraints: const BoxConstraints(minHeight: 92),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -331,15 +775,16 @@ class _BatchGameCardState extends State<BatchGameCard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildCoverImage(),
-                  const SizedBox(width: 19),
+                  const SizedBox(width: 12),
                   Expanded(child: _buildGameInfo()),
-                  const SizedBox(width: 13),
+                  const SizedBox(width: 8),
                   _buildActionButtons(),
                 ],
               ),
               // 路径框单独一行，放在底部
+              // left: 56 = cover 宽 44 + gap 12，对齐到信息区域起始位置
               Padding(
-                padding: const EdgeInsets.only(top: 4, left: 75), // 对齐到信息区域
+                padding: const EdgeInsets.only(top: 3, left: 56),
                 child: _buildPathDisplay(),
               ),
             ],
@@ -354,8 +799,8 @@ class _BatchGameCardState extends State<BatchGameCard> {
       width: 44,
       height: 58,
       decoration: BoxDecoration(
-        color: const Color(0xFFE9E0D1),
-        border: Border.all(color: const Color(0xFF8B7355), width: 2),
+        color: AppColors.placeholderCover,
+        border: Border.all(color: AppColors.border, width: 2),
       ),
       clipBehavior: Clip.hardEdge,
       alignment: Alignment.center,
@@ -386,26 +831,27 @@ class _BatchGameCardState extends State<BatchGameCard> {
           alignment: Alignment.center,
           clipBehavior: Clip.hardEdge,
           child: CachedNetworkImage(
+            cacheManager: PortableImageCacheManager(),
             imageUrl: coverUrl,
             fit: BoxFit.fill,
             placeholder: (context, url) => Center(
               child: CircularProgressIndicator(
                 strokeWidth: 2,
                 valueColor: AlwaysStoppedAnimation<Color>(
-                  const Color(0xFF8B7355),
+                  AppColors.border,
                 ),
               ),
             ),
             errorWidget: (context, url, error) => Center(
               child: Icon(Icons.broken_image_outlined,
-                  size: 16, color: const Color(0xFF8B7355)),
+                  size: 16, color: AppColors.border),
             ),
           ),
         );
       }
     }
 
-    return Icon(Icons.image_outlined, size: 16, color: const Color(0xFF8B7355));
+    return Icon(Icons.image_outlined, size: 16, color: AppColors.border);
   }
 
   Widget _buildGameInfo() {
@@ -413,67 +859,192 @@ class _BatchGameCardState extends State<BatchGameCard> {
     final hasMetadata =
         widget.game.metadata != null && widget.game.metadata!.isNotEmpty;
 
-    final platform = hasMetadata
-        ? (widget.game.metadata!['platform'] ?? 'vndb')
-        : null; // 未抓取数据时不设置默认值
+    // 平台徽章：复用共享 resolvePlatformBadge，修复原小写比较 bug
+    // （原 `platform == 'vndb'` 用小写比较，但 displayName 返回 'VNDB' 大写，
+    // 导致 isVndb 永远 false → 固定显示 'Bangumi'）
+    final platform =
+        hasMetadata ? (widget.game.metadata!['platform'] ?? 'Bangumi') : null;
+    final badge = platform != null ? resolvePlatformBadge(platform) : null;
     final platformId =
         hasMetadata ? (widget.game.metadata!['platform_id'] ?? '') : '';
     final releaseDate =
         hasMetadata ? (widget.game.metadata!['release_date'] ?? '') : '';
-
-    final isVndb = platform == 'vndb';
-    final platformColor =
-        isVndb ? const Color(0xFF4A72A5) : const Color(0xFFF27494);
-    final platformLabel = isVndb ? 'VNDB' : 'Bangumi';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisAlignment: MainAxisAlignment.center,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // 只在有元数据时显示平台标签和ID
-        if (hasMetadata && platform != null)
+        // 失败状态优先显示红色错误条（替代平台徽章位置）
+        // 用户需求：对识别异常或元数据抓取失败的游戏提供明确提示
+        if (widget.game.taskStatus == GameTaskStatus.failed &&
+            widget.game.errorMessage != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.dangerRed.withOpacity(0.1),
+              border: Border.all(color: AppColors.dangerRed, width: 1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.error_outline, size: 12, color: AppColors.dangerRed),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    '处理失败: ${widget.game.errorMessage}',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 11,
+                      color: AppColors.dangerRed,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else if (hasMetadata && badge != null)
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                    color: platformColor,
-                    borderRadius: BorderRadius.circular(4)),
-                child: Text(platformLabel!,
-                    style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white)),
-              ),
+              PlatformBadgeWidget(badge: badge),
               const SizedBox(width: 6),
               Text(platformId,
                   style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFFA08264))),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.secondaryText)),
             ],
-          ),
-        if (!hasMetadata)
+          )
+        else if (!hasMetadata)
           Container(
             height: 17, // 占位，保持布局一致
           ),
         const SizedBox(height: 3),
-        Text(widget.game.gameName,
-            style: TextStyle(
+        // 双标题：主显示当前标题 + 切换按钮（若有元数据标题且不同）
+        Row(
+          children: [
+            Expanded(
+              child: Text(widget.game.gameName,
+                  style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.titleBrown),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+            ),
+            // 排重警告徽章：紧凑放置在标题旁
+            if (widget.game.duplicateWarning != null ||
+                widget.game.isHardDuplicate)
+              _buildDuplicateBadge(),
+            if (widget.game.canToggleTitle) _buildTitleToggleButton(),
+          ],
+        ),
+        // 双标题：下方小字显示另一个标题
+        if (widget.game.canToggleTitle)
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Text(
+              widget.game.usingMetadataTitle
+                  ? '原标题: ${widget.game.originalTitle}'
+                  : '元数据: ${widget.game.metadataTitle}',
+              style: TextStyle(
                 fontFamily: 'Inter',
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: const Color(0xFF5C4A3D)),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis),
+                fontSize: 10,
+                color: AppColors.secondaryText,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         const SizedBox(height: 3),
         Text(releaseDate.isNotEmpty ? '$releaseDate发行' : '',
             style: TextStyle(
                 fontFamily: 'Inter',
-                fontSize: 10,
-                color: const Color(0xFFA08264))),
+                fontSize: 12,
+                color: AppColors.secondaryText)),
       ],
+    );
+  }
+
+  /// 双标题切换按钮（小图标，点击在原标题/元数据标题间切换）
+  Widget _buildTitleToggleButton() {
+    return InteractiveWrapper(
+      hoverScale: 1.1,
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerUp: (event) {
+          _actionButtonClicked = true;
+          widget.onToggleTitle?.call();
+        },
+        child: Tooltip(
+          message:
+              '切换标题（当前: ${widget.game.usingMetadataTitle ? "元数据标题" : "原标题"}）',
+          child: Container(
+            width: 20,
+            height: 20,
+            margin: const EdgeInsets.only(left: 4),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              border: Border.all(color: AppColors.infoBlue, width: 1),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              Icons.swap_horiz,
+              size: 12,
+              color: AppColors.infoBlue,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 排重警告徽章
+  ///
+  /// 当 [BatchGameItem.duplicateWarning] 非空或 [BatchGameItem.isHardDuplicate]
+  /// 为 true 时展示于标题旁，提示该游戏可能与库中已有项重复。
+  /// - 软警告（duplicateWarning 非空且非硬重复）：橙色徽章 + warning_amber 图标
+  /// - 硬重复（isHardDuplicate）：红色徽章 + block 图标 + "元数据重复"
+  Widget _buildDuplicateBadge() {
+    final game = widget.game;
+    final isHard = game.isHardDuplicate;
+    final color = isHard ? AppColors.dangerRed : Colors.orange;
+    final icon = isHard ? Icons.block : Icons.warning_amber;
+    final text = isHard ? '元数据重复' : (game.duplicateWarning ?? '');
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        border: Border.all(color: color, width: 1),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 160),
+            child: Text(
+              text,
+              style: TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 11,
+                color: color,
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -483,41 +1054,42 @@ class _BatchGameCardState extends State<BatchGameCard> {
         _truncatePath(path, maxStartLength: 20, maxEndLength: 15);
 
     return InteractiveWrapper(
-      child: Listener(
-        onPointerUp: (event) {
-          debugPrint('[BATCH] 路径框被点击: $path');
-          _showPathEditDialog();
-        },
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 280, minHeight: 28),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            border: Border.all(color: const Color(0xFF8B7355), width: 1.5),
-            borderRadius: BorderRadius.circular(2),
-            color: const Color(0xFFFDFBF7),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.folder_open, size: 14, color: const Color(0xFF8B7355)),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  displayPath,
-                  style: TextStyle(
-                    fontFamily: 'Inter',
-                    fontSize: 11,
-                    color: const Color(0xFF000000),
-                    fontWeight: FontWeight.w500,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+      onTap: () {
+        debugPrint('[BATCH] 路径框被点击: $path');
+        _actionButtonClicked = true;
+        _showPathEditDialog();
+      },
+      hoverScale: 1.02,
+      child: Container(
+        // 移除 maxWidth: 280 限制，让路径框占满可用宽度，
+        // 扩大可点击区域，解决"点击区域过小"问题
+        constraints: const BoxConstraints(minHeight: 32),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppColors.infoBlue, width: 1.5),
+          borderRadius: BorderRadius.circular(4),
+          color: AppColors.background,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.folder_open, size: 16, color: AppColors.infoBlue),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                displayPath,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 12,
+                  color: AppColors.primaryText,
+                  fontWeight: FontWeight.w500,
                 ),
+                overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(width: 8),
-              Icon(Icons.edit, size: 14, color: const Color(0xFF4A72A5)),
-            ],
-          ),
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.edit, size: 16, color: AppColors.infoBlue),
+          ],
         ),
       ),
     );
@@ -535,60 +1107,129 @@ class _BatchGameCardState extends State<BatchGameCard> {
   }
 
   void _showPathEditDialog() {
+    final textController = TextEditingController(text: widget.game.folderPath);
+    String? validationError;
+
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
-        String newPath = widget.game.folderPath;
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('修改游戏路径'),
+              content: SizedBox(
+                width: 480,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('当前路径:',
+                        style: TextStyle(
+                            fontSize: 12, color: AppColors.secondaryText)),
+                    const SizedBox(height: 4),
+                    SelectableText(
+                      widget.game.folderPath,
+                      style: TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                    ),
+                    const SizedBox(height: 16),
+                    Text('输入新路径:',
+                        style: TextStyle(
+                            fontSize: 12, color: AppColors.secondaryText)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: textController,
+                      decoration: InputDecoration(
+                        hintText: '输入或粘贴游戏目录路径',
+                        hintStyle: TextStyle(
+                            fontSize: 12, color: AppColors.secondaryText),
+                        border: OutlineInputBorder(),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        errorText: validationError,
+                      ),
+                      style: TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                      onChanged: (_) {
+                        if (validationError != null) {
+                          setState(() => validationError = null);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 14, color: AppColors.secondaryText),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            '可手动输入路径或点击右侧按钮浏览选择',
+                            style: TextStyle(
+                                fontSize: 11, color: AppColors.secondaryText),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton.icon(
+                          onPressed: () async {
+                            final result =
+                                await FilePicker.platform.getDirectoryPath(
+                              dialogTitle: '选择游戏目录',
+                              initialDirectory: widget.game.folderPath,
+                            );
 
-        return AlertDialog(
-          title: Text('修改游戏路径'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('当前路径:',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-              const SizedBox(height: 4),
-              SelectableText(
-                widget.game.folderPath,
-                style: TextStyle(fontSize: 11, fontFamily: 'monospace'),
-              ),
-              const SizedBox(height: 16),
-              Text('或选择新路径:',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-              const SizedBox(height: 8),
-              ElevatedButton.icon(
-                onPressed: () async {
-                  final result = await FilePicker.platform.getDirectoryPath(
-                    dialogTitle: '选择游戏目录',
-                    initialDirectory: widget.game.folderPath,
-                  );
-
-                  if (result != null && mounted) {
-                    Navigator.of(dialogContext).pop(result);
-                  }
-                },
-                icon: Icon(Icons.folder_open, size: 18),
-                label: Text('浏览文件夹'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4A72A5),
-                  foregroundColor: Colors.white,
+                            if (result != null && mounted) {
+                              setState(() {
+                                textController.text = result;
+                                validationError = null;
+                              });
+                            }
+                          },
+                          icon: Icon(Icons.folder_open, size: 18),
+                          label: Text('浏览'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.infoBlue,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: Text('取消'),
-            ),
-          ],
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: Text('取消'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final path = textController.text.trim();
+                    if (path.isEmpty) {
+                      setState(() => validationError = '路径不能为空');
+                      return;
+                    }
+                    // 验证目录是否存在
+                    if (!Directory(path).existsSync()) {
+                      setState(() => validationError = '目录不存在，请检查路径');
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(path);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.infoBlue,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: Text('确认'),
+                ),
+              ],
+            );
+          },
         );
       },
     ).then((selectedPath) {
+      textController.dispose();
       if (selectedPath != null && selectedPath is String) {
         debugPrint('[BATCH] 用户选择了新路径: $selectedPath');
-        // 这里可以添加更新逻辑
+        widget.onPathUpdate?.call(selectedPath);
       }
     });
   }
@@ -597,10 +1238,93 @@ class _BatchGameCardState extends State<BatchGameCard> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (widget.isSelected) _buildRestoreButton(),
+        if (widget.isSelected) const SizedBox(width: 8),
         if (widget.isSelected) _buildConfirmButton(),
+        // 失败状态显示重试按钮（错误处理机制）
+        if (widget.game.taskStatus == GameTaskStatus.failed) ...[
+          const SizedBox(width: 8),
+          _buildRetryButton(),
+        ],
         const SizedBox(width: 8),
         _buildDeleteButton(),
       ],
+    );
+  }
+
+  /// 重试按钮（失败状态显示，点击重新处理该游戏）
+  Widget _buildRetryButton() {
+    return InteractiveWrapper(
+      hoverScale: 1.1,
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerUp: (event) {
+          _actionButtonClicked = true;
+          widget.onRetry?.call();
+        },
+        child: Tooltip(
+          message: widget.game.errorMessage != null
+              ? '重试 (错误: ${widget.game.errorMessage})'
+              : '重试',
+          child: Container(
+            width: 29,
+            height: 29,
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              border: Border.all(color: AppColors.infoBlue, width: 2),
+              boxShadow: [
+                BoxShadow(
+                    color: AppColors.shadowColor,
+                    offset: const Offset(2, 3),
+                    blurRadius: 0)
+              ],
+            ),
+            alignment: Alignment.center,
+            child: Icon(Icons.refresh, size: 16, color: AppColors.infoBlue),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRestoreButton() {
+    // 只有存在原始快照且数据已被修改时才显示恢复按钮
+    final game = widget.game;
+    final hasChanges = game.hasOriginalSnapshot &&
+        (game.gameName != game.originalGameName ||
+            game.developer != game.originalDeveloper ||
+            game.description != game.originalDescription);
+
+    if (!hasChanges) return const SizedBox.shrink();
+
+    return InteractiveWrapper(
+      hoverScale: 1.1,
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerUp: (event) {
+          _actionButtonClicked = true;
+          widget.onRestore?.call();
+        },
+        child: Container(
+          width: 29,
+          height: 29,
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(color: const Color(0x1A000000), width: 2),
+            boxShadow: [
+              BoxShadow(
+                  color: AppColors.shadowColor,
+                  offset: const Offset(2, 3),
+                  blurRadius: 0)
+            ],
+          ),
+          alignment: Alignment.center,
+          child: Tooltip(
+            message: '恢复原始数据',
+            child: Icon(Icons.restore, size: 16, color: AppColors.infoBlue),
+          ),
+        ),
+      ),
     );
   }
 
@@ -626,12 +1350,12 @@ class _BatchGameCardState extends State<BatchGameCard> {
               width: 29,
               height: 29,
               decoration: BoxDecoration(
-                color: const Color(0xFFFDFBF7),
-                border: Border.all(color: const Color(0xFF0000001a), width: 2),
-                boxShadow: const [
+                color: AppColors.background,
+                border: Border.all(color: const Color(0x1A000000), width: 2),
+                boxShadow: [
                   BoxShadow(
-                      color: Color(0xFF8B7355),
-                      offset: Offset(2, 3),
+                      color: AppColors.shadowColor,
+                      offset: const Offset(2, 3),
                       blurRadius: 0)
                 ],
               ),
@@ -640,8 +1364,8 @@ class _BatchGameCardState extends State<BatchGameCard> {
                   _showSavedFeedback ? Icons.check_circle : Icons.check_rounded,
                   size: 18,
                   color: _showSavedFeedback
-                      ? const Color(0xFF4CAF50)
-                      : const Color(0xFF4CAF50)),
+                      ? AppColors.successGreen
+                      : AppColors.successGreen),
             ),
             if (_showSavedFeedback)
               Positioned(
@@ -651,7 +1375,7 @@ class _BatchGameCardState extends State<BatchGameCard> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF4CAF50),
+                    color: AppColors.successGreen,
                     borderRadius: BorderRadius.circular(4),
                     boxShadow: [
                       BoxShadow(
@@ -668,7 +1392,7 @@ class _BatchGameCardState extends State<BatchGameCard> {
                       const SizedBox(width: 4),
                       Text('已保存',
                           style: TextStyle(
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w600,
                               color: Colors.white)),
                     ],
@@ -686,24 +1410,35 @@ class _BatchGameCardState extends State<BatchGameCard> {
       hoverScale: 1.1,
       child: Listener(
         behavior: HitTestBehavior.opaque,
-        onPointerUp: (event) {
+        onPointerUp: (event) async {
           _actionButtonClicked = true;
+          // UX-06: 从批量列表中移除游戏前确认
+          final confirmed = await showConfirmDialog(
+            context: context,
+            title: '移除游戏',
+            message: '确定要从批量列表中移除「${widget.game.gameName ?? '未命名游戏'}」吗？',
+            hint: '已填写的信息将丢失，需要重新添加。',
+            confirmText: '移除',
+            isDanger: true,
+          );
+          if (!mounted || !confirmed) return;
           widget.onDelete?.call();
         },
         child: Container(
           width: 29,
           height: 29,
           decoration: BoxDecoration(
-            color: const Color(0xFFFDFBF7),
-            border: Border.all(color: const Color(0xFF0000001a), width: 2),
-            boxShadow: const [
+            color: AppColors.background,
+            border: Border.all(color: const Color(0x1A000000), width: 2),
+            boxShadow: [
               BoxShadow(
-                  color: Color(0xFF8B7355), offset: Offset(2, 3), blurRadius: 0)
+                  color: AppColors.shadowColor,
+                  offset: const Offset(2, 3),
+                  blurRadius: 0)
             ],
           ),
           alignment: Alignment.center,
-          child: Icon(Icons.close_rounded,
-              size: 18, color: const Color(0xFF8B7355)),
+          child: Icon(Icons.close_rounded, size: 18, color: AppColors.border),
         ),
       ),
     );

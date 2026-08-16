@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import '../core/path_helper.dart';
+import 'win32_process_service.dart'; // ★ 重构: 进程检测改 FFI（替代 tasklist）
 
 enum PeArchitecture { x86, x64, unknown }
 
@@ -214,14 +215,32 @@ class LocaleService {
     }
   }
 
+  /// 检测指定进程名的进程是否仍在运行
+  ///
+  /// ★ 重构: 使用 Win32 FFI enumerateProcesses 替代 tasklist。
+  /// tasklist 每次调用需 200-500ms，FFI 仅需 1-3ms。
+  /// FFI 不可用时回退到 tasklist。
   static Future<bool> _checkProcessAlive(String processName) async {
+    final exeNameLower = processName.toLowerCase();
+
+    // ★ 优先使用 FFI
+    if (Win32ProcessService.isAvailable) {
+      try {
+        final processes = Win32ProcessService.enumerateProcesses();
+        return processes.any((p) => p.exeName == exeNameLower);
+      } catch (e) {
+        _log('WARN', 'FFI 检测进程异常，回退到 tasklist: $e');
+      }
+    }
+
+    // ★ 回退: tasklist
     try {
       final result = await Process.run(
         'tasklist',
         ['/FI', 'IMAGENAME eq $processName', '/NH'],
         runInShell: true,
       );
-      return result.stdout.toString().contains(processName);
+      return result.stdout.toString().toLowerCase().contains(exeNameLower);
     } catch (_) {
       return false;
     }

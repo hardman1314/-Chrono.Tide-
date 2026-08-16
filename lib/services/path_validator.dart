@@ -94,6 +94,72 @@ class PathValidator {
     }
   }
 
+  /// 校验已存在的游戏目录（用于"更换游戏目录"场景）。
+  ///
+  /// 与 [validateCustomGameLocation] 的关键差异：
+  /// - **不创建目录**：要求目录已存在（用户已在资源管理器里手动挪过去）
+  /// - **不做写入权限测试**：relink 只改软件引用，不写该目录
+  /// - 其余校验（空/非法字符/长度/系统目录）保持一致
+  static ValidationResult validateExistingGameLocation(String? location) {
+    if (location == null || location.trim().isEmpty) {
+      return ValidationResult(
+        isValid: false,
+        errorCode: 'EMPTY_PATH',
+        message: '安装路径不能为空',
+      );
+    }
+
+    final trimmedPath = location.trim();
+
+    final fileNamePart = path.basename(trimmedPath);
+    if (fileNamePart.contains(_illegalChars)) {
+      return ValidationResult(
+        isValid: false,
+        errorCode: 'ILLEGAL_CHARS',
+        message: '路径包含非法字符 (<>"|?*)',
+      );
+    }
+
+    if (trimmedPath.length > maxPathLength) {
+      return ValidationResult(
+        isValid: false,
+        errorCode: 'PATH_TOO_LONG',
+        message: '路径过长（超过${maxPathLength}字符）',
+      );
+    }
+
+    if (_isSystemDirectory(trimmedPath)) {
+      return ValidationResult(
+        isValid: false,
+        errorCode: 'SYSTEM_DIR',
+        message: '不能使用系统目录作为游戏路径',
+      );
+    }
+
+    try {
+      final dir = Directory(trimmedPath);
+      if (!dir.existsSync()) {
+        return ValidationResult(
+          isValid: false,
+          errorCode: 'NOT_EXISTS',
+          message: '目录不存在，请确认游戏文件夹已移动到该位置',
+        );
+      }
+
+      return ValidationResult(
+        isValid: true,
+        errorCode: '',
+        message: trimmedPath,
+      );
+    } catch (e) {
+      return ValidationResult(
+        isValid: false,
+        errorCode: 'UNKNOWN_ERROR',
+        message: '路径验证失败: $e',
+      );
+    }
+  }
+
   static bool _isSystemDirectory(String pathStr) {
     final lowerPath = pathStr.toLowerCase();
     final systemDirs = [
