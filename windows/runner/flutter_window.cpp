@@ -1,8 +1,10 @@
-#include "flutter_window.h"
+﻿#include "flutter_window.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -27,8 +29,27 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+  // ★ 2026-10-03 静默自启（--silent）：首帧回调里不要无脑 Show()。
+  // 模板默认在此 Show()，但 Dart 侧在 runApp 之前就已经 hide() 过
+  // （lib/main.dart 的 waitUntilReadyToShow 回调，静默分支），
+  // Show() 晚于 hide() 执行 → 窗口被重新掀到桌面，真机表现为
+  // 「开机自启时窗口停在桌面，鼠标点一下才退回托盘」。
+  // window_manager README「Since flutter 3.7 new windows project」一节明确
+  // 要求删除此处的 Show()；本仓 win32_window.cpp 的 CreateWindow 早已不带
+  // WS_VISIBLE，故这里是唯一会显示窗口的地方。
+  // 参数写法与 lib/main.dart 的 _parseSilentArg（--silent / -s）保持一致，
+  // 两处改动必须同步。
+  const std::vector<std::string> startup_args = GetCommandLineArguments();
+  const bool silent_start =
+      std::find(startup_args.begin(), startup_args.end(), "--silent") !=
+          startup_args.end() ||
+      std::find(startup_args.begin(), startup_args.end(), "-s") !=
+          startup_args.end();
+
+  flutter_controller_->engine()->SetNextFrameCallback([&, silent_start]() {
+    if (!silent_start) {
+      this->Show();
+    }
   });
 
   // Flutter can complete the first frame before the "show window" callback is

@@ -195,8 +195,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                         style: TextStyle(
                             color: t.primaryText,
                             fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'Inter')),
+                            fontWeight: FontWeight.w600)),
                   ),
                 ),
               ),
@@ -297,7 +296,6 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
               child: Text('Chrono Tide',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                      fontFamily: 'ZhiMangXing',
                       fontSize: 30,
                       height: 36 / 30,
                       letterSpacing: 2.0,
@@ -335,7 +333,6 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
           padding: const EdgeInsets.only(top: 22, bottom: 20),
           child: Text('CT',
               style: TextStyle(
-                  fontFamily: 'ZhiMangXing',
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
                   color: t.primaryText,
@@ -388,7 +385,6 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
               const SizedBox(height: 12),
               Text(label,
                   style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 16,
                       fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
                       height: 24 / 16,
@@ -454,7 +450,6 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
               const SizedBox(height: 1),
               Text('主页',
                   style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 10,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 2,
@@ -562,8 +557,8 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
         return GridView.builder(
           gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
             maxCrossAxisExtent: 240,
-            mainAxisSpacing: 24,
-            crossAxisSpacing: 24,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
             childAspectRatio: 0.60,
           ),
           physics: const NeverScrollableScrollPhysics(),
@@ -574,13 +569,13 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
     );
   }
 
-  /// 游戏卡片（1:1 还原 _LibraryCardWidget：padding 8 + Column(Expanded 封面 + 5gap + 标题栏 + 制作方栏)）
+  /// 游戏卡片（1:1 还原 _LibraryCardWidget：padding 6 + Column(Expanded 封面 + 5gap + 标题栏 + 制作方栏)）
   /// 标题/制作方用灰色占位条代替不确定文字
   Widget _buildGameCard() {
     return _sel(
       elementId: 'app_card',
       child: Container(
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.all(6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.max,
@@ -615,16 +610,17 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
               ),
             ),
             const SizedBox(height: 5),
-            // 标题占位条（22 高，灰色圆角条代替"游戏 N"文字）
+            // 标题占位条（36）+ 制作方占位条（18）：合计 54，
+            // 与库页卡片实际文字区（固定 54）保持一致
             SizedBox(
-              height: 22,
+              height: 36,
               width: double.infinity,
               child: _sel(
                 elementId: 'card_title',
                 child: Padding(
                   padding: const EdgeInsets.only(left: 2),
                   child: Align(
-                    alignment: Alignment.centerLeft,
+                    alignment: Alignment.topLeft,
                     child: Container(
                       height: 12,
                       width: 90,
@@ -697,8 +693,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                           child: Text('搜索游戏 / 标签...',
                               style: TextStyle(
                                   color: t.placeholderText,
-                                  fontSize: 14,
-                                  fontFamily: 'Inter')),
+                                  fontSize: 14)),
                         ),
                         Icon(Icons.search, size: 18, color: t.secondaryText),
                       ],
@@ -761,8 +756,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
             style: TextStyle(
                 color: isActive ? t.primaryText : t.secondaryText,
                 fontSize: 12,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'Inter')),
+                fontWeight: FontWeight.w600)),
       ),
     );
   }
@@ -844,8 +838,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                   Text('截图轮播',
                       style: TextStyle(
                           color: t.placeholderText,
-                          fontSize: 11,
-                          fontFamily: 'Inter')),
+                          fontSize: 11)),
                 ],
               ),
             ),
@@ -871,8 +864,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                         style: TextStyle(
                             color: t.secondaryText,
                             fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'Inter')),
+                            fontWeight: FontWeight.w600)),
                   ),
                   Expanded(
                     child: Padding(
@@ -919,7 +911,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 标题行（带底边框：auto_awesome + 元数据匹配 ZhiMangXing + 齿轮 + 一键抓取）
+                // 标题行（带底边框：auto_awesome + 元数据匹配 得意黑 + 齿轮 + 一键抓取）
                 Container(
                   padding: const EdgeInsets.only(bottom: 5),
                   decoration: BoxDecoration(
@@ -936,7 +928,6 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                           const SizedBox(width: 6),
                           Text('元数据匹配',
                               style: TextStyle(
-                                  fontFamily: 'ZhiMangXing',
                                   fontSize: 16,
                                   letterSpacing: 2.0,
                                   color: t.border)),
@@ -972,8 +963,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                                   style: TextStyle(
                                       color: t.primaryText,
                                       fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      fontFamily: 'Inter')),
+                                      fontWeight: FontWeight.w600)),
                             ),
                           ),
                         ],
@@ -1027,7 +1017,6 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                     const SizedBox(height: 16),
                     Text('置入本地游戏文件',
                         style: TextStyle(
-                            fontFamily: 'ZhiMangXing',
                             fontSize: 18,
                             letterSpacing: 1.2,
                             color: t.border)),
@@ -1035,8 +1024,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                     Text('支持 .zip 压缩包 · 拖放或点击选择',
                         style: TextStyle(
                             color: t.placeholderText,
-                            fontSize: 11,
-                            fontFamily: 'Inter')),
+                            fontSize: 11)),
                   ],
                 ),
               ),
@@ -1069,8 +1057,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                       style: TextStyle(
                           color: t.secondaryText,
                           fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          fontFamily: 'Inter')),
+                          fontWeight: FontWeight.w600)),
                 ),
               ),
               const SizedBox(width: 10),
@@ -1093,8 +1080,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                       style: TextStyle(
                           color: t.primaryText,
                           fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          fontFamily: 'Inter')),
+                          fontWeight: FontWeight.w700)),
                 ),
               ),
             ],
@@ -1116,8 +1102,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
           style: TextStyle(
               color: t.secondaryText,
               fontSize: 10,
-              fontWeight: FontWeight.w500,
-              fontFamily: 'Inter')),
+              fontWeight: FontWeight.w500)),
     );
   }
 
@@ -1135,7 +1120,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
         alignment: Alignment.centerLeft,
         child: Text(placeholder,
             style: TextStyle(
-                color: t.placeholderText, fontSize: 14, fontFamily: 'Inter')),
+                color: t.placeholderText, fontSize: 14)),
       ),
     );
   }
@@ -1202,7 +1187,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                   // 标签行（对应 _buildTagRow）
                   _buildHomeTagRow(),
                   const SizedBox(height: 12),
-                  // 游戏大标题（对应 _buildGameTitle，ZhiMangXing 大字）
+                  // 游戏大标题（对应 _buildGameTitle，得意黑大字）
                   _sel(
                     elementId: 'card_title',
                     child: Container(
@@ -1261,8 +1246,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                     style: TextStyle(
                         color: t.successGreen,
                         fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        fontFamily: 'Inter')),
+                        fontWeight: FontWeight.w600)),
               ),
             ),
           ],
@@ -1297,8 +1281,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
         child: Text(label,
             style: TextStyle(
                 color: t.secondaryText,
-                fontSize: 10,
-                fontFamily: 'Inter')),
+                fontSize: 10)),
       ),
     );
   }
@@ -1372,8 +1355,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                           style: TextStyle(
                               color: t.primaryText,
                               fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              fontFamily: 'Inter')),
+                              fontWeight: FontWeight.w700)),
                     ],
                   ),
                 ),
@@ -1405,8 +1387,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                 style: TextStyle(
                     color: t.primaryText,
                     fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'Inter')),
+                    fontWeight: FontWeight.w600)),
           ],
         ),
       ),
@@ -1445,8 +1426,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                           color: t.primaryText,
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
-                          letterSpacing: 1,
-                          fontFamily: 'Inter')),
+                          letterSpacing: 1)),
                   const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -1460,8 +1440,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                         style: TextStyle(
                             color: t.border,
                             fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            fontFamily: 'Inter')),
+                            fontWeight: FontWeight.w700)),
                   ),
                 ],
               ),
@@ -1656,7 +1635,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 标题（ZhiMangXing 36，对应 titleLarge.copyWith(fontSize: 36)）
+          // 标题（得意黑 36，对应 titleLarge.copyWith(fontSize: 36)）
           _sel(
             elementId: 'card_title',
             child: Container(
@@ -1724,8 +1703,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
           Text(value,
               style: TextStyle(
                   color: t.secondaryText,
-                  fontSize: 11,
-                  fontFamily: 'Inter')),
+                  fontSize: 11)),
         ],
       ),
     );
@@ -1745,8 +1723,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
         child: Text(label,
             style: TextStyle(
                 color: t.primaryText,
-                fontSize: 11,
-                fontFamily: 'Inter')),
+                fontSize: 11)),
       ),
     );
   }
@@ -1764,8 +1741,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                 style: TextStyle(
                     color: t.primaryText,
                     fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: 'Inter')),
+                    fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             _lineBar(0.98),
             const SizedBox(height: 5),
@@ -1809,8 +1785,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                   Text('游戏截图',
                       style: TextStyle(
                           color: t.placeholderText,
-                          fontSize: 13,
-                          fontFamily: 'Inter')),
+                          fontSize: 13)),
                 ],
               ),
             ),
@@ -1843,8 +1818,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                     style: TextStyle(
                         color: t.primaryText,
                         fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        fontFamily: 'Inter')),
+                        fontWeight: FontWeight.w700)),
                 const SizedBox(width: 12),
                 Container(
                   padding: const EdgeInsets.symmetric(
@@ -1856,8 +1830,7 @@ class _EditorPreviewBuilderState extends State<EditorPreviewBuilder> {
                   child: Text('4.2 GB',
                       style: TextStyle(
                           color: t.primaryText,
-                          fontSize: 11,
-                          fontFamily: 'Inter')),
+                          fontSize: 11)),
                 ),
               ],
             ),

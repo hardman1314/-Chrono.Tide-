@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:path/path.dart' as p;
+import 'network_path.dart';
 
 /// 统一路径规范化工具。
 ///
@@ -19,12 +20,20 @@ class PathNormalizer {
 
   /// 规范化用于「比较」的路径。
   ///
-  /// 步骤：绝对化 → 统一为 \ → 折叠冗余段 → 小写 → 去尾部斜杠。
+  /// 步骤：剥离 `\\?\` 长路径前缀 → 绝对化 → 统一为 \ → **网络盘卷规范化**
+  /// → 折叠冗余段 → 小写 → 去尾部斜杠。
   /// 不解析符号链接（路径可能已不存在）。
+  ///
+  /// 🔴 2026-09-26（NAS 映射网络驱动器适配）：新增两步，使
+  /// 映射盘形态 `Z:\Games\X` 与 UNC 形态 `\\host\share\Games\X`
+  /// （同一物理位置）比较相等 —— 否则排重与同卷判定都会失效。
+  /// 二者对**本地磁盘路径均为恒等变换**，不改变既有本地语义。
   static String forCompare(String path) {
     if (path.isEmpty) return '';
-    var abs = p.isAbsolute(path) ? path : p.absolute(path);
-    var n = p.normalize(abs.replaceAll('/', '\\'));
+    final cleaned = NetworkPath.stripLongPathPrefix(path.replaceAll('/', '\\'));
+    final abs = p.isAbsolute(cleaned) ? cleaned : p.absolute(cleaned);
+    var n = NetworkPath.canonicalizeVolume(abs);
+    n = p.normalize(n);
     n = n.toLowerCase();
     // 去尾部斜杠，但保留根 "C:\\"
     if (n.length > 3 && n.endsWith('\\')) {

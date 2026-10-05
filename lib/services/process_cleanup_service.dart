@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import '../core/path_helper.dart';
 import 'openlist_service.dart';
 import 'magpie_service.dart';
 
@@ -69,6 +70,38 @@ class ProcessCleanupService {
       // 进程不存在时静默跳过，无需额外处理
     } catch (e) {
       debugPrint('[PROCESS-CLEANUP] ⚠️ 终止 $processName 异常: $e');
+    }
+  }
+
+  /// 仅终止**由本应用 runtime 目录启动**的残留解压进程（★ IMP-07，2026-09-12 导入审查）。
+  ///
+  /// 场景：用户在解压/导入进行中强制关闭软件时，`7z.exe` 等子进程不会随父进程退出，
+  /// 会继续往目标目录写盘 —— 用户看到"文件自己在变化/被覆盖"。
+  /// 与 [_killProcessByName] 的关键区别：本方法**按可执行文件路径过滤**，
+  /// 只杀 `PathHelper.runtimeDir` 下的副本，绝不会误杀用户自己安装的
+  /// 7-Zip / Bandizip / UnRAR。调用方应 fire-and-forget，不阻塞启动。
+  static Future<void> killResidueFromAppDir() async {
+    try {
+      final runtimeDir = PathHelper.runtimeDir.replaceAll('/', '\\');
+      if (runtimeDir.isEmpty) return;
+      const names = '7z,7za,bz,UnRAR,lz4';
+      final script = '\$d = \'$runtimeDir\'; '
+          'Get-Process -Name $names -ErrorAction SilentlyContinue | '
+          'Where-Object { \$_.Path -and \$_.Path.StartsWith(\$d, '
+          '[StringComparison]::OrdinalIgnoreCase) } | '
+          'ForEach-Object { Write-Output \$_.Path; Stop-Process -Id \$_.Id -Force }';
+      final result = await Process.run(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+      ).timeout(const Duration(seconds: 6));
+      final out = (result.stdout ?? '').toString().trim();
+      if (out.isNotEmpty) {
+        debugPrint('[PROCESS-CLEANUP] 🧹 已终止应用目录下的残留解压进程:\n$out');
+      } else {
+        debugPrint('[PROCESS-CLEANUP] 🧹 无应用目录下的残留解压进程');
+      }
+    } catch (e) {
+      debugPrint('[PROCESS-CLEANUP] ⚠️ 残留进程清理异常(忽略): $e');
     }
   }
 

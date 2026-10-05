@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -9,6 +10,7 @@ import '../../core/pb_config.dart';
 import 'user_model.dart';
 import '../../services/user_cache_service.dart';
 import '../../services/network_status_service.dart';
+import 'remember_me_store.dart';
 
 class AuthService {
   static const String _keyToken = 'pb_auth_token';
@@ -16,21 +18,11 @@ class AuthService {
   static const String _keyUserName = 'pb_user_name';
   static const String _keyUserEmail = 'pb_user_email';
 
-  // ── 找回密码：superuser 凭证（混淆存储） ──
-  // 用途：仅限找回密码流程中，以管理员身份查询用户、重置密码。
-  // 安全说明：superuser 只能通过服务端管理用户记录，无法访问用户的其他业务数据。
-  //           密码混淆存储，逆向难度高，且即使泄露也无法直接登录用户账号。
-  static String get _suEmail => _e();
-  static String get _suPwd => _p();
-
-  // 邮箱混淆：拆分拼接，避免完整明文出现在二进制中
-  static String _e() => '1913672269' '2' '@' '163' '.' 'com';
-  // 密码混淆：拆分拼接
-  static String _p() => 'Bb' '13' '14' '52' '0';
-
-  // superuser token 缓存（避免每次找回密码都登录一次）
-  static String? _suToken;
-  static DateTime? _suTokenExpiry;
+  // ── 找回密码/找回账号：2026-10-02 起全部改走服务端 Hook ──
+  // （/api/ct/request-reset-otp → verify-reset-otp → reset-password，
+  //   /api/ct/lookup-email-by-name），客户端不再持有任何 superuser 凭证。
+  // 原因：原实现把混淆的 superuser 账密随 app 分发 + HTTP 明文传输，
+  // 抓包/逆向即可完全接管 PocketBase，属 P0 安全漏洞（本次消灭）。
 
   // ★ 离线模式：后台 token 验证返回 401/403（token 被吊销）时的强制登出回调。
   // 由 MainContainer 在 initState 中设置，触发后跳转登录页 + 提示用户。
@@ -63,8 +55,10 @@ class AuthService {
     _rateLimitMap.removeWhere((_, v) => now.difference(v) > const Duration(minutes: 5));
   }
 
-  static Future<AuthResult> login(String email, String password) async {
-    debugPrint('[AUTH] 开始请求PocketBase登录 | email=$email');
+  static Future<AuthResult> login(String email, String password,
+      {bool remember = true}) async {
+    // ★ P3：日志脱敏，避免完整邮箱（属个人敏感信息）写入调试日志/崩溃上报
+    debugPrint('[AUTH] 开始请求PocketBase登录 | email=${_maskEmail(email)}');
     try {
       final authData = await PBConfig.pb
           .collection('users')
@@ -78,6 +72,14 @@ class AuthService {
           '[AUTH]    authStore.isValid: ${PBConfig.pb.authStore.isValid}');
 
       await _saveAuthState(authData);
+
+      // 「记住登录」（2026-10-03）：凭证经 DPAPI 加密落盘，供 token 过期后
+      // 静默重登与登录页快速登录；未勾选时清除旧凭证（不留残留）。
+      if (remember) {
+        await RememberMeStore.save(email, password);
+      } else {
+        await RememberMeStore.clear();
+      }
 
       // 直接用 authData.record 拼接头像URL，不依赖 authStore.model
       String avatarUrl = '';
@@ -148,170 +150,118 @@ class AuthService {
     }
   }
 
-  // ======================== 找回密码（纯 Dart，不依赖 JSVM hook） ========================
+  // ======================== 找回密码（邮箱验证码 OTP，服务端 Hook） ========================
+  // 三步流程（2026-10-02 起，与注册验证码同构）：
+  //   ① requestResetOtp(email)                      → { otpId }
+  //   ② verifyResetOtp(otpId, code)                 → { resetToken }
+  //   ③ resetPasswordWithToken(resetToken, newPwd)  → 服务端改密+踢旧会话
+  // 密码重置在服务端以超管通道完成，客户端零管理员凭证。
 
-  /// 以 superuser 身份获取管理员 token。
-  /// 缓存 token 直到过期前 5 分钟，避免频繁登录。
-  /// [forceRefresh] = true 时强制重新登录（token 失效时用）。
-  static Future<String?> _getSuperuserToken({bool forceRefresh = false}) async {
-    // 缓存有效且未过期
-    if (!forceRefresh && _suToken != null && _suTokenExpiry != null) {
-      if (DateTime.now().isBefore(_suTokenExpiry!)) {
-        return _suToken;
-      }
+  /// 找回密码 - 第1步：请求邮箱验证码（走 /api/ct/request-reset-otp）。
+  ///
+  /// 安全措施（服务端负责）：未注册邮箱 404 明确提示（帮助用户发现填错）、
+  /// 60s 重发冷却、验证码 HMAC 摘要存储、180s 有效。
+  static Future<ResetOtpRequestResult> requestResetOtp(String email) async {
+    final trimmed = email.trim();
+    debugPrint('[AUTH] 找回密码-请求验证码 | email=${_maskEmail(trimmed)}');
+
+    if (trimmed.isEmpty) {
+      return const ResetOtpRequestResult(success: false, message: '请输入邮箱地址');
     }
+    if (trimmed.length > 254) {
+      return const ResetOtpRequestResult(success: false, message: '邮箱地址过长');
+    }
+    if (!_isValidEmailFormat(trimmed)) {
+      return const ResetOtpRequestResult(success: false, message: '邮箱格式不正确');
+    }
+
     try {
       final res = await http
           .post(
-            Uri.parse('${PBConfig.baseUrl}/api/collections/_superusers/auth-with-password'),
+            Uri.parse('${PBConfig.baseUrl}/api/ct/request-reset-otp'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'identity': _suEmail,
-              'password': _suPwd,
-            }),
+            body: jsonEncode({'email': trimmed}),
           )
-          .timeout(const Duration(seconds: 15));
+          // 🔴 服务端同步发信，偶发 SMTP 抖动可达 50s+（同注册验证码接口，
+          //    2026-09-30 实测 51.79s）→ 超时留足 90s，防止「服务端发信成功
+          //    但客户端先报错」。
+          .timeout(const Duration(seconds: 90));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _suToken = data['token'] as String?;
-        if (_suToken == null || _suToken!.isEmpty) {
-          debugPrint('[AUTH] ❌ superuser token 为空');
-          return null;
+        final otpId = (data['otpId'] ?? '').toString();
+        if (otpId.isEmpty) {
+          return const ResetOtpRequestResult(
+            success: false,
+            message: '服务器响应异常，请稍后重试',
+          );
         }
-        // PocketBase superuser token 默认 14 天有效，保守设 30 分钟
-        _suTokenExpiry = DateTime.now().add(const Duration(minutes: 30));
-        debugPrint('[AUTH] ✅ superuser token 获取成功');
-        return _suToken;
-      }
-      debugPrint('[AUTH] ❌ superuser 登录失败 (${res.statusCode}): ${res.body}');
-      return null;
-    } on SocketException {
-      debugPrint('[AUTH] ❌ superuser 登录网络异常');
-      return null;
-    } catch (e) {
-      debugPrint('[AUTH] ❌ superuser 登录异常: $e');
-      return null;
-    }
-  }
-
-  /// 找回密码 - 第1步：验证邮箱是否存在。
-  /// 用 superuser token 调用 PocketBase list/search API 查询邮箱。
-  /// 返回用户记录 ID（存在时）或错误信息。
-  ///
-  /// 安全措施：
-  /// - 频率限制：同一邮箱 60 秒内只能请求 1 次
-  /// - 防枚举：邮箱不存在时不明确告知，统一提示"验证失败"
-  /// - 输入消毒：严格校验邮箱格式，防止 filter 注入
-  /// - 401 自动重试：token 过期时自动重新获取
-  static Future<RequestResetResult> requestReset(String email) async {
-    final trimmedEmail = email.trim();
-    debugPrint('[AUTH] 找回密码-验证邮箱 | email=$trimmedEmail');
-
-    // 输入校验
-    if (trimmedEmail.isEmpty) {
-      return const RequestResetResult(success: false, message: '请输入邮箱地址');
-    }
-    if (trimmedEmail.length > 254) {
-      return const RequestResetResult(success: false, message: '邮箱地址过长');
-    }
-    if (!_isValidEmailFormat(trimmedEmail)) {
-      return const RequestResetResult(success: false, message: '邮箱格式不正确');
-    }
-
-    // 频率限制
-    _cleanupRateLimit();
-    final waitSec = _checkRateLimit('reset:$trimmedEmail');
-    if (waitSec != null) {
-      return RequestResetResult(
-        success: false,
-        message: '操作过于频繁，请 $waitSec 秒后再试',
-      );
-    }
-
-    final result = await _doRequestReset(trimmedEmail);
-    // 401 自动重试一次
-    if (result.isUnavailable && result.message?.contains('token') == true) {
-      debugPrint('[AUTH] token 失效，强制刷新后重试');
-      final retryResult = await _doRequestReset(trimmedEmail, forceRefresh: true);
-      if (retryResult.success) _recordRateLimit('reset:$trimmedEmail');
-      return retryResult;
-    }
-    if (result.success) _recordRateLimit('reset:$trimmedEmail');
-    return result;
-  }
-
-  static Future<RequestResetResult> _doRequestReset(
-    String email, {
-    bool forceRefresh = false,
-  }) async {
-    final token = await _getSuperuserToken(forceRefresh: forceRefresh);
-    if (token == null) {
-      return const RequestResetResult(
-        success: false,
-        isUnavailable: true,
-        message: '找回密码服务暂不可用，请稍后重试',
-      );
-    }
-
-    try {
-      // 用 superuser token 查询 users 集合中该邮箱的记录
-      // 注意：email 已通过格式校验，特殊字符被过滤，可安全用于 filter
-      final encodedEmail = Uri.encodeQueryComponent(email);
-      final res = await http
-          .get(
-            Uri.parse(
-                '${PBConfig.baseUrl}/api/collections/users/records?filter=email%3D%27$encodedEmail%27&fields=id,name,email'),
-            headers: {'Authorization': 'Bearer $token'},
-          )
-          .timeout(const Duration(seconds: 15));
-
-      // 401 表示 token 过期，返回特殊标记触发上层重试
-      if (res.statusCode == 401) {
-        return const RequestResetResult(
-          success: false,
-          isUnavailable: true,
-          message: 'token 已过期，正在重新获取',
+        debugPrint('[AUTH] ✅ 重置验证码已发送');
+        return ResetOtpRequestResult(
+          success: true,
+          otpId: otpId,
+          expiresInSeconds:
+              (data['expiresInSeconds'] as num?)?.toInt() ?? 180,
         );
       }
 
-      if (res.statusCode == 200) {
-        final body = res.body.isEmpty ? '{}' : res.body;
-        final data = jsonDecode(body) as Map<String, dynamic>;
-        final items = (data['items'] as List<dynamic>?) ?? [];
-        if (items.isEmpty) {
-          // 防枚举：不明确告知"未注册"
-          debugPrint('[AUTH] ⚠️ 该邮箱未注册（防枚举：统一提示）');
-          return const RequestResetResult(
+      // 404：该邮箱未注册（服务端明确提示；区分「接口未部署」的裸 404）
+      if (res.statusCode == 404) {
+        final data = _tryDecodeJson(res.body);
+        final code = (data?['code'] ?? '').toString();
+        if (code == 'email_not_found') {
+          debugPrint('[AUTH] ⚠️ 该邮箱未注册');
+          return const ResetOtpRequestResult(
             success: false,
-            message: '验证失败，请确认邮箱地址是否正确',
+            emailNotFound: true,
+            message: '该邮箱未注册，请检查输入，或先注册账号',
           );
         }
-        final userId = items[0]['id'];
-        if (userId == null || userId is! String || userId.isEmpty) {
-          return const RequestResetResult(
-            success: false,
-            message: '验证失败，请稍后重试',
-          );
-        }
-        debugPrint('[AUTH] ✅ 邮箱验证通过 | userId=$userId');
-        // token 字段复用为 userId，传递到第2步
-        return RequestResetResult(success: true, token: userId);
+        return const ResetOtpRequestResult(
+          success: false,
+          isUnavailable: true,
+          message: '找回密码服务暂不可用，请稍后重试',
+        );
       }
-      debugPrint('[AUTH] ⚠️ 查询失败 (${res.statusCode}): ${res.body}');
-      return const RequestResetResult(success: false, message: '查询失败，请稍后重试');
+
+      // 429：频率限制
+      if (res.statusCode == 429) {
+        final data = _tryDecodeJson(res.body);
+        final wait = (data?['retryAfterSeconds'] as num?)?.toInt() ?? 60;
+        debugPrint('[AUTH] ⚠️ 请求过于频繁，需等待 $wait 秒');
+        return ResetOtpRequestResult(
+          success: false,
+          retryAfterSeconds: wait,
+          message: data?['message']?.toString() ?? '请求过于频繁，请 $wait 秒后再试',
+        );
+      }
+
+      // 其它 4xx/5xx：取服务端 message
+      final data = _tryDecodeJson(res.body);
+      final msg = data?['message']?.toString();
+      debugPrint('[AUTH] ⚠️ 请求验证码失败 (${res.statusCode}): $msg');
+      return ResetOtpRequestResult(
+        success: false,
+        message: msg?.isNotEmpty == true ? msg! : '验证码发送失败，请稍后重试',
+      );
     } on SocketException {
-      return const RequestResetResult(
+      return const ResetOtpRequestResult(
         success: false,
         isUnavailable: true,
         message: '无法连接服务器，请检查网络',
       );
-    } on FormatException {
-      debugPrint('[AUTH] ⚠️ 响应 JSON 解析失败');
-      return const RequestResetResult(success: false, message: '服务器响应异常，请稍后重试');
+    } on TimeoutException {
+      // 同注册验证码：超时 ≠ 网络断，服务端可能仍在投递（90s 预算先到）
+      return const ResetOtpRequestResult(
+        success: false,
+        message: '邮件发送超时，请稍等片刻后再试',
+      );
     } catch (e) {
-      debugPrint('[AUTH] ⚠️ 验证邮箱异常: $e');
-      return const RequestResetResult(success: false, message: '网络异常，请稍后重试');
+      debugPrint('[AUTH] ⚠️ 请求验证码异常: $e');
+      return const ResetOtpRequestResult(
+        success: false,
+        message: '网络异常，请稍后重试',
+      );
     }
   }
 
@@ -325,113 +275,136 @@ class AuthService {
         .hasMatch(email);
   }
 
-  /// 找回密码 - 第2步：重置密码。
-  /// 用 superuser token 直接调用 PATCH API 更新用户密码。
-  /// [userIdOrToken] 来自 requestReset 返回的 userId。
-  ///
-  /// 安全措施：
-  /// - 密码强度校验：至少 8 位，必须包含字母 + 数字
-  /// - userId 格式校验：防止路径注入
-  /// - 401 自动重试
-  static Future<ResetResult> resetPassword(
-      String userIdOrToken, String newPassword) async {
-    debugPrint('[AUTH] 找回密码-重置密码 | userId=${_safeMaskId(userIdOrToken)}');
+  /// 找回密码 - 第2步：校验验证码，换取重置令牌。
+  /// 走 /api/ct/verify-reset-otp（服务端验码 + 防爆破 + 一次性消费）。
+  static Future<ResetOtpVerifyResult> verifyResetOtp(
+      String otpId, String code) async {
+    final trimmedId = otpId.trim();
+    final trimmedCode = code.trim();
+    debugPrint('[AUTH] 找回密码-校验验证码 | otpId=${_safeMaskId(trimmedId)}');
 
-    // 输入校验
-    if (userIdOrToken.isEmpty || newPassword.isEmpty) {
-      return const ResetResult(success: false, message: '参数不能为空');
-    }
-    // userId 格式校验（PocketBase ID 通常是 15 位字母数字）
-    if (!_isValidUserId(userIdOrToken)) {
-      return const ResetResult(success: false, message: '用户标识无效，请重新验证邮箱');
-    }
-    // 密码强度校验
-    final pwdCheck = _validatePasswordStrength(newPassword);
-    if (pwdCheck != null) {
-      return ResetResult(success: false, message: pwdCheck);
-    }
-
-    final result = await _doResetPassword(userIdOrToken, newPassword);
-    // 401 自动重试一次
-    if (result.isUnavailable && result.message?.contains('token') == true) {
-      debugPrint('[AUTH] token 失效，强制刷新后重试');
-      return _doResetPassword(userIdOrToken, newPassword, forceRefresh: true);
-    }
-    return result;
-  }
-
-  static Future<ResetResult> _doResetPassword(
-    String userId,
-    String newPassword, {
-    bool forceRefresh = false,
-  }) async {
-    final token = await _getSuperuserToken(forceRefresh: forceRefresh);
-    if (token == null) {
-      return const ResetResult(
+    if (trimmedId.isEmpty || trimmedCode.isEmpty) {
+      return const ResetOtpVerifyResult(
         success: false,
-        isUnavailable: true,
-        message: '找回密码服务暂不可用，请稍后重试',
+        message: '请先获取验证码并填写',
       );
     }
 
     try {
       final res = await http
-          .patch(
-            Uri.parse(
-                '${PBConfig.baseUrl}/api/collections/users/records/$userId'),
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
+          .post(
+            Uri.parse('${PBConfig.baseUrl}/api/ct/verify-reset-otp'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'otpId': trimmedId, 'code': trimmedCode}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final resetToken = (data['resetToken'] ?? '').toString();
+        if (resetToken.isEmpty) {
+          return const ResetOtpVerifyResult(
+            success: false,
+            message: '服务器响应异常，请稍后重试',
+          );
+        }
+        debugPrint('[AUTH] ✅ 验证码校验通过，已获取重置令牌');
+        return ResetOtpVerifyResult(
+          success: true,
+          resetToken: resetToken,
+          email: (data['email'] ?? '').toString(),
+        );
+      }
+
+      if (res.statusCode == 404) {
+        return const ResetOtpVerifyResult(
+          success: false,
+          isUnavailable: true,
+          message: '找回密码服务暂不可用，请稍后重试',
+        );
+      }
+
+      final data = _tryDecodeJson(res.body);
+      final msg = data?['message']?.toString();
+      debugPrint('[AUTH] ⚠️ 校验验证码失败 (${res.statusCode}): $msg');
+      return ResetOtpVerifyResult(
+        success: false,
+        message: msg?.isNotEmpty == true ? msg! : '验证码校验失败，请重新获取',
+      );
+    } on SocketException {
+      return const ResetOtpVerifyResult(
+        success: false,
+        isUnavailable: true,
+        message: '无法连接服务器，请检查网络',
+      );
+    } catch (e) {
+      debugPrint('[AUTH] ⚠️ 校验验证码异常: $e');
+      return const ResetOtpVerifyResult(
+        success: false,
+        message: '网络异常，请稍后重试',
+      );
+    }
+  }
+
+  /// 找回密码 - 第3步：凭重置令牌设置新密码。
+  /// 走 /api/ct/reset-password（服务端超管通道改密 + 轮换 tokenKey 踢旧会话）。
+  static Future<ResetPasswordResult> resetPasswordWithToken(
+      String resetToken, String newPassword) async {
+    debugPrint('[AUTH] 找回密码-重置密码 | token=${_safeMaskId(resetToken)}');
+
+    if (resetToken.isEmpty || newPassword.isEmpty) {
+      return const ResetPasswordResult(success: false, message: '参数不能为空');
+    }
+    // 密码强度校验（与服务端规则一致）
+    final pwdCheck = _validatePasswordStrength(newPassword);
+    if (pwdCheck != null) {
+      return ResetPasswordResult(success: false, message: pwdCheck);
+    }
+
+    try {
+      final res = await http
+          .post(
+            Uri.parse('${PBConfig.baseUrl}/api/ct/reset-password'),
+            headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'password': newPassword,
+              'resetToken': resetToken,
+              'newPassword': newPassword,
               'passwordConfirm': newPassword,
             }),
           )
           .timeout(const Duration(seconds: 15));
 
-      if (res.statusCode == 401) {
-        return const ResetResult(
-          success: false,
-          isUnavailable: true,
-          message: 'token 已过期，正在重新获取',
-        );
-      }
-
       if (res.statusCode == 200) {
         debugPrint('[AUTH] ✅ 密码重置成功');
         // 重置成功后清除该邮箱的频率限制，允许立即登录
         _rateLimitMap.removeWhere((k, _) => k.startsWith('reset:'));
-        return const ResetResult(success: true);
+        return const ResetPasswordResult(success: true);
       }
 
-      // 解析错误信息
-      String errorMsg = '重置失败，请稍后重试';
-      if (res.body.isNotEmpty) {
-        try {
-          final data = jsonDecode(res.body) as Map<String, dynamic>;
-          // PocketBase 错误格式：{"message": "...", "data": {...}}
-          final msg = data['message'];
-          if (msg is String && msg.isNotEmpty) {
-            errorMsg = _translatePbError(msg, data);
-          }
-        } catch (_) {
-          // JSON 解析失败，用默认错误信息
-        }
+      if (res.statusCode == 404) {
+        return const ResetPasswordResult(
+          success: false,
+          isUnavailable: true,
+          message: '找回密码服务暂不可用，请稍后重试',
+        );
       }
-      debugPrint('[AUTH] ⚠️ 密码重置失败 (${res.statusCode}): $errorMsg');
-      return ResetResult(success: false, message: errorMsg);
+
+      final data = _tryDecodeJson(res.body);
+      final msg = data?['message']?.toString();
+      debugPrint('[AUTH] ⚠️ 密码重置失败 (${res.statusCode}): $msg');
+      return ResetPasswordResult(
+        success: false,
+        message: msg?.isNotEmpty == true ? msg! : '重置失败，请稍后重试',
+      );
     } on SocketException {
-      return const ResetResult(
+      return const ResetPasswordResult(
         success: false,
         isUnavailable: true,
         message: '无法连接服务器，请检查网络',
       );
-    } on FormatException {
-      return const ResetResult(success: false, message: '服务器响应异常，请稍后重试');
     } catch (e) {
       debugPrint('[AUTH] ⚠️ 重置密码异常: $e');
-      return const ResetResult(success: false, message: '网络异常，请稍后重试');
+      return const ResetPasswordResult(success: false, message: '网络异常，请稍后重试');
     }
   }
 
@@ -456,43 +429,16 @@ class AuthService {
     return null;
   }
 
-  /// PocketBase userId 格式校验（防止路径注入）
-  static bool _isValidUserId(String id) {
-    // PocketBase ID 是 15 位字母数字
-    return RegExp(r'^[a-zA-Z0-9]{10,20}$').hasMatch(id);
-  }
-
-  /// 安全地截取 userId 用于日志（防止越界）
+  /// 安全地截取 ID 用于日志（防止越界）
   static String _safeMaskId(String id) {
     if (id.length <= 8) return '***';
     return '${id.substring(0, 8)}...';
   }
 
-  /// 将 PocketBase 服务端错误信息翻译为用户友好的中文提示
-  static String _translatePbError(String raw, Map<String, dynamic> data) {
-    final lower = raw.toLowerCase();
-    if (lower.contains('validation_length')) {
-      return '密码长度不符合要求（8-72 位）';
-    }
-    if (lower.contains('password') && lower.contains('match')) {
-      return '两次密码输入不一致';
-    }
-    if (lower.contains('not found') || lower.contains('404')) {
-      return '用户记录不存在，请重新验证邮箱';
-    }
-    // 默认返回原始信息（已是非敏感信息）
-    return raw;
-  }
-
-  /// 找回账号：按昵称查询脱敏邮箱。
-  /// 用 superuser token 调用 PocketBase list/search API 查询用户。
-  ///
-  /// 支持模糊查询：用户可能记不全昵称，用 ~ 包裹实现 LIKE 查询。
-  /// 安全措施：
-  /// - 频率限制：同一昵称 60 秒内只能查询 1 次
-  /// - 输入消毒：过滤特殊字符防止 filter 注入
-  /// - 401 自动重试
-  /// - 多结果处理：只返回第一个匹配的脱敏邮箱
+  /// 找回账号：按昵称查询脱敏邮箱（2026-10-02 起走服务端 Hook）。
+  /// /api/ct/lookup-email-by-name：服务端查询 + 服务端脱敏（首字符***@域名），
+  /// 客户端只拿脱敏结果，不再持任何管理员凭证。
+  /// 频率限制仍由客户端负责（同一昵称 60 秒 1 次）。
   static Future<LookupResult> lookupEmailByName(String name) async {
     final trimmed = name.trim();
     debugPrint('[AUTH] 按昵称查询邮箱 | name=$trimmed');
@@ -503,7 +449,7 @@ class AuthService {
     if (trimmed.length > 50) {
       return const LookupResult(found: false, message: '昵称过长，请精简后重试');
     }
-    // 输入消毒：过滤可能用于 filter 注入的字符
+    // 输入消毒：过滤可能用于 filter 注入的字符（服务端也做一层，双保险）
     if (trimmed.contains("'") || trimmed.contains('"') || trimmed.contains('\\')) {
       return const LookupResult(found: false, message: '昵称包含非法字符');
     }
@@ -518,103 +464,45 @@ class AuthService {
       );
     }
 
-    final result = await _doLookupEmailByName(trimmed);
-    if (result.isUnavailable && result.message?.contains('token') == true) {
-      debugPrint('[AUTH] token 失效，强制刷新后重试');
-      final retry = await _doLookupEmailByName(trimmed, forceRefresh: true);
-      if (retry.found) _recordRateLimit('lookup:$trimmed');
-      return retry;
-    }
-    if (result.found) _recordRateLimit('lookup:$trimmed');
-    return result;
-  }
-
-  static Future<LookupResult> _doLookupEmailByName(
-    String name, {
-    bool forceRefresh = false,
-  }) async {
-    final token = await _getSuperuserToken(forceRefresh: forceRefresh);
-    if (token == null) {
-      return const LookupResult(
-        found: false,
-        isUnavailable: true,
-        message: '找回账号服务暂不可用，请稍后重试',
-      );
-    }
-
     try {
-      // 模糊查询：name~'xxx' 匹配包含 xxx 的昵称
-      // 先尝试精确匹配，再降级为模糊匹配
-      final encodedName = Uri.encodeQueryComponent(name);
-
-      // 精确匹配优先
-      var res = await http
-          .get(
-            Uri.parse(
-                '${PBConfig.baseUrl}/api/collections/users/records?filter=name%3D%27$encodedName%27&fields=id,name,email&perPage=1'),
-            headers: {'Authorization': 'Bearer $token'},
+      final res = await http
+          .post(
+            Uri.parse('${PBConfig.baseUrl}/api/ct/lookup-email-by-name'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'name': trimmed}),
           )
           .timeout(const Duration(seconds: 15));
 
-      // 精确匹配无结果，降级为模糊匹配
       if (res.statusCode == 200) {
-        var data = jsonDecode(res.body) as Map<String, dynamic>;
-        var items = (data['items'] as List<dynamic>?) ?? [];
-        if (items.isEmpty) {
-          // 模糊匹配
-          res = await http
-              .get(
-                Uri.parse(
-                    '${PBConfig.baseUrl}/api/collections/users/records?filter=name%7E%27$encodedName%27&fields=id,name,email&perPage=5'),
-                headers: {'Authorization': 'Bearer $token'},
-              )
-              .timeout(const Duration(seconds: 15));
-          if (res.statusCode == 200) {
-            data = jsonDecode(res.body) as Map<String, dynamic>;
-            items = (data['items'] as List<dynamic>?) ?? [];
-          }
-        }
-
-        if (res.statusCode == 401) {
-          return const LookupResult(
-            found: false,
-            isUnavailable: true,
-            message: 'token 已过期，正在重新获取',
-          );
-        }
-
-        if (res.statusCode == 200) {
-          if (items.isEmpty) {
-            debugPrint('[AUTH] ⚠️ 未找到该昵称');
-            return const LookupResult(found: false, message: '未找到该昵称对应的账号');
-          }
-          final firstItem = items[0];
-          if (firstItem is! Map<String, dynamic>) {
-            return const LookupResult(found: false, message: '查询结果异常，请重试');
-          }
-          final email = firstItem['email'];
-          if (email == null || email is! String || email.isEmpty) {
-            return const LookupResult(found: false, message: '查询结果异常，请重试');
-          }
-          final masked = _maskEmail(email);
-          final matchedName = firstItem['name'] as String? ?? '';
-          debugPrint('[AUTH] ✅ 查询完成 | matched=$matchedName, masked=$masked');
-          // 如果有多条匹配，提示用户
-          final hasMultiple = items.length > 1;
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final found = data['found'] == true;
+        _recordRateLimit('lookup:$trimmed');
+        if (!found) {
           return LookupResult(
-            found: true,
-            email: masked,
-            matchedName: hasMultiple ? matchedName : null,
-            hasMultipleMatches: hasMultiple,
+            found: false,
+            message: data['message']?.toString() ?? '未找到该昵称对应的账号',
           );
         }
+        final masked = (data['email'] ?? '').toString();
+        if (masked.isEmpty) {
+          return const LookupResult(found: false, message: '查询结果异常，请重试');
+        }
+        final hasMultiple = data['hasMultipleMatches'] == true;
+        debugPrint('[AUTH] ✅ 查询完成 | masked=$masked');
+        return LookupResult(
+          found: true,
+          email: masked,
+          matchedName:
+              hasMultiple ? (data['matchedName']?.toString() ?? '') : null,
+          hasMultipleMatches: hasMultiple,
+        );
       }
 
-      if (res.statusCode == 401) {
+      if (res.statusCode == 404) {
         return const LookupResult(
           found: false,
           isUnavailable: true,
-          message: 'token 已过期，正在重新获取',
+          message: '找回账号服务暂不可用，请稍后重试',
         );
       }
 
@@ -626,8 +514,6 @@ class AuthService {
         isUnavailable: true,
         message: '无法连接服务器，请检查网络',
       );
-    } on FormatException {
-      return const LookupResult(found: false, message: '服务器响应异常，请稍后重试');
     } catch (e) {
       debugPrint('[AUTH] ⚠️ 查询邮箱异常: $e');
       return const LookupResult(found: false, message: '网络异常，请稍后重试');
@@ -645,12 +531,217 @@ class AuthService {
 
   // ======================== 注册 / 登录 / 退出 ========================
 
+  /// 注册 - 第1步：请求邮箱验证码。
+  ///
+  /// 走 Hook 自建的 `/api/ct/request-register-otp`（**不是** PB 内置的
+  /// `users/request-otp`）。原因：内置接口只对「已存在的用户」发码，
+  /// 新用户注册时邮箱必然不存在 → 永远收不到验证码（2026-09-30 实测确认）。
+  ///
+  /// 成功时返回 `otpId`，供第2步 [verifyRegisterOtp] 校验使用。
+  static Future<RegisterOtpRequestResult> requestRegisterOtp(
+      String email) async {
+    final trimmed = email.trim();
+    debugPrint('[AUTH] 注册-请求验证码 | email=${_maskEmail(trimmed)}');
+
+    if (trimmed.isEmpty) {
+      return const RegisterOtpRequestResult(
+        success: false,
+        message: '请输入邮箱地址',
+      );
+    }
+    if (!_isValidEmailFormat(trimmed)) {
+      return const RegisterOtpRequestResult(
+        success: false,
+        message: '邮箱格式不正确',
+      );
+    }
+
+    try {
+      final res = await http
+          .post(
+            Uri.parse('${PBConfig.baseUrl}/api/ct/request-register-otp'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': trimmed}),
+          )
+          // 🔴 超时必须留足：此接口在服务端**同步**发信（$app.newMailClient().send()）。
+          //    实测常态 1.7–4.5s，但偶发 SMTP 抖动可达 50s+（2026-09-30 实测 51.79s）。
+          //    若超时设 30s，会在服务端最终发信成功的情况下先报错 →
+          //    用户以为失败、实际收到邮件（还会撞上 60s 冷却）。
+          .timeout(const Duration(seconds: 90));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final otpId = (data['otpId'] ?? '').toString();
+        if (otpId.isEmpty) {
+          return const RegisterOtpRequestResult(
+            success: false,
+            message: '服务器响应异常，请稍后重试',
+          );
+        }
+        debugPrint('[AUTH] ✅ 注册验证码已发送');
+        return RegisterOtpRequestResult(
+          success: true,
+          otpId: otpId,
+          expiresInSeconds:
+              (data['expiresInSeconds'] as num?)?.toInt() ?? 180,
+        );
+      }
+
+      // 409：该邮箱已被注册（决策 A：明确提示）
+      if (res.statusCode == 409) {
+        debugPrint('[AUTH] ⚠️ 该邮箱已被注册');
+        return const RegisterOtpRequestResult(
+          success: false,
+          emailAlreadyExists: true,
+          message: '该邮箱已被注册，请直接登录',
+        );
+      }
+
+      // 429：频率限制
+      if (res.statusCode == 429) {
+        final data = _tryDecodeJson(res.body);
+        final wait = (data?['retryAfterSeconds'] as num?)?.toInt() ?? 60;
+        debugPrint('[AUTH] ⚠️ 请求过于频繁，需等待 $wait 秒');
+        return RegisterOtpRequestResult(
+          success: false,
+          retryAfterSeconds: wait,
+          message: data?['message']?.toString() ?? '请求过于频繁，请 $wait 秒后再试',
+        );
+      }
+
+      // 404：接口未部署（Hook 未加载）
+      if (res.statusCode == 404) {
+        return const RegisterOtpRequestResult(
+          success: false,
+          isUnavailable: true,
+          message: '注册验证码服务暂不可用，请稍后重试',
+        );
+      }
+
+      // 其它 4xx/5xx：取服务端 message
+      final data = _tryDecodeJson(res.body);
+      final msg = data?['message']?.toString();
+      debugPrint('[AUTH] ⚠️ 请求验证码失败 (${res.statusCode}): $msg');
+      return RegisterOtpRequestResult(
+        success: false,
+        message: msg?.isNotEmpty == true ? msg! : '验证码发送失败，请稍后重试',
+      );
+    } on SocketException {
+      return const RegisterOtpRequestResult(
+        success: false,
+        isUnavailable: true,
+        message: '无法连接服务器，请检查网络',
+      );
+    } on TimeoutException {
+      // 服务端同步发信，偶发 SMTP 抖动可达 50s+；90s 超时先到时服务端可能
+      // 仍在投递 → 不能误导为「网络异常」（2026-10-03 用户反馈：误判网络错误）。
+      // 重新获取会签发新码（旧码服务端 3 分钟后自然过期），安全。
+      return const RegisterOtpRequestResult(
+        success: false,
+        message: '邮件发送超时，请稍等片刻后点「重新获取」再试',
+      );
+    } catch (e) {
+      debugPrint('[AUTH] ⚠️ 请求验证码异常: $e');
+      return const RegisterOtpRequestResult(
+        success: false,
+        message: '网络异常，请稍后重试',
+      );
+    }
+  }
+
+  /// 注册 - 第2步：校验验证码，换取注册令牌。
+  ///
+  /// 成功时返回 `regToken`，提交注册时通过请求体 `regToken` 字段回传
+  /// （⛔ 不用请求头：Hook 的 header 读取修复尚未部署，body 路径已验证可用）。
+  static Future<RegisterOtpVerifyResult> verifyRegisterOtp(
+      String otpId, String code) async {
+    final trimmedId = otpId.trim();
+    final trimmedCode = code.trim();
+    debugPrint('[AUTH] 注册-校验验证码 | otpId=${_safeMaskId(trimmedId)}');
+
+    if (trimmedId.isEmpty || trimmedCode.isEmpty) {
+      return const RegisterOtpVerifyResult(
+        success: false,
+        message: '请先获取验证码并填写',
+      );
+    }
+
+    try {
+      final res = await http
+          .post(
+            Uri.parse('${PBConfig.baseUrl}/api/ct/verify-register-otp'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'otpId': trimmedId, 'code': trimmedCode}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final regToken = (data['regToken'] ?? '').toString();
+        if (regToken.isEmpty) {
+          return const RegisterOtpVerifyResult(
+            success: false,
+            message: '服务器响应异常，请稍后重试',
+          );
+        }
+        debugPrint('[AUTH] ✅ 验证码校验通过，已获取注册令牌');
+        return RegisterOtpVerifyResult(
+          success: true,
+          regToken: regToken,
+          email: (data['email'] ?? '').toString(),
+        );
+      }
+
+      if (res.statusCode == 404) {
+        return const RegisterOtpVerifyResult(
+          success: false,
+          isUnavailable: true,
+          message: '注册验证码服务暂不可用，请稍后重试',
+        );
+      }
+
+      final data = _tryDecodeJson(res.body);
+      final msg = data?['message']?.toString();
+      debugPrint('[AUTH] ⚠️ 校验验证码失败 (${res.statusCode}): $msg');
+      return RegisterOtpVerifyResult(
+        success: false,
+        message: msg?.isNotEmpty == true ? msg! : '验证码校验失败，请重新获取',
+      );
+    } on SocketException {
+      return const RegisterOtpVerifyResult(
+        success: false,
+        isUnavailable: true,
+        message: '无法连接服务器，请检查网络',
+      );
+    } catch (e) {
+      debugPrint('[AUTH] ⚠️ 校验验证码异常: $e');
+      return const RegisterOtpVerifyResult(
+        success: false,
+        message: '网络异常，请稍后重试',
+      );
+    }
+  }
+
+  /// 安全解析 JSON（失败返回 null，不抛异常）
+  static Map<String, dynamic>? _tryDecodeJson(String body) {
+    if (body.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(body);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<AuthResult> register(
     String email,
     String password,
-    String name,
-  ) async {
-    debugPrint('[AUTH] 开始请求PocketBase注册 | email=$email, name=$name');
+    String name, {
+    String? regToken,
+  }) async {
+    // ★ P3：日志脱敏
+    debugPrint(
+        '[AUTH] 开始请求PocketBase注册 | email=${_maskEmail(email)}, name=$name');
     try {
       final body = <String, dynamic>{
         'email': email,
@@ -658,6 +749,11 @@ class AuthService {
         'passwordConfirm': password,
         'name': name,
       };
+      // ★ 注册令牌：由 verifyRegisterOtp 签发，Hook 校验通过才允许落库。
+      //   走请求体（⛔ 不用请求头，理由见 verifyRegisterOtp 注释）。
+      if (regToken != null && regToken.isNotEmpty) {
+        body['regToken'] = regToken;
+      }
 
       await PBConfig.pb.collection('users').create(body: body);
 
@@ -699,6 +795,15 @@ class AuthService {
             }
           }
         }
+        // ★ 注册令牌相关错误（Hook 抛出的 BadRequestError）：
+        //   服务端 message 形如「注册需要邮箱验证码…」「注册令牌无效…」等，
+        //   直接透传给用户，比笼统的「注册信息有误」更有指导意义。
+        final serverMsg = _extractServerMessage(e.response);
+        if (serverMsg != null &&
+            (serverMsg.contains('验证码') || serverMsg.contains('注册令牌'))) {
+          debugPrint('[ERROR] ❌ 注册失败 (400): $serverMsg | raw: $e');
+          return AuthResult.failure(AuthResultCode.unknownError, serverMsg);
+        }
         debugPrint('[ERROR] ❌ 注册失败 (400): 注册信息有误 | raw: $e');
         return AuthResult.failure(
           AuthResultCode.unknownError,
@@ -714,6 +819,22 @@ class AuthService {
     }
   }
 
+  /// 从 PocketBase ClientException 响应中提取服务端 message 文本。
+  /// PB 的 400 响应形如 {"message":"...","data":{...}}，message 为顶层字段。
+  static String? _extractServerMessage(dynamic response) {
+    try {
+      if (response is Map<String, dynamic>) {
+        final m = response['message'];
+        if (m is String && m.isNotEmpty) {
+          // PB 会在自定义错误消息末尾附加一个句点，去掉更整洁
+          return m.replaceAll(RegExp(r'\.$'), '');
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+
   static Future<void> logout() async {
     debugPrint('[AUTH] 用户退出登录，清除Token和本地缓存');
     try {
@@ -724,6 +845,10 @@ class AuthService {
     await prefs.remove(_keyUserId);
     await prefs.remove(_keyUserName);
     await prefs.remove(_keyUserEmail);
+
+    // 「记住登录」：主动退出 = 明确不想保持登录，清除加密凭证
+    // （与 token 过期的静默重登场景区分——那才是记住凭证的用武之地）
+    await RememberMeStore.clear();
 
     await UserCacheService.clearAll();
 
@@ -749,7 +874,12 @@ class AuthService {
 
       // 步骤2：本地 JWT exp 校验（瞬时，无网络）
       if (!_isLocalTokenValid()) {
-        debugPrint('[AUTH]   ⚠️ 本地Token已过期(JWT exp)，需要重新登录');
+        debugPrint('[AUTH]   ⚠️ 本地Token已过期(JWT exp)');
+        // 「记住登录」（2026-10-03）：token 过期后用本地加密凭证静默重登，
+        // 满足「以月为周期不要求重新登录」——即使超过 authDuration 未打开
+        // 软件，只要记住过登录就能无感恢复在线态。
+        final silentOk = await _trySilentRelogin();
+        if (silentOk) return true;
         // 仅清除过期 token，不清 UserCacheService（保留用户信息以便重新登录 UX）
         PBConfig.pb.authStore.clear();
         final prefs = await SharedPreferences.getInstance();
@@ -770,6 +900,34 @@ class AuthService {
     }
   }
 
+  /// 「记住登录」静默重登：token 过期时用本地 DPAPI 加密凭证自动登录。
+  ///
+  /// - 离线时跳过（保持本地游客态，下次联网启动再试）；
+  /// - 成功 → 无感恢复在线态，返回 true；
+  /// - 凭证失效（密码已改/账号已删）→ 清除凭证，返回 false；
+  /// - 网络等临时错误 → 保留凭证，返回 false（下次再试）。
+  static Future<bool> _trySilentRelogin() async {
+    if (!NetworkStatusService.instance.isOnline) {
+      debugPrint('[AUTH]   离线，跳过静默重登');
+      return false;
+    }
+    final cred = await RememberMeStore.load();
+    if (cred == null) return false;
+    debugPrint('[AUTH]   尝试静默重登 | email=${_maskEmail(cred.email)}');
+    final result = await login(cred.email, cred.password, remember: true);
+    if (result.code == AuthResultCode.success) {
+      debugPrint('[AUTH]   ✅ 静默重登成功，无感恢复在线态');
+      return true;
+    }
+    if (result.code == AuthResultCode.invalidCredentials ||
+        result.code == AuthResultCode.userNotFound) {
+      // 凭证确定失效（而非网络抖动）：清除，避免下次继续撞错
+      debugPrint('[AUTH]   ⚠️ 记住的凭证已失效，清除');
+      await RememberMeStore.clear();
+    }
+    return false;
+  }
+
   /// 后台 token 验证（fire-and-forget，不阻塞 UI）。
   /// 离线时跳过；在线时 authRefresh，仅 401/403（token 被吊销）触发强制登出。
   static Future<void> verifyTokenInBackground() async {
@@ -781,6 +939,15 @@ class AuthService {
       await PBConfig.pb.collection('users').authRefresh();
       debugPrint(
           '[AUTH]   ✅ 后台Token刷新成功，isValid: ${PBConfig.pb.authStore.isValid}');
+      // 🔴 新 token 必须回写本地持久化（2026-10-03 修复「一段时间不用就掉线」）：
+      //    authRefresh 签发的新 token 此前只存在于内存 authStore，下次启动
+      //    _restoreFromLocal 恢复的仍是首次登录时的旧 token——超过服务端
+      //    authDuration 后本地 JWT 校验即拦截，强制要求重新登录。
+      //    回写后：每次打开软件都续期，只要两个有效期内开过一次就永不断线。
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_keyToken, PBConfig.pb.authStore.token);
+      } catch (_) {}
     } on ClientException catch (e) {
       final code = e.statusCode;
       if (code == 401 || code == 403) {
@@ -1150,11 +1317,5 @@ class AuthService {
       AuthResultCode.unknownError,
       '发生未知错误，请稍后重试',
     );
-  }
-
-  static String _maskToken(String token) {
-    if (token.isEmpty) return '(空)';
-    if (token.length <= 20) return '$token...';
-    return '${token.substring(0, 20)}...';
   }
 }

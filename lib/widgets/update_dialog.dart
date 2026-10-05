@@ -6,6 +6,7 @@ import '../services/update/update_service.dart';
 import '../services/process_cleanup_service.dart';
 import 'interactive_wrapper.dart';
 import 'custom_title_bar.dart';
+import 'app_snack_bar.dart';
 
 OverlayEntry? _updateOverlayEntry;
 
@@ -128,8 +129,9 @@ class _UpdateDialogState extends State<UpdateDialog> {
       await UpdateService.instance.installUpdate(_savePath!);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('启动安装程序失败: $e')),
+      AppSnackBar.error(
+        context,
+        '启动安装程序失败: $e',
       );
       return;
     }
@@ -207,7 +209,6 @@ class _UpdateDialogState extends State<UpdateDialog> {
         Text(
           '发现新版本',
           style: TextStyle(
-            fontFamily: 'ZhiMangXing',
             fontSize: 22,
             letterSpacing: 1.5,
             color: AppColors.border,
@@ -246,7 +247,6 @@ class _UpdateDialogState extends State<UpdateDialog> {
           title: Text(
             '正在下载更新',
             style: TextStyle(
-              fontFamily: 'ZhiMangXing',
               fontSize: 22,
               letterSpacing: 1.5,
               color: AppColors.border,
@@ -255,7 +255,6 @@ class _UpdateDialogState extends State<UpdateDialog> {
           content: Text(
             '更新包正在下载中，关闭窗口将取消下载并删除临时文件，确定要关闭吗？',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 15,
               color: AppColors.primaryText,
               height: 1.5,

@@ -1,4 +1,4 @@
-#include "win32_window.h"
+﻿#include "win32_window.h"
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
@@ -15,6 +15,30 @@ namespace {
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
+
+/// Window attribute for corner preference (Windows 11 22000+).
+/// Allows specifying whether the window corners should be rounded.
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+/// Corner preference values for DWMWA_WINDOW_CORNER_PREFERENCE.
+/// See: https://docs.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwm_window_corner_preference
+constexpr int kDwmwcpDefault = 0;
+constexpr int kDwmwcpDoNotRound = 1;
+constexpr int kDwmwcpRound = 2;
+constexpr int kDwmwcpRoundSmall = 3;
+
+/// Apply rounded corners to the window via DWM (Windows 11).
+/// setAsFrameless() changes the window to WS_POPUP style, which defaults to
+/// sharp corners on Windows 11. Explicitly setting DWMWCP_ROUND overrides this
+/// and makes the physical window (including the Flutter surface) rounded,
+/// eliminating the square background that shows through Flutter's ClipRRect.
+void ApplyRoundedCorners(HWND window) {
+  int preference = kDwmwcpRound;
+  DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE,
+                        &preference, sizeof(preference));
+}
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
@@ -145,6 +169,8 @@ bool Win32Window::Create(const std::wstring& title,
   }
 
   UpdateTheme(window);
+  // 启用 Windows 11 原生窗口圆角（WS_OVERLAPPEDWINDOW 阶段）
+  ApplyRoundedCorners(window);
 
   return OnCreate();
 }
@@ -215,6 +241,14 @@ Win32Window::MessageHandler(HWND hwnd,
 
     case WM_DWMCOLORIZATIONCOLORCHANGED:
       UpdateTheme(hwnd);
+      return 0;
+
+    case WM_STYLECHANGED:
+      // setAsFrameless() (called from Dart via window_manager) changes the
+      // window style to WS_POPUP, which resets DWM corner preference to default
+      // (sharp corners on Windows 11). Re-apply rounded corners to keep the
+      // physical window rounded after the style change.
+      ApplyRoundedCorners(hwnd);
       return 0;
   }
 

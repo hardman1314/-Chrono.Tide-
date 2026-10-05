@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import '../modules/auth/user_model.dart';
 import '../services/user_cache_service.dart';
 import '../services/network_status_service.dart';
@@ -99,14 +100,20 @@ class _FloatingUserButtonState extends State<FloatingUserButton> {
       height: 56,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.border,
-            offset: const Offset(2, 3),
-            blurRadius: 0,
-          ),
-        ],
+        // v3.9 Aurora：发丝边 + 柔光海拔（经典档硬影保留）
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e2
+            : [
+                BoxShadow(
+                  color: AppColors.border,
+                  offset: const Offset(2, 3),
+                  blurRadius: 0,
+                ),
+              ],
         color: AppColors.placeholderCover,
       ),
       padding: const EdgeInsets.all(4),
@@ -211,7 +218,6 @@ class _FloatingUserButtonState extends State<FloatingUserButton> {
                     Text(
                       label,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: color,

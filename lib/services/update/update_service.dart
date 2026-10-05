@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:math';
 import 'dart:async'; // 添加Timer支持
 import 'update_models.dart';
+import '../../core/path_helper.dart';
 
 // 正确的相对路径导入日志工具
 import '../../app_log_helper.dart';
@@ -15,22 +16,12 @@ import '../../app_log_helper.dart';
 // 导入进程清理服务
 import '../process_cleanup_service.dart';
 
-import '../../core/backend_config.dart';
-
 class UpdateService {
   UpdateService._();
   static final UpdateService instance = UpdateService._();
   BuildContext? appContext;
 
-  /// 更新服务器地址
-  /// 开源版本：如果后端可用则使用同一服务器的更新端口，否则为空
-  static String get _serverUrl {
-    if (BackendConfig.pbBaseUrl.isEmpty) return '';
-    // 从 PB 地址推导更新服务地址（同IP，端口8000）
-    return BackendConfig.pbBaseUrl.replaceFirst(':8090', ':8000') +
-        '/version.json';
-  }
-
+  static const String _serverUrl = 'http://117.72.115.30:8000/version.json';
   static const int _skipDurationDays = 7;
   static const int _threadCount = 4; // 4线程并行下载
   static const int _maxRetriesPerChunk = 5; // 每个分片最多重试5次
@@ -334,7 +325,15 @@ class UpdateService {
     AppLogHelper.info('📍 下载URL: $url');
     AppLogHelper.info('⚡ 线程数: $_threadCount | 重试次数: $_maxRetriesPerChunk/分片');
 
-    final dir = await getTemporaryDirectory();
+    // 优先便携临时目录（安装目录内），避免更新包占用系统 C 盘；
+    // 安装目录只读时降级回系统临时目录
+    Directory dir;
+    if (await PathHelper.isPortableWritable()) {
+      dir = Directory(PathHelper.portableTmpDir);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+    } else {
+      dir = await getTemporaryDirectory();
+    }
     final fileName = url.split('/').last.split('?').first;
     final savePath = '${dir.path}\\$fileName';
 
@@ -356,7 +355,7 @@ class UpdateService {
     try {
       // 步骤1：获取文件大小并检查Range支持
       AppLogHelper.info('📡 步骤1/5: 探测服务器支持...');
-      final headResponse = await dio.head(url);
+      final headResponse = await dio.head(url, cancelToken: cancelToken);
       final contentLength = headResponse.headers.value('content-length');
 
       if (contentLength == null || contentLength!.isEmpty) {
@@ -431,7 +430,7 @@ class UpdateService {
       try {
         // 并行执行所有分片下载
         await Future.wait(
-          chunks.map((chunk) => _downloadChunkWithRetry(dio, url, chunk)),
+          chunks.map((chunk) => _downloadChunkWithRetry(dio, url, chunk, cancelToken)),
         );
       } finally {
         progressTimer?.cancel();
@@ -474,6 +473,7 @@ class UpdateService {
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
         AppLogHelper.info('❌ 用户取消下载');
+        await cleanupDownloadArtifacts(savePath);
         rethrow;
       }
       AppLogHelper.error('❌ 多线程下载失败', e, StackTrace.current);
@@ -486,10 +486,17 @@ class UpdateService {
         connectTimeout: Duration(seconds: _connectTimeoutSeconds * 2), // 双倍超时
         receiveTimeout: Duration(minutes: _receiveTimeoutMinutes * 2),
       ));
-      return await _fallbackSingleThreadDownload(
-          fallbackDio, url, savePath, onProgress, cancelToken);
+      try {
+        return await _fallbackSingleThreadDownload(
+            fallbackDio, url, savePath, onProgress, cancelToken);
+      } catch (e2, s2) {
+        AppLogHelper.error('❌ 降级下载也失败', e2, s2);
+        await cleanupDownloadArtifacts(savePath);
+        rethrow;
+      }
     } catch (e, stack) {
       AppLogHelper.error('❌ 下载异常', e, stack);
+      await cleanupDownloadArtifacts(savePath);
       rethrow;
     }
   }
@@ -542,11 +549,20 @@ class UpdateService {
     Dio dio,
     String url,
     _UpdateChunk chunk,
+    CancelToken? mainCancelToken,
   ) async {
     for (int attempt = 0; attempt <= _maxRetriesPerChunk; attempt++) {
-      try {
-        chunk.cancelToken = CancelToken();
+      // 每次重试前检查用户是否已取消
+      if (mainCancelToken?.isCancelled ?? false) {
+        AppLogHelper.info('⛔ 分片${chunk.index}检测到取消信号，停止下载');
+        throw DioException(
+          requestOptions: RequestOptions(path: url),
+          type: DioExceptionType.cancel,
+          message: '用户取消',
+        );
+      }
 
+      try {
         AppLogHelper.info(
             '🔽 分片${chunk.index}: 开始${attempt == 0 ? "首次" : "第${attempt}次"}下载...');
 
@@ -558,7 +574,7 @@ class UpdateService {
             },
             responseType: ResponseType.stream,
           ),
-          cancelToken: chunk.cancelToken,
+          cancelToken: mainCancelToken,
         );
 
         // 写入临时文件
@@ -569,7 +585,7 @@ class UpdateService {
         try {
           final buffer = <int>[];
           await for (final data in response.data!.stream) {
-            if (chunk.cancelToken?.isCancelled ?? false) break;
+            if (mainCancelToken?.isCancelled ?? false) break;
 
             final bytes = data is List<int> ? data : (data as List).cast<int>();
             buffer.addAll(bytes);
@@ -593,7 +609,7 @@ class UpdateService {
         }
 
         // 标记完成
-        if (!(chunk.cancelToken?.isCancelled ?? false)) {
+        if (!(mainCancelToken?.isCancelled ?? false)) {
           chunk.completed = true;
           AppLogHelper.info(
               '✅ 分片${chunk.index}完成 | ${_formatBytes(chunk.receivedBytes)}');
@@ -745,21 +761,13 @@ class UpdateService {
       AppLogHelper.info('✅ 安装程序文件存在，开始清理进程...');
 
       try {
-        AppLogHelper.info('🧹 步骤1/3: 关闭所有对接程序...');
+        AppLogHelper.info('🧹 关闭所有对接程序...');
         await ProcessCleanupService.cleanupAll();
         AppLogHelper.info('✅ 所有对接程序已关闭');
 
-        AppLogHelper.info('🚀 步骤2/3: 启动安装程序...');
+        AppLogHelper.info('🚀 启动安装程序...');
         await Process.start(exePath, [], runInShell: true);
         AppLogHelper.info('✅ 安装程序已启动');
-
-        await Future.delayed(const Duration(milliseconds: 500));
-
-        AppLogHelper.info('🔒 步骤3/3: 关闭主程序...');
-        await Process.run('taskkill', ['/F', '/IM', 'chrono_tide.exe'],
-            runInShell: true);
-
-        AppLogHelper.info('✅ 主程序已关闭，安装程序接管更新');
       } catch (e, stack) {
         AppLogHelper.error('❌ 安装过程出错', e, stack);
         rethrow;
@@ -768,6 +776,99 @@ class UpdateService {
       AppLogHelper.error('❌ 安装程序文件不存在', exePath, StackTrace.current);
       throw Exception('安装程序文件不存在: $exePath');
     }
+  }
+
+  /// 清理指定下载产物（安装包文件 + 关联的分片临时文件）
+  ///
+  /// 在下载取消、失败、或用户关闭弹窗（不安装）时调用，
+  /// 确保不残留不完整的安装包缓存。
+  Future<void> cleanupDownloadArtifacts(String savePath) async {
+    try {
+      final file = File(savePath);
+      if (await file.exists()) {
+        await file.delete();
+        AppLogHelper.info('🧹 已删除安装包缓存: $savePath');
+      }
+
+      // 清理关联的分片临时文件（命名格式：{savePath}.part_{i}.tmp）
+      final dir = file.parent;
+      final fileName = savePath.split(Platform.pathSeparator).last;
+      if (dir.existsSync()) {
+        for (final entry in dir.listSync()) {
+          if (entry is File && entry.path.contains('$fileName.part_')) {
+            try {
+              await entry.delete();
+              AppLogHelper.info('🧹 已删除分片临时文件: ${entry.path}');
+            } catch (_) {
+              // 单个分片文件删除失败不影响整体清理
+            }
+          }
+        }
+      }
+    } catch (e) {
+      AppLogHelper.error('⚠️ 清理下载产物失败', e, StackTrace.current);
+    }
+  }
+
+  /// 清理旧的更新安装包缓存（在应用启动时调用）
+  ///
+  /// 更新安装完成后，安装包文件无法在安装过程中删除（Windows 文件锁），
+  /// 因此在新版本启动时执行延迟清理，扫描临时目录并删除残留的安装包和分片文件。
+  Future<void> cleanupOldInstallerCache() async {
+    AppLogHelper.info('🧹 开始清理旧的更新安装包缓存...');
+
+    final dirs = <Directory>[];
+    // 便携临时目录（首选下载路径）
+    final portableDir = Directory(PathHelper.portableTmpDir);
+    if (portableDir.existsSync()) dirs.add(portableDir);
+    // 系统临时目录（降级下载路径，防止可写性变化后遗留）
+    try {
+      final sysTemp = await getTemporaryDirectory();
+      dirs.add(sysTemp);
+    } catch (_) {}
+
+    int cleaned = 0;
+    for (final dir in dirs) {
+      try {
+        for (final entry in dir.listSync()) {
+          if (entry is! File) continue;
+          final name = entry.uri.pathSegments.last;
+          if (!_isUpdateArtifact(name)) continue;
+
+          try {
+            await entry.delete();
+            cleaned++;
+            AppLogHelper.info('🧹 已清理旧缓存文件: $name');
+          } catch (e) {
+            // 文件可能被占用（如安装程序仍在运行），跳过不报错
+            AppLogHelper.info('⚠️ 跳过被占用的缓存文件: $name ($e)');
+          }
+        }
+      } catch (e) {
+        AppLogHelper.error('⚠️ 扫描目录失败: ${dir.path}', e, StackTrace.current);
+      }
+    }
+    AppLogHelper.info('✅ 安装包缓存清理完成，共清理 $cleaned 个文件');
+  }
+
+  /// 判断文件名是否为更新安装包或分片临时文件
+  bool _isUpdateArtifact(String fileName) {
+    final lower = fileName.toLowerCase();
+    // 分片临时文件：{name}.part_{i}.tmp
+    if (lower.contains('.part_') && lower.endsWith('.tmp')) {
+      return true;
+    }
+    // 安装包文件：以 chronotide / chrono_tide 开头，扩展名为 .exe/.7z/.zip/.msi
+    final isChronoTide =
+        lower.startsWith('chronotide') || lower.startsWith('chrono_tide');
+    if (isChronoTide &&
+        (lower.endsWith('.exe') ||
+            lower.endsWith('.7z') ||
+            lower.endsWith('.zip') ||
+            lower.endsWith('.msi'))) {
+      return true;
+    }
+    return false;
   }
 }
 
@@ -779,7 +880,6 @@ class _UpdateChunk {
   final String tempPath;
   int receivedBytes = 0;
   bool completed = false;
-  CancelToken? cancelToken;
 
   _UpdateChunk({
     required this.index,

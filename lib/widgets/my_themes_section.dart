@@ -125,7 +125,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
                         Text(
                           '我的主题',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
                             color: AppColors.primaryText,
@@ -134,7 +133,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
                         Text(
                           '${themes.length} 个自定义主题',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontSize: 11,
                             color: AppColors.secondaryText,
                           ),
@@ -163,7 +161,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
                             const SizedBox(width: 4),
                             Text('导入',
                                 style: TextStyle(
-                                    fontFamily: 'Inter',
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
                                     color: AppColors.primaryText)),
@@ -241,7 +238,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
                             child: Text(
                               theme.name,
                               style: TextStyle(
-                                fontFamily: 'Inter',
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
                                 color: AppColors.primaryText,
@@ -262,7 +258,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
                               ),
                               child: Text('当前',
                                   style: TextStyle(
-                                      fontFamily: 'Inter',
                                       fontSize: 9,
                                       fontWeight: FontWeight.w700,
                                       color: AppColors.successGreen)),
@@ -277,7 +272,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
                           child: Text(
                             theme.description!,
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 11,
                               color: AppColors.secondaryText,
                             ),
@@ -310,7 +304,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
             controller: _renameController,
             focusNode: _renameFocusNode,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 13,
               fontWeight: FontWeight.w700,
               color: AppColors.primaryText,
@@ -350,7 +343,6 @@ class _MyThemesSectionState extends State<MyThemesSection> {
       children: [
         Text('确认删除？',
             style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 color: AppColors.dangerRed)),
@@ -778,7 +770,6 @@ class _MoreMenuOverlay extends StatelessWidget {
               const SizedBox(width: 8),
               Text(label,
                   style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: isDanger

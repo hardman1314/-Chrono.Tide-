@@ -10,6 +10,7 @@
 /// - TouchGal (需 Bearer Token)
 /// - Hikarinagi (需 OAuth client_credentials 凭证)
 /// - KunGal (公开 API)
+/// - NextMoe (六源对齐目录，需应用密钥 nmk_)
 ///
 /// 使用示例：
 /// ```dart
@@ -44,3 +45,5 @@ export 'services/rate_limiter.dart';
 export 'services/bangumi_oauth.dart';
 export 'services/hikarinagi_service.dart';
 export 'services/kun_service.dart';
+export 'services/nextmoe_service.dart';
+export 'services/ct_service.dart';

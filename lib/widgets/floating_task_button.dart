@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import '../services/global_install_center.dart';
 import 'interactive_wrapper.dart';
 
@@ -43,6 +44,7 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
 
     GlobalInstallCenter.instance
         .addListener(phase: _onPhaseChanged, progress: _onProgressChanged);
+    GlobalInstallCenter.instance.addQueueListener(_onQueueChanged);
     _syncInitialState();
   }
 
@@ -54,8 +56,17 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
       phase: _onPhaseChanged,
       progress: _onProgressChanged,
     );
+    GlobalInstallCenter.instance.removeQueueListener(_onQueueChanged);
     _animationController.dispose();
     super.dispose();
+  }
+
+  /// 队列变更：运行中标签需要更新排队数提示
+  void _onQueueChanged() {
+    if (!mounted) return;
+    if (_state == _BtnState.running) {
+      setState(() {});
+    }
   }
 
   void _syncInitialState() {
@@ -267,6 +278,11 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
         iconColor = AppColors.infoBlue;
         iconData = Icons.downloading_rounded;
         label = '$_taskLabel ${_displayPercent.toStringAsFixed(0)}%';
+        // 队列模式：附带排队数轻量提示
+        final queueLength = GlobalInstallCenter.instance.queueLength;
+        if (queueLength > 0) {
+          label += ' ·$queueLength排队';
+        }
         break;
       default:
         borderColor = AppColors.border;
@@ -286,16 +302,24 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-          color: AppColors.background,
+          color: AppStyle.isModern
+              ? AppColors.buttonBackground
+              : AppColors.background,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: borderColor, width: 1.5),
-          boxShadow: [
-            BoxShadow(
-              color: borderColor.withOpacity(0.15),
-              offset: const Offset(2, 4),
-              blurRadius: 8,
-            ),
-          ],
+          border: AppStyle.isModern
+              ? Border.all(
+                  color: borderColor.withAlpha(89),
+                  width: AppStyle.wHairline)
+              : Border.all(color: borderColor, width: 1.5),
+          boxShadow: AppStyle.isModern
+              ? AppStyle.e2
+              : [
+                  BoxShadow(
+                    color: borderColor.withOpacity(0.15),
+                    offset: const Offset(2, 4),
+                    blurRadius: 8,
+                  ),
+                ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -319,7 +343,6 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
                 Text(
                   label,
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: AppColors.primaryText,
@@ -330,7 +353,6 @@ class _FloatingTaskButtonState extends State<FloatingTaskButton>
                   Text(
                     _speedText,
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 12,
                       color: AppColors.secondaryText.withOpacity(0.5),
                     ),

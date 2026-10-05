@@ -1,0 +1,17 @@
+anime_dbrating_mv3_v0.onnx
+==========================
+
+来源：Hugging Face `deepghs/anime_dbrating`，子目录
+`mobilenetv3_large_100_v0_ls0.2/model.onnx`（16,832,684 字节）。
+仓库许可：OpenRAIL（见仓库 README frontmatter `license: openrail`）。
+模型卡：Acc 75.08% / AUC 0.9342（danbooru 四级评分 general/sensitive/
+questionable/explicit），224~384 方形输入，输出 [1,4] logits。
+
+Chrono Tide 本地化口径（v2.4，2026-09-07）：
+- 输入 384×384 拉伸（PIL resize 语义），归一化 (x/255 - 0.5) / 0.5；
+- 判定分数 = softmax(questionable) + softmax(explicit)；
+- 阈值 0.648 = 用户 69 张参考集（健全 43 / 敏感 26）分离间隙
+  [0.6287, 0.6680] 中点：误报 0/43，召回 25/26；
+- 判定敏感时由后处理生成全图合成框（渲染层敏感即整图模糊）。
+
+本文件仅为来源与许可说明；模型权重版权归上游训练者所有。

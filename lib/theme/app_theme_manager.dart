@@ -15,11 +15,11 @@ import 'theme_storage.dart';
 ///   `featuredThemes` / `themeData(CTTheme)` 全部保留，向后兼容
 enum CTTheme {
   warmSun,
-  darkNight,
+  frost,
+  obsidian,
   mint,
   sakura,
   ocean,
-  twilight,
 }
 
 /// 主题来源
@@ -29,6 +29,18 @@ enum CTThemeSource {
 
   /// 用户自定义主题（runtime fromJson 构造）
   user,
+}
+
+/// v3.9 Aurora：主题风格档
+///
+/// 主题不仅带调色板，还带"形状语言"（线宽/圆角/阴影/交互反馈/氛围层）：
+/// - [classicHanddrawn]：现有手绘风（默认值）——6 套老主题不写此字段，
+///   `AppStyle` 全部取值与历史硬编码逐像素一致（有回归测试锁定）；
+/// - [aurora]：现代极光档——纯净表面 + 发丝线 + 柔和海拔 + 交互辉光 + 氛围层。
+///   设计方案：docs/DEV/features/modern_theme_aurora_redesign.md
+enum CTVisualStyle {
+  classicHanddrawn,
+  aurora,
 }
 
 class CTThemeData {
@@ -85,6 +97,37 @@ class CTThemeData {
 
   /// BUG-06: 信息按钮背景色（浅蓝系），用于下载/前往库等 info 变体按钮
   final Color infoBg;
+
+  /// v3.9 Aurora：警告语义色（可空）。
+  ///
+  /// 为保证老主题观感逐像素不变，采用"可空 + 解析回退"设计：
+  /// 未定义时 `AppColors.warningAmber` 回退到 [starGold]（= 历史 SnackBar 警告档行为）；
+  /// 仅 aurora 档主题显式定义自己的琥珀色。
+  final Color? warningAmber;
+
+  /// v4.0 探索详情页重构：新增 6 个语义色令牌（可空 + 解析回退）。
+  ///
+  /// 同样采用"可空 + 回退"设计，保证**旧主题 / 旧 .cttheme JSON 零影响**：
+  /// 未定义时由 [AppColors] 回退到语义最接近的既有令牌（见各 getter 注释），
+  /// 暖阳主题显式给出设计稿原值（#2DA6D4 / #262626 / #6841C4 / #2B2B2B /
+  /// #DD1B24 / #00AD38），从而在新探索详情页做到 1:1 复刻。
+  ///
+  /// - [accentCyan]   「获取」主行动按钮底色
+  /// - [accentInk]    「分享」中性按钮底色（浅色主题=近黑，深色主题=近白）
+  /// - [accentViolet] 「上传」次行动按钮底色
+  /// - [dividerStrong] 头部与内容之间的强调分割线
+  /// - [heartRed]     点赞（已点亮）色
+  /// - [feedbackGreen] 反馈 / 成功语义绿
+  final Color? accentCyan;
+  final Color? accentInk;
+  final Color? accentViolet;
+  final Color? dividerStrong;
+  final Color? heartRed;
+  final Color? feedbackGreen;
+
+  /// v3.9 Aurora：风格档（默认 = 现有手绘档，老主题零影响）
+  final CTVisualStyle visualStyle;
+
   final Brightness brightness;
 
   const CTThemeData({
@@ -95,6 +138,14 @@ class CTThemeData {
     this.description,
     this.isFeatured = false,
     this.backgroundImage = const BackgroundImageConfig.none(),
+    this.warningAmber,
+    this.accentCyan,
+    this.accentInk,
+    this.accentViolet,
+    this.dividerStrong,
+    this.heartRed,
+    this.feedbackGreen,
+    this.visualStyle = CTVisualStyle.classicHanddrawn,
     required this.seedColor,
     required this.background,
     required this.sidebarBackground,
@@ -197,6 +248,17 @@ class CTThemeData {
       infoBlue: Color.lerp(a.infoBlue, b.infoBlue, t)!,
       brandBlue: Color.lerp(a.brandBlue, b.brandBlue, t)!,
       infoBg: Color.lerp(a.infoBg, b.infoBg, t)!,
+      // 非颜色字段在过渡中点切换：风格档一次交割，避免中途混合态
+      warningAmber: useB ? b.warningAmber : a.warningAmber,
+      // v4.0 新增令牌同为「非颜色字段」处理：过渡中点一次交割，
+      // 避免中途出现"半混合"的中间色（这些是实心按钮底色，插值会脏）
+      accentCyan: useB ? b.accentCyan : a.accentCyan,
+      accentInk: useB ? b.accentInk : a.accentInk,
+      accentViolet: useB ? b.accentViolet : a.accentViolet,
+      dividerStrong: useB ? b.dividerStrong : a.dividerStrong,
+      heartRed: useB ? b.heartRed : a.heartRed,
+      feedbackGreen: useB ? b.feedbackGreen : a.feedbackGreen,
+      visualStyle: useB ? b.visualStyle : a.visualStyle,
       brightness: useB ? b.brightness : a.brightness,
     );
   }
@@ -214,8 +276,16 @@ class CTThemeData {
         'description': description,
         'isFeatured': isFeatured,
         'brightness': brightness.name,
+        // v3.9: 风格档仅在非默认值时写出（旧版应用读取新 JSON 时安全忽略未知键）
+        if (visualStyle != CTVisualStyle.classicHanddrawn)
+          'style': visualStyle.name,
+        // 顶层 seedColor 保留：与旧版本应用的 .cttheme 交换兼容
         'seedColor': _colorToJson(seedColor),
         'colors': {
+          // v3.9 修复：seedColor 同时写入 colors 内——
+          // 历史 bug：toJson 写顶层而 fromJson 只读 colors['seedColor']，
+          // 导致用户主题保存/加载后种子色丢失（回退暖棕默认）。
+          'seedColor': _colorToJson(seedColor),
           'background': _colorToJson(background),
           'sidebarBackground': _colorToJson(sidebarBackground),
           'titleBarBackground': _colorToJson(titleBarBackground),
@@ -249,6 +319,16 @@ class CTThemeData {
           'infoBlue': _colorToJson(infoBlue),
           'brandBlue': _colorToJson(brandBlue),
           'infoBg': _colorToJson(infoBg),
+          if (warningAmber != null) 'warningAmber': _colorToJson(warningAmber!),
+          // v4.0：仅在有值时写出，旧版应用读取安全忽略未知键
+          if (accentCyan != null) 'accentCyan': _colorToJson(accentCyan!),
+          if (accentInk != null) 'accentInk': _colorToJson(accentInk!),
+          if (accentViolet != null) 'accentViolet': _colorToJson(accentViolet!),
+          if (dividerStrong != null)
+            'dividerStrong': _colorToJson(dividerStrong!),
+          if (heartRed != null) 'heartRed': _colorToJson(heartRed!),
+          if (feedbackGreen != null)
+            'feedbackGreen': _colorToJson(feedbackGreen!),
         },
         if (backgroundImage.hasImage)
           'backgroundImage': backgroundImage.toJson(),
@@ -273,7 +353,24 @@ class CTThemeData {
       brightness: (json['brightness'] as String?) == 'dark'
           ? Brightness.dark
           : Brightness.light,
-      seedColor: _colorFromJson(colors['seedColor']) ?? const Color(0xFF8B7355),
+      // v3.9：风格档——缺省（旧 JSON）= classicHanddrawn
+      visualStyle:
+          (json['style'] as String?) == CTVisualStyle.aurora.name
+              ? CTVisualStyle.aurora
+              : CTVisualStyle.classicHanddrawn,
+      // v3.9 修复：优先读 colors 内（现行 toJson 位置），回退顶层（历史 JSON），
+      // 兜底默认暖棕——历史"种子色往返丢失"缺陷在此闭环
+      seedColor: _colorFromJson(colors['seedColor']) ??
+          _colorFromJson(json['seedColor']) ??
+          const Color(0xFF8B7355),
+      warningAmber: _colorFromJson(colors['warningAmber']),
+      // v4.0：缺省 = null，由 AppColors 回退到既有语义令牌（旧主题零影响）
+      accentCyan: _colorFromJson(colors['accentCyan']),
+      accentInk: _colorFromJson(colors['accentInk']),
+      accentViolet: _colorFromJson(colors['accentViolet']),
+      dividerStrong: _colorFromJson(colors['dividerStrong']),
+      heartRed: _colorFromJson(colors['heartRed']),
+      feedbackGreen: _colorFromJson(colors['feedbackGreen']),
       background:
           _colorFromJson(colors['background']) ?? const Color(0xFFFDFBF7),
       sidebarBackground: _colorFromJson(colors['sidebarBackground']) ??
@@ -405,6 +502,19 @@ class CTThemeData {
         return _copyWith(brandBlue: newColor);
       case 'infoBg':
         return _copyWith(infoBg: newColor);
+      // v4.0 探索详情页新增令牌（供主题编辑器 / 元素注册表按名改色）
+      case 'accentCyan':
+        return _copyWith(accentCyan: newColor);
+      case 'accentInk':
+        return _copyWith(accentInk: newColor);
+      case 'accentViolet':
+        return _copyWith(accentViolet: newColor);
+      case 'dividerStrong':
+        return _copyWith(dividerStrong: newColor);
+      case 'heartRed':
+        return _copyWith(heartRed: newColor);
+      case 'feedbackGreen':
+        return _copyWith(feedbackGreen: newColor);
       default:
         return this;
     }
@@ -446,6 +556,14 @@ class CTThemeData {
     Color? infoBlue,
     Color? brandBlue,
     Color? infoBg,
+    Color? warningAmber,
+    Color? accentCyan,
+    Color? accentInk,
+    Color? accentViolet,
+    Color? dividerStrong,
+    Color? heartRed,
+    Color? feedbackGreen,
+    CTVisualStyle? visualStyle,
     BackgroundImageConfig? backgroundImage,
     String? name,
     String? emoji,
@@ -494,6 +612,14 @@ class CTThemeData {
       infoBlue: infoBlue ?? this.infoBlue,
       brandBlue: brandBlue ?? this.brandBlue,
       infoBg: infoBg ?? this.infoBg,
+      warningAmber: warningAmber ?? this.warningAmber,
+      accentCyan: accentCyan ?? this.accentCyan,
+      accentInk: accentInk ?? this.accentInk,
+      accentViolet: accentViolet ?? this.accentViolet,
+      dividerStrong: dividerStrong ?? this.dividerStrong,
+      heartRed: heartRed ?? this.heartRed,
+      feedbackGreen: feedbackGreen ?? this.feedbackGreen,
+      visualStyle: visualStyle ?? this.visualStyle,
     );
   }
 
@@ -547,6 +673,14 @@ class CTThemeData {
       infoBlue: infoBlue,
       brandBlue: brandBlue,
       infoBg: infoBg,
+      warningAmber: warningAmber,
+      accentCyan: accentCyan,
+      accentInk: accentInk,
+      accentViolet: accentViolet,
+      dividerStrong: dividerStrong,
+      heartRed: heartRed,
+      feedbackGreen: feedbackGreen,
+      visualStyle: visualStyle,
     );
   }
 
@@ -586,6 +720,39 @@ class AppThemeManager extends ChangeNotifier {
   /// 内置主题 id = CTTheme 枚举 name；用户主题 id = UUID
   String _currentThemeId = CTTheme.warmSun.name;
   String get currentThemeId => _currentThemeId;
+
+  /// v3.9：「跟随系统主题」开关（默认 false——软件默认暖白，用户自行开启）。
+  /// 开启时按设备深浅色自动加载 浅色(frost)/深色(obsidian)。
+  bool _followSystemTheme = false;
+  bool get followSystemTheme => _followSystemTheme;
+
+  /// 当前平台亮度（封装一处，便于测试环境复用 TestBinding 默认值）
+  Brightness get _currentPlatformBrightness =>
+      WidgetsBinding.instance.platformDispatcher.platformBrightness;
+
+  /// 设备亮度 → 系统主题 id（浅色→frost / 深色→obsidian）
+  String _systemThemeIdFor(Brightness brightness) =>
+      brightness == Brightness.dark ? CTTheme.obsidian.name : CTTheme.frost.name;
+
+  /// v3.9：设置「跟随系统主题」。
+  /// 开启时立即按当前平台亮度切换一次；关闭时不改变当前主题。
+  Future<void> setFollowSystemTheme(bool value) async {
+    if (_followSystemTheme == value) return;
+    _followSystemTheme = value;
+    await ThemeStorage.saveFollowSystemTheme(value);
+    if (value) {
+      await setThemeById(_systemThemeIdFor(_currentPlatformBrightness),
+          fromSystem: true);
+    }
+  }
+
+  /// v3.9：设备深浅色变化回调（main.dart 的 WidgetsBindingObserver 转发）。
+  /// 仅在跟随系统开启时切换主题。
+  Future<void> onSystemBrightnessChanged() async {
+    if (!_followSystemTheme) return;
+    await setThemeById(_systemThemeIdFor(_currentPlatformBrightness),
+        fromSystem: true);
+  }
 
   /// v3.0 P0：所有主题（内置 + 用户）的统一注册表
   /// 由 ThemeRegistry 维护，AppThemeManager 通过 register/unregister 接口接收
@@ -683,7 +850,17 @@ class AppThemeManager extends ChangeNotifier {
   }
 
   /// v3.0 P0 新增：通过 String id 设置主题
-  Future<void> setThemeById(String id) async {
+  ///
+  /// v3.9：[fromSystem] 供跟随系统链路使用；用户手动选择非系统对应主题时
+  /// 自动退出跟随模式（否则点击会因后续亮度变化被覆盖，行为不一致）。
+  Future<void> setThemeById(String id, {bool fromSystem = false}) async {
+    if (!fromSystem &&
+        _followSystemTheme &&
+        id != _systemThemeIdFor(_currentPlatformBrightness)) {
+      // 手动选择与系统亮度不对应主题 → 自动退出跟随
+      _followSystemTheme = false;
+      await ThemeStorage.saveFollowSystemTheme(false);
+    }
     if (_currentThemeId == id) return;
     if (!_themes.containsKey(id)) {
       debugPrint('[Theme] 主题 id 不存在: $id, 回退到 warmSun');
@@ -806,7 +983,44 @@ class AppThemeManager extends ChangeNotifier {
       debugPrint('[Theme] 加载用户主题失败(忽略): $e');
     }
 
+    // 2.5 v3.9：系统默认自动创建一个「我的主题」（仅首次——无任何用户主题
+    // 且未创建过）。让「自定义设计 → 我的主题」面板开箱非空，快捷功能
+    // （编辑/重命名/导出）可直接演示与使用。不激活，仅注册入库。
+    final hasUserTheme =
+        _themes.values.any((t) => t.source == CTThemeSource.user);
+    try {
+      final defaultCreated =
+          await ThemeStorage.loadDefaultUserThemeCreated();
+      if (!hasUserTheme && !defaultCreated) {
+        final base = _themes[CTTheme.warmSun.name];
+        if (base != null) {
+          final userTheme = base.asUserThemeCopy(
+            newId: ThemeStorage.newThemeId(),
+            name: '我的主题',
+            emoji: '🎨',
+            description: '系统默认创建',
+          );
+          await ThemeStorage.saveUserTheme(userTheme);
+          _themes[userTheme.id] = userTheme;
+        }
+        await ThemeStorage.saveDefaultUserThemeCreated(true);
+      }
+    } catch (e) {
+      debugPrint('[Theme] 默认「我的主题」创建失败(忽略): $e');
+    }
+
     // 3. 读取激活 id
+    // 3. v3.9：读取跟随系统标记——开启时忽略持久化 id，
+    //    直接按平台亮度加载浅色/深色系统主题
+    _followSystemTheme = await ThemeStorage.loadFollowSystemTheme();
+    if (_followSystemTheme) {
+      final id = _systemThemeIdFor(_currentPlatformBrightness);
+      _currentThemeId =
+          _themes.containsKey(id) ? id : CTTheme.warmSun.name;
+      notifyListeners();
+      return;
+    }
+
     final saved = await ThemeStorage.loadActiveThemeId();
     if (saved != null && _themes.containsKey(saved)) {
       _currentThemeId = saved;

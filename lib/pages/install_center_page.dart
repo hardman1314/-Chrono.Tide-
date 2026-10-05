@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import '../core/portable_image_cache_manager.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_styles.dart';
 import '../services/global_install_center.dart';
@@ -6,6 +8,7 @@ import '../widgets/download_button.dart';
 import '../widgets/download_progress_bar.dart';
 import '../widgets/interactive_wrapper.dart';
 import '../widgets/custom_title_bar.dart' show kTitleBarHeight;
+import '../widgets/nsfw/nsfw_image.dart';
 
 class InstallCenterPage extends StatefulWidget {
   final VoidCallback onClose;
@@ -22,12 +25,22 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
   InstallProgress _progress = const InstallProgress();
   String? _errorMessage;
 
+  // ★ 2026-10-05 需求 #6：系统操作日志面板（标题与进度条之间，可收起；
+  // 仅内存展示不落盘）。面板语义 = 当前任务的操作日志（新任务开始时
+  // 服务层已清空缓冲）。
+  List<String> _opLogLines = const [];
+  bool _opLogCollapsed = false;
+  final ScrollController _opLogScrollCtrl = ScrollController();
+
   @override
   void initState() {
     super.initState();
     _syncFromGlobal();
+    _opLogLines = GlobalInstallCenter.instance.opLog;
     GlobalInstallCenter.instance
         .addListener(phase: _onPhaseChanged, progress: _onProgressChanged);
+    GlobalInstallCenter.instance.addQueueListener(_onQueueChanged);
+    GlobalInstallCenter.instance.addOpLogListener(_onOpLogChanged);
   }
 
   @override
@@ -36,7 +49,32 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
       phase: _onPhaseChanged,
       progress: _onProgressChanged,
     );
+    GlobalInstallCenter.instance.removeQueueListener(_onQueueChanged);
+    GlobalInstallCenter.instance.removeOpLogListener(_onOpLogChanged);
+    _opLogScrollCtrl.dispose();
     super.dispose();
+  }
+
+  /// 操作日志变更：刷新列表并滚到底部（最新动作可见）
+  void _onOpLogChanged() {
+    if (!mounted) return;
+    setState(() {
+      _opLogLines = GlobalInstallCenter.instance.opLog;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _opLogCollapsed ||
+          !_opLogScrollCtrl.hasClients) {
+        return;
+      }
+      _opLogScrollCtrl.jumpTo(_opLogScrollCtrl.position.maxScrollExtent);
+    });
+  }
+
+  /// 队列变更（入队/出队/移除/清空）时刷新队列列表
+  void _onQueueChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _syncFromGlobal() {
@@ -65,8 +103,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
 
   @override
   Widget build(BuildContext context) {
-    final task = GlobalInstallCenter.instance.currentTask;
-
     return Stack(
       children: [
         // 遮罩从标题栏下方开始，确保标题栏在安装中心打开时仍可交互
@@ -108,11 +144,19 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                     ],
                   ),
                   clipBehavior: Clip.hardEdge,
-                  child: Column(
-                    children: [
-                      _buildHeader(),
-                      Expanded(child: _buildContent()),
-                    ],
+                  // 🔴 本页由 `main_container._openInstallCenter` 挂在**裸
+                  // `OverlayEntry`** 上，没有 `Material` 祖先 ⇒ 不包这一层的话，
+                  // 页内未显式设置 style 的 `Text` 会继承 `MaterialApp` 的兜底
+                  // `_errorTextStyle`（纯黄双下划线）。详见
+                  // `widgets/game_detail/dark_surface.dart` 顶部同一说明。
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: Column(
+                      children: [
+                        _buildHeader(),
+                        Expanded(child: _buildContent()),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -165,9 +209,12 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Text(
-                    _phase == InstallPhase.downloading ? '下载中' : '解压中',
+                    _phase == InstallPhase.downloading
+                        ? '下载中'
+                        : _phase == InstallPhase.awaitingConfirmation
+                            ? '待确认'
+                            : '解压中',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: _phase == InstallPhase.downloading
@@ -198,9 +245,19 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
 
   Widget _buildContent() {
     final task = GlobalInstallCenter.instance.currentTask;
+    final center = GlobalInstallCenter.instance;
+
+    // 队列非空时即使无活跃任务（推进间隙）也展示队列区
+    if ((task == null || _phase == InstallPhase.idle) && center.queueLength == 0) {
+      return _buildIdleView();
+    }
 
     if (task == null || _phase == InstallPhase.idle) {
-      return _buildIdleView();
+      // 推进间隙：仅显示队列
+      return Padding(
+        padding: const EdgeInsets.all(32),
+        child: _buildQueueSection(),
+      );
     }
 
     return Padding(
@@ -210,7 +267,193 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
         children: [
           _buildLeftSection(task),
           const SizedBox(width: 40),
-          Expanded(child: _buildRightSection()),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(child: _buildRightSection()),
+                if (center.queueLength > 0) ...[
+                  const SizedBox(height: 12),
+                  _buildQueueSection(),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 安装队列区：展示排队任务列表，支持单项移除与一键清空
+  Widget _buildQueueSection() {
+    final center = GlobalInstallCenter.instance;
+    final queued = center.queuedTasks;
+
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 168),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.sidebarBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.borderLight, width: 1),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.playlist_play_rounded,
+                    size: 16,
+                    color: AppColors.secondaryText,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '安装队列 (${queued.length})',
+                    style: AppStyles.bodyRegular.copyWith(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.secondaryText,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '任务将依次自动安装',
+                    style: AppStyles.bodyRegular.copyWith(
+                      fontSize: 11,
+                      color: AppColors.secondaryText.withOpacity(0.5),
+                    ),
+                  ),
+                ],
+              ),
+              InteractiveWrapper(
+                onTap: () => center.clearQueue(),
+                hoverScale: 1.05,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.delete_sweep_outlined,
+                        size: 14,
+                        color: AppColors.secondaryText.withOpacity(0.7),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '清空',
+                        style: AppStyles.bodyRegular.copyWith(
+                          fontSize: 12,
+                          color: AppColors.secondaryText.withOpacity(0.7),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Flexible(
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: queued.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (context, index) {
+                final task = queued[index];
+                return _buildQueueItem(task, index + 1);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 单个排队任务项：序号 + 小封面 + 标题 + 移除按钮
+  Widget _buildQueueItem(InstallTask task, int position) {
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppColors.borderLight, width: 1),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 18,
+            child: Text(
+              '$position',
+              textAlign: TextAlign.center,
+              style: AppStyles.bodyRegular.copyWith(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColors.secondaryText.withOpacity(0.6),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // 小封面
+          Container(
+            width: 28,
+            height: 36,
+            decoration: BoxDecoration(
+              color: AppColors.placeholderCover,
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(color: AppColors.borderLight, width: 1),
+            ),
+            clipBehavior: Clip.hardEdge,
+            child: (task.coverUrl != null && task.coverUrl!.startsWith('http'))
+                ? NsfwImage.network(
+                    task.coverUrl!,
+                    contentKind: NsfwContentKind.cover,
+                    fit: BoxFit.cover,
+                    showBadge: false,
+                    // 安装中心封面只走服务器 URL，全量扫描覆盖不到，
+                    // 必须开按需检测（child 走便携缓存，检测靠它查落盘文件）。
+                    detectOnDemand: true,
+                    child: CachedNetworkImage(
+                      cacheManager: PortableImageCacheManager(),
+                      imageUrl: task.coverUrl!,
+                      fit: BoxFit.cover,
+                      fadeInDuration: Duration.zero,
+                      placeholder: (_, __) => const SizedBox.shrink(),
+                      errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              task.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppStyles.bodyRegular.copyWith(
+                fontSize: 13,
+                color: AppColors.primaryText,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          InteractiveWrapper(
+            onTap: () =>
+                GlobalInstallCenter.instance.removeQueuedTask(task.gameId),
+            hoverScale: 1.1,
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(
+                Icons.close_rounded,
+                size: 15,
+                color: AppColors.secondaryText.withOpacity(0.6),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -328,16 +571,26 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
       );
     }
 
-    return Image.network(
+    return NsfwImage.network(
       coverUrl,
+      contentKind: NsfwContentKind.cover,
       fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => Container(
-        color: AppColors.placeholderCover,
-        child: Center(
-          child: Icon(
-            Icons.broken_image_outlined,
-            size: 40,
-            color: AppColors.secondaryText.withOpacity(0.2),
+      // 详情大图同样只走服务器 URL，须开按需检测（child 走便携缓存）。
+      detectOnDemand: true,
+      child: CachedNetworkImage(
+        cacheManager: PortableImageCacheManager(),
+        imageUrl: coverUrl,
+        fit: BoxFit.cover,
+        fadeInDuration: Duration.zero,
+        placeholder: (_, __) => const SizedBox.shrink(),
+        errorWidget: (_, __, ___) => Container(
+          color: AppColors.placeholderCover,
+          child: Center(
+            child: Icon(
+              Icons.broken_image_outlined,
+              size: 40,
+              color: AppColors.secondaryText.withOpacity(0.2),
+            ),
           ),
         ),
       ),
@@ -354,6 +607,11 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
 
       case InstallPhase.extracting:
         return _buildExtractingUI();
+
+      // ★ 解压流水线（§C5）：本地解压完成后等待用户在确认入库弹窗决策；
+      // 弹窗关闭（放弃入库）后任务转 completed，此 UI 只在挂起间隙可见。
+      case InstallPhase.awaitingConfirmation:
+        return _buildAwaitingConfirmationUI();
 
       case InstallPhase.completed:
         return _buildCompletedUI();
@@ -376,7 +634,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '正 在 下 载',
               style: TextStyle(
-                fontFamily: 'ZhiMangXing',
                 fontSize: 30,
                 letterSpacing: 2.0,
                 color: AppColors.border,
@@ -398,7 +655,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                       child: Text(
                         '下载速度: ${_progress.downloadSpeed}',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 16,
                           height: 24 / 16,
                           color: AppColors.titleBrown,
@@ -409,7 +665,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                     Text(
                       '${_progress.downloadPercent.toStringAsFixed(1)}%',
                       style: TextStyle(
-                        fontFamily: 'Mali',
                         fontSize: 24,
                         height: 32 / 24,
                         letterSpacing: 1.2,
@@ -446,14 +701,15 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '正 在 解 压',
               style: TextStyle(
-                fontFamily: 'ZhiMangXing',
                 fontSize: 30,
                 letterSpacing: 2.0,
                 color: AppColors.border,
               ),
             ),
           ),
-          const SizedBox(height: 40),
+          const SizedBox(height: 16),
+          _buildOpLogPanel(),
+          const SizedBox(height: 16),
           SizedBox(
             width: 465,
             child: Column(
@@ -469,7 +725,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                             ? _progress.statusMessage
                             : '正在解压...',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 16,
                           height: 24 / 16,
                           color: AppColors.titleBrown,
@@ -480,7 +735,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                     Text(
                       '${_progress.extractPercent.toStringAsFixed(0)}%',
                       style: TextStyle(
-                        fontFamily: 'Mali',
                         fontSize: 24,
                         height: 32 / 24,
                         letterSpacing: 1.2,
@@ -501,6 +755,139 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
                       const AlwaysStoppedAnimation<Color>(Color(0xFFD4A017)),
                 ),
               ],
+            ),
+          ),
+          // ★ 解压流水线（§C5）：解压中此前无取消入口（旧取消链路只挂在
+          // 添加页进度窗）——补齐，与下载中的取消按钮同一样板。
+          const SizedBox(height: 40),
+          DownloadButton(
+            onTap: () => GlobalInstallCenter.instance.cancelCurrentTask(),
+            isExtracting: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// ★ 2026-10-05 需求 #6：系统操作日志面板——实时显示系统当前执行的
+  /// 操作（改后缀、调用解压工具、系统判定等）。轻量化设计：仅内存展示
+  /// （服务层环形缓冲 200 行，不落盘），可点击收起。
+  Widget _buildOpLogPanel() {
+    return SizedBox(
+      width: 465,
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.background.withOpacity(0.65),
+          border: Border.all(color: AppColors.border.withOpacity(0.6), width: 1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ---- 面板头（点击收起/展开）----
+            InteractiveWrapper(
+              onTap: () =>
+                  setState(() => _opLogCollapsed = !_opLogCollapsed),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                child: Row(
+                  children: [
+                    Icon(
+                      _opLogCollapsed
+                          ? Icons.chevron_right_rounded
+                          : Icons.expand_more_rounded,
+                      size: 14,
+                      color: AppColors.secondaryText,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '系统操作日志',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.secondaryText,
+                      ),
+                    ),
+                    const Spacer(),
+                    if (!_opLogCollapsed)
+                      Text(
+                        '${_opLogLines.length} 条',
+                        style: TextStyle(
+                            fontSize: 10, color: AppColors.placeholderText),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            // ---- 日志区（展开时）----
+            if (!_opLogCollapsed)
+              Container(
+                height: 110,
+                margin: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.sidebarBackground.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: _opLogLines.isEmpty
+                    ? Center(
+                        child: Text('等待系统动作…',
+                            style: TextStyle(
+                                fontSize: 10.5,
+                                color: AppColors.placeholderText)),
+                      )
+                    : ListView.builder(
+                        controller: _opLogScrollCtrl,
+                        itemCount: _opLogLines.length,
+                        itemExtent: 15,
+                        padding: EdgeInsets.zero,
+                        itemBuilder: (context, i) => Text(
+                          _opLogLines[i],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10,
+                            height: 15 / 10,
+                            color: AppColors.secondaryText,
+                          ),
+                        ),
+                      ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// ★ 解压流水线（§C5）：本地解压完成、等待用户在「确认入库」弹窗决策
+  /// 期间的占位 UI。正常情况下确认弹窗悬浮其上；弹窗被关闭（放弃入库）
+  /// 后任务随即转 completed，此视图只在极短的间隙可见。
+  Widget _buildAwaitingConfirmationUI() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Opacity(
+            opacity: 0.77,
+            child: Text(
+              '等 待 确 认',
+              style: TextStyle(
+                fontSize: 30,
+                letterSpacing: 2.0,
+                color: AppColors.border,
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            '解压已完成，请在弹窗中确认解压结果\n确认后将回到添加页填写数据并入库；关闭弹窗视为放弃（解压产物保留在原位置）',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              height: 22 / 14,
+              color: AppColors.secondaryText,
             ),
           ),
         ],
@@ -531,7 +918,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
           Text(
             '安 装 完 成',
             style: TextStyle(
-              fontFamily: 'ZhiMangXing',
               fontSize: 32,
               letterSpacing: 2.5,
               color: AppColors.successGreen,
@@ -543,7 +929,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '游戏已成功入库，可在库中查看并启动',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 15,
                 height: 24 / 15,
                 color: AppColors.secondaryText,
@@ -583,7 +968,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
           Text(
             '安 装 失 败',
             style: TextStyle(
-              fontFamily: 'ZhiMangXing',
               fontSize: 32,
               letterSpacing: 2.5,
               color: AppColors.dangerRed,
@@ -605,7 +989,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
               _errorMessage ?? '操作过程中发生异常，请稍后重试',
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 14,
                 height: 22 / 14,
                 color: const Color(0xFFD4A0A8),
@@ -626,7 +1009,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '关闭',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 15,
                 color: AppColors.secondaryText,
                 decoration: TextDecoration.underline,
@@ -647,7 +1029,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
           Text(
             '已 取 消',
             style: TextStyle(
-              fontFamily: 'ZhiMangXing',
               fontSize: 30,
               letterSpacing: 2.0,
               color: AppColors.border,
@@ -659,7 +1040,6 @@ class _InstallCenterPageState extends State<InstallCenterPage> {
             child: Text(
               '已清理临时缓存文件，任务已终止',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 14,
                 height: 22 / 14,
                 color: AppColors.secondaryText,

@@ -2,14 +2,32 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import '../theme/app_styles.dart';
 import 'interactive_wrapper.dart';
+
+/// 分组数据（顶栏 v3：探索页标签面板按受控词表维度分组展示）。
+/// [color] 为维度主题色（词表注册表下发），null 显示无色点。
+class TagMenuGroup {
+  final String title;
+  final List<String> tags;
+  final Color? color;
+
+  const TagMenuGroup({
+    required this.title,
+    required this.tags,
+    this.color,
+  });
+}
 
 /// 全部标签弹出菜单
 ///
 /// 交互形式：类似库页右键菜单的 Overlay 弹出层，而非独立 Dialog。
 /// - 顶部搜索框：实时过滤标签名
-/// - 中部 Wrap：所有标签芯片，点击切换选中
+/// - 中部内容区（两种形态）：
+///   · 传入 [groups] 且无搜索词 → 按组展示（组标题 + 组内 chips），
+///     供「按分类挑标签」场景（如探索页接受控词表维度）；
+///   · 其余情况（未传 groups，或搜索中）→ 全部标签平铺 Wrap，点击切换选中。
 /// - 底部操作栏：已选计数 + 清空 + 确认
 /// - 点击菜单外区域自动关闭
 ///
@@ -29,12 +47,27 @@ class TagsPopupMenu extends StatefulWidget {
   final Rect anchorRect;
   final VoidCallback? onDismiss;
 
+  /// 可选：分组展示数据（按顺序渲染）。提供后，无搜索词时按组展示；
+  /// 搜索时仍平铺（快速定位具体标签）。allTags 需包含各组的并集。
+  final List<TagMenuGroup>? groups;
+
+  /// 可选：每个标签的补充搜索别名（键=标签显示名，值=别名列表，
+  /// 如会社标准名 → [日文名, 中文名, 昵称...]）。
+  /// 提供后，标签名或任一别名（小写化）包含搜索词即命中。
+  final Map<String, List<String>>? searchAliases;
+
+  /// 可选：搜索框提示文案（默认「搜索标签...」，会社场景可传「搜索会社...」）。
+  final String hintText;
+
   const TagsPopupMenu({
     super.key,
     required this.allTags,
     required this.selectedTags,
     required this.anchorRect,
     this.onDismiss,
+    this.groups,
+    this.searchAliases,
+    this.hintText = '搜索标签...',
   });
 
   /// 弹出标签菜单，返回用户最终选中的标签集合。
@@ -44,6 +77,9 @@ class TagsPopupMenu extends StatefulWidget {
     required GlobalKey anchorKey,
     required List<String> allTags,
     required Set<String> selectedTags,
+    List<TagMenuGroup>? groups,
+    Map<String, List<String>>? searchAliases,
+    String hintText = '搜索标签...',
   }) {
     // 获取锚点按钮的位置和尺寸
     final renderBox =
@@ -62,6 +98,9 @@ class TagsPopupMenu extends StatefulWidget {
         anchorRect: anchorRect,
         allTags: allTags,
         selectedTags: Set.from(selectedTags),
+        groups: groups,
+        searchAliases: searchAliases,
+        hintText: hintText,
         onConfirm: (tags) {
           entry.remove();
           if (!completer.isCompleted) completer.complete(tags);
@@ -94,6 +133,9 @@ class _TagsPopupMenuOverlay extends StatefulWidget {
   final Rect anchorRect;
   final List<String> allTags;
   final Set<String> selectedTags;
+  final List<TagMenuGroup>? groups;
+  final Map<String, List<String>>? searchAliases;
+  final String hintText;
   final ValueChanged<Set<String>> onConfirm;
   final VoidCallback onCancel;
 
@@ -103,6 +145,9 @@ class _TagsPopupMenuOverlay extends StatefulWidget {
     required this.selectedTags,
     required this.onConfirm,
     required this.onCancel,
+    this.groups,
+    this.searchAliases,
+    this.hintText = '搜索标签...',
   });
 
   @override
@@ -135,7 +180,17 @@ class _TagsPopupMenuOverlayState extends State<_TagsPopupMenuOverlay> {
   List<String> get _filteredTags {
     final sorted = List<String>.from(widget.allTags)..sort();
     if (_query.isEmpty) return sorted;
-    return sorted.where((t) => t.toLowerCase().contains(_query)).toList();
+    bool hit(String t) {
+      if (t.toLowerCase().contains(_query)) return true;
+      final aliases = widget.searchAliases?[t];
+      if (aliases == null) return false;
+      for (final a in aliases) {
+        if (a.toLowerCase().contains(_query)) return true;
+      }
+      return false;
+    }
+
+    return sorted.where(hit).toList();
   }
 
   void _toggleTag(String tag) {
@@ -155,7 +210,8 @@ class _TagsPopupMenuOverlayState extends State<_TagsPopupMenuOverlay> {
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.sizeOf(context);
-    const menuWidth = 340.0;
+    // v3 分组模式内容更宽（色点 + 组标题 + 计数），面板加宽一档
+    const menuWidth = 400.0;
     const margin = 8.0;
 
     // 菜单水平位置：优先锚点左对齐，不溢出右边
@@ -195,16 +251,24 @@ class _TagsPopupMenuOverlayState extends State<_TagsPopupMenuOverlay> {
                 maxHeight: screenSize.height * 0.7,
               ),
               decoration: BoxDecoration(
-                color: AppColors.background,
-                border: Border.all(color: AppColors.border, width: 2),
+                // v3.9 Aurora：白卡面 + e3 浮层阴影 + 发丝边
+                color: AppStyle.isModern
+                    ? AppColors.buttonBackground
+                    : AppColors.background,
+                border: AppStyle.isModern
+                    ? Border.all(
+                        color: AppColors.borderLight, width: AppStyle.wHairline)
+                    : Border.all(color: AppColors.border, width: 2),
                 borderRadius: BorderRadius.circular(AppRadius.md),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.border.withOpacity(0.13),
-                    offset: const Offset(4, 5),
-                    blurRadius: 0,
-                  ),
-                ],
+                boxShadow: AppStyle.isModern
+                    ? AppStyle.e3
+                    : [
+                        BoxShadow(
+                          color: AppColors.border.withOpacity(0.13),
+                          offset: const Offset(4, 5),
+                          blurRadius: 0,
+                        ),
+                      ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -243,7 +307,7 @@ class _TagsPopupMenuOverlayState extends State<_TagsPopupMenuOverlay> {
                 autofocus: true,
                 style: AppStyles.bodyRegular.copyWith(fontSize: 12),
                 decoration: InputDecoration(
-                  hintText: '搜索标签...',
+                  hintText: widget.hintText,
                   hintStyle: AppStyles.bodyRegular.copyWith(
                     fontSize: 12,
                     color: AppColors.primaryText.withOpacity(0.4),
@@ -293,23 +357,88 @@ class _TagsPopupMenuOverlayState extends State<_TagsPopupMenuOverlay> {
       );
     }
 
+    // 顶栏 v3：无搜索词 + 有分组数据 → 按维度分组展示（方便按分类挑标签）；
+    // 搜索中 → 平铺（快速定位具体标签）。
+    final useGroups = widget.groups != null && widget.groups!.isNotEmpty && _query.isEmpty;
+
     return Scrollbar(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
-        child: Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: tags.map((tag) {
-            final isSelected = _selected.contains(tag);
-            return _MenuTagChip(
-              tag: tag,
-              isSelected: isSelected,
-              onTap: () => _toggleTag(tag),
-            );
-          }).toList(),
-        ),
+        child: useGroups
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final group in widget.groups!)
+                    ..._buildGroupSection(group),
+                ],
+              )
+            : Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: tags.map((tag) {
+                  final isSelected = _selected.contains(tag);
+                  return _MenuTagChip(
+                    tag: tag,
+                    isSelected: isSelected,
+                    onTap: () => _toggleTag(tag),
+                  );
+                }).toList(),
+              ),
       ),
     );
+  }
+
+  /// 单个分组小节：组标题（色点 + 名称 + 计数）+ 组内标签 chips
+  List<Widget> _buildGroupSection(TagMenuGroup group) {
+    if (group.tags.isEmpty) return const [];
+    return [
+      Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 6),
+        child: Row(
+          children: [
+            if (group.color != null) ...[
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                  color: group.color,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 5),
+            ],
+            Text(
+              group.title,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColors.primaryText.withOpacity(0.85),
+              ),
+            ),
+            const SizedBox(width: 5),
+            Text(
+              '${group.tags.length}',
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.secondaryText.withOpacity(0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+      Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: group.tags.map((tag) {
+          final isSelected = _selected.contains(tag);
+          return _MenuTagChip(
+            tag: tag,
+            isSelected: isSelected,
+            onTap: () => _toggleTag(tag),
+          );
+        }).toList(),
+      ),
+    ];
   }
 
   Widget _buildFooter() {
@@ -428,7 +557,6 @@ class _MenuTagChip extends StatelessWidget {
           child: Text(
             tag,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 12,
               fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
               color: isSelected ? AppColors.infoBlue : AppColors.secondaryText,

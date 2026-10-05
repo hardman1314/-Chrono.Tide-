@@ -162,10 +162,31 @@ class MigrationOrchestrator {
       if (marker.existsSync()) {
         await _clearDirectoryContents(newDir);
       } else if (newDir.existsSync() && await _countFiles(newDir) > 0) {
-        // 新位置已有数据且无中断标记 → 视为上次 copy 完成但崩溃于设标志前
-        if (deleteOld) await _safeDeleteDir(oldDir);
-        await MigrationMarkers.injectFlag(prefsFile, unitId);
-        result.add(unitId, MigrationStatus.success, '新位置已有数据，补设标志');
+        // ★ P1-4d：新位置已有数据且无中断标记。
+        // 旧实现无条件删旧目录并置标志——但新位置的数据可能来自无关来源
+        // （手工拷贝配置、旧版残留、解压工具预生成），此时删旧 = 数据永久丢失。
+        // 改为先比对文件数与总字节数，完全一致才认为"上次 copy 已完成"。
+        // 大目录算总字节会变慢，但正确性优先于速度。
+        final oldCount = await _countFiles(oldDir);
+        final oldSize = await _dirSizeBytes(oldDir);
+        final newCount = await _countFiles(newDir);
+        final newSize = await _dirSizeBytes(newDir);
+
+        if (oldCount == newCount && oldSize == newSize) {
+          if (deleteOld) await _safeDeleteDir(oldDir);
+          await MigrationMarkers.injectFlag(prefsFile, unitId);
+          result.add(unitId, MigrationStatus.success, '新位置已有数据，补设标志');
+        } else {
+          // 内容不一致：保留旧目录 + 不置标志，交人工确认（下次启动仍会重试）
+          debugPrint('[MIGRATION] ⚠️ $unitId 新位置已有数据但内容与旧位置不一致，'
+              '保留旧目录待人工确认（旧: $oldCount 文件/${_fmtBytes(oldSize)}，'
+              '新: $newCount 文件/${_fmtBytes(newSize)}）');
+          result.add(
+            unitId,
+            MigrationStatus.failed,
+            '新位置已有数据但内容不一致，已保留旧目录（旧: $oldCount 文件/${_fmtBytes(oldSize)}，新: $newCount 文件/${_fmtBytes(newSize)}）',
+          );
+        }
         return;
       }
 

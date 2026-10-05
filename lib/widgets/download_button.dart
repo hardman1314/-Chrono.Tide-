@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'interactive_wrapper.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 
 class DownloadButton extends StatelessWidget {
   final void Function()? onTap;
@@ -60,15 +61,21 @@ class DownloadButton extends StatelessWidget {
         height: height,
         decoration: BoxDecoration(
           color: bgColor,
-          border: Border.all(color: borderColor, width: 2),
-          borderRadius: BorderRadius.circular(6),
-          boxShadow: [
-            BoxShadow(
-              color: borderColor,
-              offset: const Offset(2, 3),
-              blurRadius: 0,
-            ),
-          ],
+          border: AppStyle.isModern
+              ? Border.all(
+                  color: borderColor.withAlpha(89), width: AppStyle.wHairline)
+              : Border.all(color: borderColor, width: 2),
+          borderRadius:
+              BorderRadius.circular(AppStyle.isModern ? AppStyle.rMd : 6),
+          boxShadow: AppStyle.isModern
+              ? AppStyle.e1
+              : [
+                  BoxShadow(
+                    color: borderColor,
+                    offset: const Offset(2, 3),
+                    blurRadius: 0,
+                  ),
+                ],
         ),
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         child: child,
@@ -96,7 +103,6 @@ class DownloadButton extends StatelessWidget {
           Text(
             '获取作品',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 20,
               fontWeight: FontWeight.w700,
               letterSpacing: 3.0,
@@ -120,7 +126,6 @@ class DownloadButton extends StatelessWidget {
           Text(
             '取消获取',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 20,
               fontWeight: FontWeight.w700,
               letterSpacing: 3.0,
@@ -152,7 +157,6 @@ class DownloadButton extends StatelessWidget {
           Text(
             '前往库查看',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 18,
               fontWeight: FontWeight.w700,
               letterSpacing: 2.5,
@@ -184,21 +188,26 @@ class DownloadButton extends StatelessWidget {
         height: 56,
         decoration: BoxDecoration(
           color: AppColors.buttonBackground,
-          border: Border.all(color: AppColors.border, width: 2),
-          borderRadius: BorderRadius.circular(6),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.border,
-              offset: const Offset(2, 3),
-              blurRadius: 0,
-            ),
-          ],
+          border: AppStyle.isModern
+              ? Border.all(
+                  color: AppColors.borderLight, width: AppStyle.wHairline)
+              : Border.all(color: AppColors.border, width: 2),
+          borderRadius:
+              BorderRadius.circular(AppStyle.isModern ? AppStyle.rMd : 6),
+          boxShadow: AppStyle.isModern
+              ? AppStyle.e1
+              : [
+                  BoxShadow(
+                    color: AppColors.border,
+                    offset: const Offset(2, 3),
+                    blurRadius: 0,
+                  ),
+                ],
         ),
         alignment: Alignment.center,
         child: Text(
           label,
           style: TextStyle(
-            fontFamily: 'Inter',
             fontSize: 18,
             fontWeight: FontWeight.w700,
             letterSpacing: 2.0,
@@ -221,7 +230,6 @@ class DownloadButton extends StatelessWidget {
           Text(
             '重新尝试',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 20,
               fontWeight: FontWeight.w700,
               letterSpacing: 3.0,

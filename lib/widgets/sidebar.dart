@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import '../theme/app_styles.dart';
+import 'smart_import_notification.dart';
 
 enum NavPage { library, discover, join, home }
 
@@ -11,12 +13,16 @@ class Sidebar extends StatefulWidget {
   final bool isCollapsed;
   final VoidCallback? onToggle;
 
+  /// 入库成功回调（侧边栏通知气泡一键入库后刷新库页）
+  final VoidCallback? onGameAdded;
+
   const Sidebar({
     super.key,
     required this.currentPage,
     required this.onPageChanged,
     this.isCollapsed = false,
     this.onToggle,
+    this.onGameAdded,
   });
 
   @override
@@ -62,12 +68,13 @@ class _SidebarState extends State<Sidebar> {
                   padding: const EdgeInsets.only(top: 22, bottom: 20),
                   child: Text(
                     'CT',
-                    style: TextStyle(
-                      fontFamily: 'ZhiMangXing',
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.primaryText,
-                      letterSpacing: 0.2,
+                    // 与展开态「Chrono Tide」同一套标题样式（F1 得意黑
+                    // titleLarge）：此前收起态是独立 TextStyle（系统默认
+                    // 字体 + w700 合成粗体 + 20px），导致收起/展开切换时
+                    // 标题字体肉眼可见地不一致。
+                    style: AppStyles.titleLarge.copyWith(
+                      color: AppColors.border,
+                      letterSpacing: 0.6,
                     ),
                   ),
                 )
@@ -80,9 +87,9 @@ class _SidebarState extends State<Sidebar> {
                       'Chrono Tide',
                       textAlign: TextAlign.center,
                       style: AppStyles.titleLarge.copyWith(
-                        color: AppColors.border,
-                        letterSpacing: 2.0,
-                      ),
+                      color: AppColors.border,
+                      letterSpacing: 0.6,
+                    ),
                     ),
                   ),
                 ),
@@ -111,14 +118,25 @@ class _SidebarState extends State<Sidebar> {
                               isActive: widget.currentPage == NavPage.discover,
                               index: 1,
                             ),
-                            _buildNavItemCollapsed(
-                              iconPath: 'assets/images/add_icon.svg',
-                              activeIconPath:
-                                  'assets/images/add_active_icon.svg',
-                              label: '添加',
-                              page: NavPage.join,
+                            // 智能导入通知：徽章 + 悬停/主动弹出气泡
+                            // 收起态按钮 47x60 含顶部 margin 12：
+                            // - 徽章 top = 12 - 5 = 7（抵消 margin，贴按钮右上角）
+                            // - 气泡垂直校正 +6（按钮中心 42 vs 含 margin 整体中心 36）
+                            SmartImportNotification(
                               isActive: widget.currentPage == NavPage.join,
-                              index: 2,
+                              onGameAdded: widget.onGameAdded,
+                              badgeTop: 7,
+                              bubbleOffset: const Offset(8, 6),
+                              child: _buildNavItemCollapsed(
+                                iconPath: 'assets/images/add_icon.svg',
+                                activeIconPath:
+                                    'assets/images/add_active_icon.svg',
+                                label: '添加',
+                                page: NavPage.join,
+                                isActive:
+                                    widget.currentPage == NavPage.join,
+                                index: 2,
+                              ),
                             ),
                           ],
                         ),
@@ -152,17 +170,27 @@ class _SidebarState extends State<Sidebar> {
                                   'assets/images/discover_active_bookmark.png',
                               index: 1,
                             ),
-                            _buildNavItemExpanded(
-                              iconPath: 'assets/images/add_icon.svg',
-                              activeIconPath:
-                                  'assets/images/add_active_icon.svg',
-                              label: '添加',
-                              page: NavPage.join,
+                            // 智能导入通知：徽章 + 悬停/主动弹出气泡
+                            // 展开态卡片 175x144 含底部 margin 32：
+                            // - 徽章默认 top -5（卡片无顶部 margin，位置正确）
+                            // - 气泡垂直校正 -16（卡片中心 72 vs 含 margin 整体中心 88）
+                            SmartImportNotification(
                               isActive: widget.currentPage == NavPage.join,
-                              hasBookmark: true,
-                              bookmarkPath:
-                                  'assets/images/add_active_bookmark.png',
-                              index: 2,
+                              onGameAdded: widget.onGameAdded,
+                              bubbleOffset: const Offset(8, -16),
+                              child: _buildNavItemExpanded(
+                                iconPath: 'assets/images/add_icon.svg',
+                                activeIconPath:
+                                    'assets/images/add_active_icon.svg',
+                                label: '添加',
+                                page: NavPage.join,
+                                isActive:
+                                    widget.currentPage == NavPage.join,
+                                hasBookmark: true,
+                                bookmarkPath:
+                                    'assets/images/add_active_bookmark.png',
+                                index: 2,
+                              ),
                             ),
                           ],
                         ),
@@ -178,56 +206,11 @@ class _SidebarState extends State<Sidebar> {
     );
   }
 
-  Widget buildSemicircleToggle({required bool isLeft}) {
-    const double diameter = 34.0;
-    const double radius = 17.0;
-    final icon = isLeft ? Icons.chevron_left : Icons.chevron_right;
-
-    final core = MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onToggle ?? () {},
-        child: SizedBox(
-          width: radius,
-          height: diameter,
-          child: CustomPaint(
-            painter: SemicirclePainter(
-              isLeft: isLeft,
-              // BUG-05: 传入主题颜色，替代硬编码
-              fillColor: AppColors.toggleBg,
-              borderColor: AppColors.toggleBorder,
-              shadowColor: AppColors.shadowColor,
-            ),
-            child: Center(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  left: isLeft ? 4 : 0,
-                  right: isLeft ? 0 : 4,
-                ),
-                child: Icon(
-                  icon,
-                  size: 16,
-                  color: AppColors.toggleIcon,
-                  weight: 700,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    // UX-25: 侧边栏收起/展开切换按钮——辅助屏幕阅读器与 hover 提示
-    final action = isLeft ? '展开侧边栏' : '收起侧边栏';
-    return Tooltip(
-      message: action,
-      waitDuration: const Duration(milliseconds: 400),
-      child: Semantics(
-        button: true,
-        label: action,
-        child: core,
-      ),
-    );
-  }
+  // 2026-09-11: 已删除死代码 buildSemicircleToggle（0 调用点，经用户批准）。
+  // 其 UX-25 改进（Tooltip/Semantics/weight:700）已移植到在用组件
+  // SidebarToggleWidget（main_container.dart）。在用按钮本体见
+  // main_container.dart:854-866 挂载点。widget.onToggle 字段保留
+  // （公开 API，暂无消费方）。
 
   Widget _buildNavItemExpanded({
     required String iconPath,
@@ -258,24 +241,17 @@ class _SidebarState extends State<Sidebar> {
           width: 175,
           height: 144,
           decoration: BoxDecoration(
+            borderRadius: AppStyle.navHeroRadius,
             color: isHovered && !isActive
                 ? AppColors.cardHoverBg
-                : AppColors.background,
-            border: Border.all(
-              color: isActive ? AppColors.border : AppColors.border,
-              width: isActive || isHovered ? 2.0 : 1.6,
-            ),
-            boxShadow: (isActive || isHovered)
-                ? [
-                    BoxShadow(
-                      color:
-                          isHovered ? AppColors.borderLight : AppColors.border,
-                      offset:
-                          isHovered ? const Offset(0, 3) : const Offset(2, 3),
-                      blurRadius: isHovered ? 10 : 0,
-                    )
-                  ]
-                : null,
+                // 石英白画布与 background 同色：极光档静息用白卡面保证按钮可见
+                : (AppStyle.isModern
+                    ? AppColors.buttonBackground
+                    : AppColors.background),
+            border:
+                AppStyle.navHeroBorder(active: isActive, hovered: isHovered),
+            boxShadow:
+                AppStyle.navHeroShadow(active: isActive, hovered: isHovered),
           ),
           child: Stack(
             clipBehavior: Clip.none,
@@ -350,28 +326,14 @@ class _SidebarState extends State<Sidebar> {
           width: 47,
           height: 60,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(AppStyle.rNavItem),
             // BUG-05: 硬编码白色背景替换为主题感知的 navActiveBg / cardHoverBg
             color: isActive
                 ? AppColors.navActiveBg
                 : (isHovered ? AppColors.cardHoverBg : Colors.transparent),
-            border: Border.all(
-              color: isActive
-                  ? AppColors.navActiveBorder
-                  : (isHovered
-                      ? AppColors.navInactiveBorder
-                      : AppColors.navInactiveBorder.withOpacity(0.5)),
-              width: 1,
-            ),
-            boxShadow: isActive
-                ? [
-                    BoxShadow(
-                      color: AppColors.shadowColor.withOpacity(0.10),
-                      offset: const Offset(0, 1),
-                      blurRadius: 6,
-                    )
-                  ]
-                : null,
+            border:
+                AppStyle.navPillBorder(active: isActive, hovered: isHovered),
+            boxShadow: AppStyle.navPillShadow(active: isActive),
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
@@ -416,39 +378,22 @@ class _SidebarState extends State<Sidebar> {
               width: 47,
               height: 47,
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(AppStyle.rNavItem),
                 // BUG-05: 硬编码颜色替换为主题感知变量
                 color: isActive
                     ? AppColors.navActiveBg
                     : (isHovered ? AppColors.cardHoverBg : Colors.transparent),
-                border: Border.all(
-                  color: isActive
-                      ? AppColors.navActiveBorder
-                      : (isHovered
-                          ? AppColors.navInactiveBorder
-                          : AppColors.navInactiveBorder.withOpacity(0.5)),
-                  width: 1,
-                ),
-                boxShadow: isActive
-                    ? [
-                        BoxShadow(
-                          color: AppColors.shadowColor.withOpacity(0.10),
-                          offset: const Offset(0, 1),
-                          blurRadius: 6,
-                        )
-                      ]
-                    : null,
+                border:
+                    AppStyle.navPillBorder(active: isActive, hovered: isHovered),
+                boxShadow: AppStyle.navPillShadow(active: isActive),
               ),
               child: Center(
                 child: Icon(
                   Icons.home_rounded,
                   size: 22,
                   // BUG-05: 图标颜色从硬编码替换为主题感知变量
-                  color: isActive
-                      ? AppColors.navActiveBorder
-                      : (isHovered
-                          ? AppColors.border
-                          : AppColors.navInactiveBorder),
+                  color: AppStyle.navIconColor(
+                      active: isActive, hovered: isHovered),
                 ),
               ),
             ),
@@ -483,23 +428,17 @@ class _SidebarState extends State<Sidebar> {
             width: 175,
             height: 56,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: AppColors.border,
-                width: isActive || isHovered ? 2.0 : 1.6,
-              ),
+              borderRadius: AppStyle.navHeroRadius,
+              border:
+                  AppStyle.homeHeroBorder(active: isActive, hovered: isHovered),
               color: isHovered && !isActive
                   ? AppColors.cardHoverBg
-                  : AppColors.background,
-              boxShadow: (isActive || isHovered)
-                  ? [
-                      BoxShadow(
-                        color: AppColors.border,
-                        offset: const Offset(2, 3),
-                        blurRadius: 0,
-                      ),
-                    ]
-                  : null,
+                  // 同上：极光档静息用白卡面（石英白画布上不可隐形）
+                  : (AppStyle.isModern
+                      ? AppColors.buttonBackground
+                      : AppColors.background),
+              boxShadow:
+                  AppStyle.homeHeroShadow(active: isActive, hovered: isHovered),
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -507,15 +446,13 @@ class _SidebarState extends State<Sidebar> {
                 Icon(
                   Icons.home_rounded,
                   size: 22,
-                  color: isActive
-                      ? AppColors.titleBrown
-                      : (isHovered ? AppColors.titleBrown : AppColors.border),
+                  color: AppStyle.homeIconColor(
+                      active: isActive, hovered: isHovered),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   '主页',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 1,

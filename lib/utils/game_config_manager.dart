@@ -29,6 +29,19 @@ class GameConfig {
       };
 }
 
+/// ⚠️ **历史存储，处于只读兼容期**（P0-2，2026-09-19）
+///
+/// 启动 exe 路径的唯一事实源已经是 `game.json` 的 `launch_path`。
+/// 本类保留的用途只剩两个：
+/// 1. [getLaunchPath] —— 让 `GameLaunchService.resolveUserChoice` 能把
+///    历史配置文件里的值**一次性搬进** game.json；
+/// 2. [removeConfig] —— 搬迁完成后删掉旧文件。
+///
+/// **不要再往这里写新数据**（[saveLaunchPath] / [saveConfig] 已无生产调用方）。
+/// 历史教训：它曾与 prefs `default_exe_<标题>`、`game.json.launch_path`
+/// 三处并存，且三处读取优先级各不相同 —— "改了启动程序却不生效"就是这么来的。
+/// 另一个隐患是内部的 `_sanitizeGameId` 把空白替换成 `_`，与注册表的清洗
+/// 规则不同，同一个游戏会算出两个 key（重复卡片 / 时长重复计入）。
 class GameConfigManager {
   static final GameConfigManager instance = GameConfigManager._internal();
   GameConfigManager._internal();
@@ -158,6 +171,8 @@ class GameConfigManager {
     }
   }
 
+  /// ⚠️ 已无生产调用方（P0-2 收敛后 prefs 与配置文件都不再是事实源）。
+  /// 保留实现仅供外部脚本 / 旧测试使用；新代码不要调用。
   Future<void> migrateFromSharedPreferences(
       String gameTitle, String? prefsPath) async {
     if (prefsPath == null || prefsPath.isEmpty) return;

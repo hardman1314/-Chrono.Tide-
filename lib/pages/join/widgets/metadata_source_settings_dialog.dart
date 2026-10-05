@@ -3,6 +3,7 @@ import 'package:luna_metadata_sdk/luna_metadata_sdk.dart';
 
 import '../../../services/metadata_fetcher.dart';
 import '../../../theme/app_colors.dart';
+import '../../../theme/app_styles.dart';
 import '../../../widgets/app_dialog.dart';
 import '../../../widgets/interactive_wrapper.dart';
 
@@ -77,6 +78,12 @@ class _MetadataSourceSettingsDialogState
         return '光凪日向 Galgame 数据库 · 标签为中文，内置开发者 Token';
       case SourceType.kun:
         return 'KunGal 中文社区 · 标签为中文，公开 API 免认证';
+      case SourceType.nextmoe:
+        return 'NextMoe 六源对齐目录 · 中英文标题/简介/标签齐全，最高优先级';
+      case SourceType.ct:
+        return 'CT 探索库（自有平台）· 社区共建中文元数据，优先级次于 NextMoe';
+      case SourceType.mix:
+        return '智能整合源 · 按字段优先级整合 NextMoe/CT/VNDB/KunGal/Hikarinagi/Steam/月幕GAL';
       default:
         return '';
     }
@@ -103,6 +110,12 @@ class _MetadataSourceSettingsDialogState
         return const Color(0xFF6EC6E6);
       case SourceType.kun:
         return const Color(0xFFFF9E80);
+      case SourceType.nextmoe:
+        return const Color(0xFFE85D9E);
+      case SourceType.ct:
+        return const Color(0xFFC9506B);
+      case SourceType.mix:
+        return const Color(0xFF8E6CD9);
       default:
         return AppColors.border;
     }
@@ -159,6 +172,7 @@ class _MetadataSourceSettingsDialogState
           decoration: BoxDecoration(
             color: AppColors.sidebarBackground,
             border: Border.all(color: AppColors.border, width: 2),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
             boxShadow: [
               BoxShadow(
                 color: AppColors.border,
@@ -173,6 +187,8 @@ class _MetadataSourceSettingsDialogState
             children: [
               // 标题栏
               _buildHeader(),
+              // 顺序说明
+              _buildOrderHint(available),
               // 数据源列表
               Flexible(
                 child: SingleChildScrollView(
@@ -214,7 +230,6 @@ class _MetadataSourceSettingsDialogState
           Text(
             '抓取数据源设定',
             style: TextStyle(
-              fontFamily: 'ZhiMangXing',
               fontSize: 18,
               letterSpacing: 2.0,
               color: AppColors.border,
@@ -228,6 +243,36 @@ class _MetadataSourceSettingsDialogState
               padding: const EdgeInsets.all(4),
               child:
                   Icon(Icons.close, size: 18, color: AppColors.secondaryText),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 列表顺序说明：告诉用户勾选顺序即抓取结果的展示顺序
+  Widget _buildOrderHint(List<SourceType> available) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 10, 18, 0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(Icons.info_outline,
+                size: 13, color: AppColors.secondaryText),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '按推荐优先级排列（${available.length} 个可选源）：'
+              'MIX源为多平台整合结果，置于首位；其余平台自左向右、由上到下按优先级递减。'
+              '勾选的源将按此顺序返回候选条目。',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.5,
+                color: AppColors.secondaryText,
+              ),
             ),
           ),
         ],
@@ -287,6 +332,27 @@ class _MetadataSourceSettingsDialogState
                     ),
                   ),
                 ),
+                // 整合源标记：提示该条目为多平台字段级整合结果
+                if (source == SourceType.mix)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 2),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: accentColor, width: 1),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                      child: Text(
+                        '整合',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: accentColor,
+                        ),
+                      ),
+                    ),
+                  ),
                 const SizedBox(width: 10),
                 // 描述
                 Expanded(
@@ -296,7 +362,6 @@ class _MetadataSourceSettingsDialogState
                       Text(
                         _sourceDescription(source),
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 12,
                           fontWeight: FontWeight.w500,
                           color: AppColors.secondaryText,
@@ -315,7 +380,6 @@ class _MetadataSourceSettingsDialogState
                                 child: Text(
                                   'API Token 尚未接入，勾选后该源不会返回结果',
                                   style: TextStyle(
-                                    fontFamily: 'Inter',
                                     fontSize: 11,
                                     fontWeight: FontWeight.w500,
                                     color: AppColors.dangerRed,
@@ -331,7 +395,6 @@ class _MetadataSourceSettingsDialogState
                           child: Text(
                             '至少需保留一个数据源',
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 11,
                               fontStyle: FontStyle.italic,
                               color: AppColors.secondaryText,
@@ -367,7 +430,6 @@ class _MetadataSourceSettingsDialogState
               Text(
                 '个人访问令牌（可选，提升速率限额）',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
                   color: AppColors.secondaryText,
@@ -386,7 +448,6 @@ class _MetadataSourceSettingsDialogState
               controller: _bangumiTokenController,
               obscureText: true,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 color: AppColors.primaryText,
               ),
@@ -396,7 +457,6 @@ class _MetadataSourceSettingsDialogState
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
                 hintText: '粘贴从 bgm.tv 个人设置创建的令牌',
                 hintStyle: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   color: AppColors.inputHint,
                 ),
@@ -450,7 +510,6 @@ class _MetadataSourceSettingsDialogState
               child: Text(
                 '取消',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w500,
                   fontSize: 13,
                   color: AppColors.secondaryText,
@@ -486,7 +545,6 @@ class _MetadataSourceSettingsDialogState
                   : const Text(
                       '保存',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w700,
                         fontSize: 13,
                         color: Colors.white,

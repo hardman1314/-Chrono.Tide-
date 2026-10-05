@@ -1,0 +1,1336 @@
+{
+  "format_version": 1,
+  "description": "会社归一化别名词典（种子数据）。standard_name 优先采用 VNDB producer 名称；主名字段（standard_name / jp_name / cn_name / aliases）在运行时全部并入倒排索引，均可用于匹配。维护规则与分阶段计划见 docs/DEV/features/company_alias_normalization.md",
+  "updated_at": "2026-09-29",
+  "companies": [
+    {
+      "company_id": 1,
+      "standard_name": "Yuzusoft",
+      "jp_name": "ゆずソフト",
+      "cn_name": "柚子社",
+      "vndb_id": "p98",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "全年龄子品牌 Yuzusoft SOUR 独立条目，不并入本条",
+      "aliases": [
+        "YUZUSOFT",
+        "YUZU SOFT",
+        "Yuzu-Soft",
+        "柚子"
+      ]
+    },
+    {
+      "company_id": 2,
+      "standard_name": "minori",
+      "jp_name": "minori",
+      "cn_name": null,
+      "vndb_id": "p27",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "2019-02-28 停止新作开发并解散制作部门；映像部门 minori picture 延续。巨儒社为巨乳社的圈内变体写法",
+      "aliases": [
+        "Minori",
+        "みのり",
+        "ミノリ",
+        "株式会社ミノリ",
+        "中二社",
+        "巨乳社",
+        "巨儒社",
+        "ef社"
+      ]
+    },
+    {
+      "company_id": 3,
+      "standard_name": "sprite",
+      "jp_name": "sprite",
+      "cn_name": null,
+      "vndb_id": "p1326",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "2018-2019 一度解散，2019-11 经 S-WORKS 复活；俗称雪碧社/精灵社/冷饭社/苍彼社（萌娘百科）",
+      "aliases": [
+        "Sprite",
+        "スプライト",
+        "雪碧社",
+        "精灵社",
+        "冷饭社",
+        "苍彼社",
+        "S-WORKS"
+      ]
+    },
+    {
+      "company_id": 4,
+      "standard_name": "Frontwing",
+      "jp_name": "フロントウイング",
+      "cn_name": null,
+      "vndb_id": "p336",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "法人名为株式会社フロントウイング",
+      "aliases": [
+        "Front Wing",
+        "前翼社",
+        "株式会社フロントウイング"
+      ]
+    },
+    {
+      "company_id": 5,
+      "standard_name": "Key",
+      "jp_name": "Key",
+      "cn_name": null,
+      "vndb_id": "p24",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "VisualArt's 旗下品牌",
+      "aliases": [
+        "キー",
+        "Key社",
+        "键社",
+        "鍵社"
+      ]
+    },
+    {
+      "company_id": 6,
+      "standard_name": "AUGUST",
+      "jp_name": "オーガスト",
+      "cn_name": "八月社",
+      "vndb_id": "p95",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "发行母公司为株式会社葉月（Hazuki）",
+      "aliases": [
+        "August",
+        "Hachigatsu",
+        "八月"
+      ]
+    },
+    {
+      "company_id": 7,
+      "standard_name": "Navel",
+      "jp_name": "Navel",
+      "cn_name": null,
+      "vndb_id": "p13",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "子品牌 Navel honeybell 独立条目，不并入本条",
+      "aliases": [
+        "ネーブル",
+        "Navel社"
+      ]
+    },
+    {
+      "company_id": 8,
+      "standard_name": "CIRCUS",
+      "jp_name": "サーカス",
+      "cn_name": null,
+      "vndb_id": "p65",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "现由 Moby-dick 株式会社运营的品牌；子品牌 Northern/Fetish/Metal 独立条目",
+      "aliases": [
+        "Circus",
+        "马戏团",
+        "马戏团社"
+      ]
+    },
+    {
+      "company_id": 9,
+      "standard_name": "AQUAPLUS",
+      "jp_name": "アクアプラス",
+      "cn_name": null,
+      "vndb_id": "p87",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Leaf/リーフ 为同法人子品牌（VNDB 独立条目 p181），本词典未并入，后续批次再定",
+      "aliases": [
+        "AquaPlus",
+        "株式会社アクアプラス",
+        "U-Office",
+        "AQUA"
+      ]
+    },
+    {
+      "company_id": 10,
+      "standard_name": "Lump of Sugar",
+      "jp_name": "ランプオブシュガー",
+      "cn_name": "方糖社",
+      "vndb_id": "p81",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "角砂糖",
+        "有限会社ランプオブシュガー"
+      ]
+    },
+    {
+      "company_id": 11,
+      "standard_name": "NITRO PLUS",
+      "jp_name": "ニトロプラス",
+      "cn_name": null,
+      "vndb_id": "p42",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "法人名株式会社ニトロプラス；BL 子品牌 NITRO CHiRAL 独立条目",
+      "aliases": [
+        "Nitro+",
+        "Nitroplus",
+        "N+社",
+        "株式会社ニトロプラス"
+      ]
+    },
+    {
+      "company_id": 12,
+      "standard_name": "TYPE-MOON",
+      "jp_name": "TYPE-MOON",
+      "cn_name": "型月社",
+      "vndb_id": "p6",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "工作室 Type-Moon studio BB（VNDB p10689）独立条目",
+      "aliases": [
+        "Type Moon",
+        "タイプムーン",
+        "型月"
+      ]
+    },
+    {
+      "company_id": 13,
+      "standard_name": "FAVORITE",
+      "jp_name": "FAVORITE",
+      "cn_name": null,
+      "vndb_id": "p612",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "同名会社区分：另一家 Favorite（ファボライト，VNDB p10307）不并入本条",
+      "aliases": [
+        "Favorite",
+        "F社"
+      ]
+    },
+    {
+      "company_id": 14,
+      "standard_name": "MOONSTONE",
+      "jp_name": "MOONSTONE",
+      "cn_name": "月亮石",
+      "vndb_id": "p251",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "子品牌 MOONSTONE Cherry / MOONSTONE Honey 独立条目",
+      "aliases": [
+        "ムーンストーン",
+        "むーんすとーん",
+        "月石",
+        "月石社",
+        "妹控石"
+      ]
+    },
+    {
+      "company_id": 15,
+      "standard_name": "feng",
+      "jp_name": "feng",
+      "cn_name": "风社",
+      "vndb_id": "p288",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "風社"
+      ]
+    },
+    {
+      "company_id": 16,
+      "standard_name": "Applique",
+      "jp_name": "あっぷりけ",
+      "cn_name": "妹药社",
+      "vndb_id": "p232",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "日文名易混：ApRicoT（アプリコット，VNDB p548）是另一家公司，不并入本条",
+      "aliases": [
+        "郁金香社",
+        "贴花社"
+      ]
+    },
+    {
+      "company_id": 17,
+      "standard_name": "Purple software",
+      "jp_name": "パープルソフトウェア",
+      "cn_name": "紫社",
+      "vndb_id": "p132",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "Purple Software"
+      ]
+    },
+    {
+      "company_id": 18,
+      "standard_name": "PULLTOP",
+      "jp_name": "PULLTOP",
+      "cn_name": null,
+      "vndb_id": "p76",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "子品牌 PULLTOP LATTE / PULLTOP Air 独立条目",
+      "aliases": [
+        "プルトップ",
+        "易拉罐"
+      ]
+    },
+    {
+      "company_id": 19,
+      "standard_name": "Palette",
+      "jp_name": "ぱれっと",
+      "cn_name": "调色板",
+      "vndb_id": "p10",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "同名会社区分：另一家 Palette（パレット，VNDB p2938）不并入本条",
+      "aliases": [
+        "调色盘",
+        "調色板",
+        "調色盤"
+      ]
+    },
+    {
+      "company_id": 20,
+      "standard_name": "ensemble",
+      "jp_name": "ensemble",
+      "cn_name": "音符社",
+      "vndb_id": "p628",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "子品牌 ensemble SWEET / ensemble# 独立条目",
+      "aliases": [
+        "アンサンブル",
+        "Ensemble",
+        "音符社"
+      ]
+    },
+    {
+      "company_id": 21,
+      "standard_name": "Innocent Grey",
+      "jp_name": "Innocent Grey",
+      "cn_name": null,
+      "vndb_id": "p277",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "IG社",
+        "イノセントグレイ",
+        "Innogray",
+        "innogrey"
+      ]
+    },
+    {
+      "company_id": 22,
+      "standard_name": "CLOCKUP",
+      "jp_name": "CLOCKUP",
+      "cn_name": "钟表社",
+      "vndb_id": "p200",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "クロックアップ",
+        "クロアプ",
+        "时钟社"
+      ]
+    },
+    {
+      "company_id": 23,
+      "standard_name": "Whirlpool",
+      "jp_name": "ワールプール",
+      "cn_name": "漩涡社",
+      "vndb_id": "p273",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "渦巻",
+        "漩渦社"
+      ]
+    },
+    {
+      "company_id": 24,
+      "standard_name": "Makura",
+      "jp_name": "枕",
+      "cn_name": "枕社",
+      "vndb_id": "p259",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": []
+    },
+    {
+      "company_id": 25,
+      "standard_name": "NEKO WORKs",
+      "jp_name": "NEKO WORKs",
+      "cn_name": null,
+      "vndb_id": "p4488",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "《Nekopara》开发商；勿与猫猫社（NEKONEKO Software）混淆",
+      "aliases": [
+        "Neko Works",
+        "ネコワークエス"
+      ]
+    },
+    {
+      "company_id": 26,
+      "standard_name": "Eushully",
+      "jp_name": "エウシュリー",
+      "cn_name": null,
+      "vndb_id": "p268",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "俗称 E社（另有不常用的「天使社」）",
+      "aliases": [
+        "E社"
+      ]
+    },
+    {
+      "company_id": 27,
+      "standard_name": "Liar-soft",
+      "jp_name": "Liar-soft",
+      "cn_name": "骗子社",
+      "vndb_id": "p29",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "ライアーソフト",
+        "騙子社",
+        "嘘屋"
+      ]
+    },
+    {
+      "company_id": 28,
+      "standard_name": "Studio Ryokucha",
+      "jp_name": "すたじお緑茶",
+      "cn_name": "绿茶社",
+      "vndb_id": "p285",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "綠茶社"
+      ]
+    },
+    {
+      "company_id": 29,
+      "standard_name": "Azarashi Soft",
+      "jp_name": "あざらしそふと",
+      "cn_name": "海豹社",
+      "vndb_id": "p4542",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "子品牌 あざらしそふと零 / あざらしそふと+1 独立条目",
+      "aliases": [
+        "AZARASHI SOFTWARE"
+      ]
+    },
+    {
+      "company_id": 30,
+      "standard_name": "Sphere",
+      "jp_name": "Sphere",
+      "cn_name": null,
+      "vndb_id": "p522",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "母公司 CUFFS（独立条目）；姊妹品牌 CUBE 亦独立条目",
+      "aliases": [
+        "スフィア",
+        "Sphere社"
+      ]
+    },
+    {
+      "company_id": 31,
+      "standard_name": "CUFFS",
+      "jp_name": "CUFFS",
+      "cn_name": null,
+      "vndb_id": "p172",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Sphere / CUBE 的母公司；三者按 VNDB 各自独立条目",
+      "aliases": [
+        "有限会社CUFFS"
+      ]
+    },
+    {
+      "company_id": 32,
+      "standard_name": "CUBE",
+      "jp_name": "CUBE",
+      "cn_name": null,
+      "vndb_id": "p735",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "母公司 CUFFS（独立条目）",
+      "aliases": [
+        "cube社"
+      ]
+    },
+    {
+      "company_id": 33,
+      "standard_name": "SAGA PLANETS",
+      "jp_name": "SAGA PLANETS",
+      "cn_name": null,
+      "vndb_id": "p378",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "サガプラネッツ",
+        "Saga Planets",
+        "saga社"
+      ]
+    },
+    {
+      "company_id": 34,
+      "standard_name": "ALcot",
+      "jp_name": "ALcot",
+      "cn_name": null,
+      "vndb_id": "p129",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "子品牌 ALcot Honey Comb 独立条目（蜂巢社）",
+      "aliases": [
+        "アルコット"
+      ]
+    },
+    {
+      "company_id": 35,
+      "standard_name": "ALcot Honey Comb",
+      "jp_name": "ALcot ハニカム",
+      "cn_name": "蜂巢社",
+      "vndb_id": "p1385",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "母品牌 ALcot 独立条目",
+      "aliases": [
+        "ALcotハニカム"
+      ]
+    },
+    {
+      "company_id": 36,
+      "standard_name": "Yoru no Hitsuji",
+      "jp_name": "夜のひつじ",
+      "cn_name": "夜羊社",
+      "vndb_id": "p2212",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "萝莉社",
+        "Night-time Sheep"
+      ]
+    },
+    {
+      "company_id": 37,
+      "standard_name": "elf",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p131",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "VNDB 描述为过去时（was an eroge studio），判定已停业；同 famous 同人抜き系列",
+      "aliases": [
+        "élf",
+        "エルフ",
+        "ELF Corporation"
+      ]
+    },
+    {
+      "company_id": 38,
+      "standard_name": "Studio e.go!",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p17",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "VNDB 描述为过去时（was a Japanese eroge company），判定已停业",
+      "aliases": [
+        "スタジオ・エゴ",
+        "e-go",
+        "ego"
+      ]
+    },
+    {
+      "company_id": 39,
+      "standard_name": "0verflow",
+      "jp_name": "オーバーフロー",
+      "cn_name": null,
+      "vndb_id": "p74",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Stack Ltd. 旗下成人游戏品牌（School Days 系列）；注意与字母开头 Overflow 写法并存",
+      "aliases": [
+        "Overflow"
+      ]
+    },
+    {
+      "company_id": 40,
+      "standard_name": "VISUAL ARTS Co.,Ltd.",
+      "jp_name": "株式会社ビジュアルアーツ",
+      "cn_name": null,
+      "vndb_id": "p993",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Key 等 VisualArt's 系品牌的母公司法人",
+      "aliases": [
+        "Visual Art's",
+        "Visual Arts",
+        "ビジュアルアーティストオフィス"
+      ]
+    },
+    {
+      "company_id": 41,
+      "standard_name": "Alice Soft",
+      "jp_name": "アリスソフト",
+      "cn_name": "爱丽丝社",
+      "vndb_id": "p120",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Rance 系列；Champion Soft 旗下品牌",
+      "aliases": [
+        "AliceSoft",
+        "愛麗絲社",
+        "ALICESOFT",
+        "Alicesoft"
+      ]
+    },
+    {
+      "company_id": 42,
+      "standard_name": "age",
+      "jp_name": "アージュ",
+      "cn_name": null,
+      "vndb_id": "p4",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "君望/MuvLuv；2011 年游戏事业并入 MAGES.，品牌存续",
+      "aliases": [
+        "âge"
+      ]
+    },
+    {
+      "company_id": 43,
+      "standard_name": "KeroQ",
+      "jp_name": "ケロQ",
+      "cn_name": null,
+      "vndb_id": "p1040",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "素晴らしき日々；姊妹品牌为枕(Makura)",
+      "aliases": [
+        "ケロキュウ",
+        "Kero Q"
+      ]
+    },
+    {
+      "company_id": 44,
+      "standard_name": "HOOKSOFT",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p106",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "hook 为早期表记（VNDB 并入本条）；SMEE/Cabbage Soft 同属株式会社フック",
+      "aliases": [
+        "HOOK",
+        "フックソフト"
+      ]
+    },
+    {
+      "company_id": 45,
+      "standard_name": "SMEE",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p328",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": []
+    },
+    {
+      "company_id": 46,
+      "standard_name": "ASa Project",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p371",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "颜艺社"
+      ]
+    },
+    {
+      "company_id": 47,
+      "standard_name": "Cabbage Soft",
+      "jp_name": "きゃべつそふと",
+      "cn_name": "卷心菜社",
+      "vndb_id": "p6193",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "「白菜社」为圈内同义俗称",
+      "aliases": [
+        "卷心菜社",
+        "白菜社"
+      ]
+    },
+    {
+      "company_id": 48,
+      "standard_name": "GIGA",
+      "jp_name": "戯画",
+      "cn_name": "戏画社",
+      "vndb_id": "p119",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "baldr / パルフェ；2022 年末宣布活动休止",
+      "aliases": []
+    },
+    {
+      "company_id": 49,
+      "standard_name": "KID",
+      "jp_name": "キッド",
+      "cn_name": null,
+      "vndb_id": "p8",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "ever17/Remember11；2007 年破产，版权几经转移",
+      "aliases": [
+        "Kindle Imagine Develop"
+      ]
+    },
+    {
+      "company_id": 50,
+      "standard_name": "tone work's",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p2446",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "星織ユメミライ",
+      "aliases": []
+    },
+    {
+      "company_id": 51,
+      "standard_name": "HAMHAM-SOFT",
+      "jp_name": "はむはむソフト",
+      "cn_name": null,
+      "vndb_id": "p512",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "はつゆきさくら",
+      "aliases": [
+        "Ham-Ham Soft"
+      ]
+    },
+    {
+      "company_id": 52,
+      "standard_name": "NekoNeko Soft",
+      "jp_name": "ねこねこソフト",
+      "cn_name": "猫猫社",
+      "vndb_id": "p135",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "水色/空の青さ；与 NEKO WORKs(ネコワークス) 无关，勿合并",
+      "aliases": [
+        "NekoNeko-soft",
+        "猫猫软件"
+      ]
+    },
+    {
+      "company_id": 53,
+      "standard_name": "Marmalade",
+      "jp_name": "ま～まれぇど",
+      "cn_name": null,
+      "vndb_id": "p391",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "ままれ",
+        "MMLD",
+        "橘汁社",
+        "妈妈累多"
+      ]
+    },
+    {
+      "company_id": 54,
+      "standard_name": "Sakura Soft",
+      "jp_name": "さくらソフト",
+      "cn_name": null,
+      "vndb_id": "p5377",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "「桜そふと」为同社日文同音异写（金色ラブリッチェ 等）",
+      "aliases": [
+        "桜そふと"
+      ]
+    },
+    {
+      "company_id": 55,
+      "standard_name": "Hulotte",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p1612",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "ユロット",
+        "时停社"
+      ]
+    },
+    {
+      "company_id": 56,
+      "standard_name": "Caramel BOX",
+      "jp_name": "キャラメルBOX",
+      "cn_name": null,
+      "vndb_id": "p140",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "キャラ箱"
+      ]
+    },
+    {
+      "company_id": 57,
+      "standard_name": "Pajamas Soft",
+      "jp_name": "ぱじゃまソフト",
+      "cn_name": null,
+      "vndb_id": "p144",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "Pyjama Soft"
+      ]
+    },
+    {
+      "company_id": 58,
+      "standard_name": "HuneX",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p763",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "ヒューネックス"
+      ]
+    },
+    {
+      "company_id": 59,
+      "standard_name": "ensemble SWEET",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p4304",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "ensemble 的妹系品牌（VNDB 分列）",
+      "aliases": []
+    },
+    {
+      "company_id": 60,
+      "standard_name": "U･Me SOFT",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p650",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "ユーミソフト",
+        "U-Me SOFT"
+      ]
+    },
+    {
+      "company_id": 61,
+      "standard_name": "BISHOP",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p215",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "実用系大厂；子品牌 BISHOP Royal 不并入",
+      "aliases": []
+    },
+    {
+      "company_id": 62,
+      "standard_name": "INTERHEART",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p837",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": []
+    },
+    {
+      "company_id": 63,
+      "standard_name": "Clochette",
+      "jp_name": "クロシェット",
+      "cn_name": null,
+      "vndb_id": "p386",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "時計仕掛けのレイライン 系列",
+      "aliases": [
+        "乳袋社"
+      ]
+    },
+    {
+      "company_id": 64,
+      "standard_name": "Triangle",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p332",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "恋する彼女の不器用な舞台",
+      "aliases": [
+        "トライアングル",
+        "三角社"
+      ]
+    },
+    {
+      "company_id": 65,
+      "standard_name": "TinkerBell",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p491",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "Tinker Bell",
+        "ティンカーベル",
+        "铃铛社"
+      ]
+    },
+    {
+      "company_id": 66,
+      "standard_name": "Softhouse-Seal",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p397",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": []
+    },
+    {
+      "company_id": 67,
+      "standard_name": "propeller",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p253",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "H2O -FOOTPRINTS IN THE SUMMER-",
+      "aliases": []
+    },
+    {
+      "company_id": 68,
+      "standard_name": "SkyFish",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p229",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "スカイ・フィッシュ"
+      ]
+    },
+    {
+      "company_id": 69,
+      "standard_name": "Waffle",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p341",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "ワッフル"
+      ]
+    },
+    {
+      "company_id": 70,
+      "standard_name": "Lass",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p357",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "11eyes",
+      "aliases": [
+        "ラス"
+      ]
+    },
+    {
+      "company_id": 71,
+      "standard_name": "Laplacian",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p5871",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "テスラノート；2023 年活动休止",
+      "aliases": [
+        "ラプラシアン",
+        "拉普拉斯"
+      ]
+    },
+    {
+      "company_id": 72,
+      "standard_name": "SukeraSparo",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p6944",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "ことのはアムリラート",
+      "aliases": []
+    },
+    {
+      "company_id": 73,
+      "standard_name": "Xuse",
+      "jp_name": "ザウス",
+      "cn_name": null,
+      "vndb_id": "p84",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "2021-05-30 破产；本醸造/EXTRACT 等品牌分立",
+      "aliases": []
+    },
+    {
+      "company_id": 74,
+      "standard_name": "MAGES.",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p146",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "2014 年由 5pb. 改名；科学 ADV 系列",
+      "aliases": [
+        "5pb. Games",
+        "5pb."
+      ]
+    },
+    {
+      "company_id": 75,
+      "standard_name": "Uguisu Kagura",
+      "jp_name": "ウグイスカグラ",
+      "cn_name": null,
+      "vndb_id": "p4671",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "",
+      "aliases": [
+        "Kagura Uguisu"
+      ]
+    },
+    {
+      "company_id": 76,
+      "standard_name": "AKABEiSOFT2",
+      "jp_name": "あかべぇそふとつぅ",
+      "cn_name": null,
+      "vndb_id": "p56",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "母条目；TRY 等子品牌分立",
+      "aliases": [
+        "Akabei Soft2"
+      ]
+    },
+    {
+      "company_id": 77,
+      "standard_name": "Minato Soft",
+      "jp_name": "みなとそふと",
+      "cn_name": null,
+      "vndb_id": "p301",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "真剣で私に恋しなさい！（まじこい）",
+      "aliases": []
+    },
+    {
+      "company_id": 78,
+      "standard_name": "Yuzusoft SOUR",
+      "jp_name": "ゆずソフトSOUR",
+      "cn_name": null,
+      "vndb_id": "p12215",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Yuzusoft 全年龄子品牌（独立条目，与主条目口径一致）",
+      "aliases": []
+    },
+    {
+      "company_id": 79,
+      "standard_name": "F&C Co., Ltd.",
+      "jp_name": "エフアンドシー",
+      "cn_name": null,
+      "vndb_id": "p80",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "1997 年承接 IDES 品牌与员工；F=FairyTale、C=Cocktail Soft。近年品牌活动停滞（2017 年仍有官方博客），状态存疑待核实；旗下 Cocktail Soft 独立条目",
+      "aliases": [
+        "F&C",
+        "FANDC"
+      ]
+    },
+    {
+      "company_id": 80,
+      "standard_name": "Cocktail Soft",
+      "jp_name": "カクテル・ソフト",
+      "cn_name": null,
+      "vndb_id": "p126",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "F&C 旗下品牌（VNDB 别名 F&C 02）；1989 年设立，2002 年停止后 2004 年再开（维基百科沿革）",
+      "aliases": [
+        "カクテルソフト",
+        "F&C 02",
+        "Cocktail Soft"
+      ]
+    },
+    {
+      "company_id": 81,
+      "standard_name": "CandySoft",
+      "jp_name": "きゃんでぃそふと",
+      "cn_name": null,
+      "vndb_id": "p96",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "维基百科记载为 INTERHEART（本库 61 号）旗下品牌；つよきす 系列；2018-2020 年仍有新作",
+      "aliases": [
+        "キャンディーソフト",
+        "キャンディソフト",
+        "Candy Soft"
+      ]
+    },
+    {
+      "company_id": 82,
+      "standard_name": "Cherry Soft",
+      "jp_name": "ちぇりーそふと",
+      "cn_name": null,
+      "vndb_id": "p784",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "VNDB 无状态描述，状态未核实（保守标 active）",
+      "aliases": [
+        "CherrySoft"
+      ]
+    },
+    {
+      "company_id": 83,
+      "standard_name": "CROSSNET",
+      "jp_name": "クロスネット",
+      "cn_name": null,
+      "vndb_id": "p83",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "VNDB：已不复存在，分裂为 ApRicoT 与 FAVORITE（本库 13 号，p612）；网站 2009-05 起失效",
+      "aliases": [
+        "Cross net"
+      ]
+    },
+    {
+      "company_id": 84,
+      "standard_name": "bootUP!",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p173",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "合同会社ブートアップ；Aneimo 系列；GameFAQs 记录最新作 2023-12",
+      "aliases": [
+        "ブートアップ",
+        "合同会社ブートアップ"
+      ]
+    },
+    {
+      "company_id": 85,
+      "standard_name": "Akatsuki WORKS",
+      "jp_name": "暁WORKS",
+      "cn_name": null,
+      "vndb_id": "p180",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Hello,world. 等；子品牌 BLACK / -響- 不并入本条",
+      "aliases": [
+        "晓WORKS",
+        "Akatsuki Works"
+      ]
+    },
+    {
+      "company_id": 86,
+      "standard_name": "Aries",
+      "jp_name": "アリエス",
+      "cn_name": null,
+      "vndb_id": "p733",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "与 CIRCUS 的 Aries 品牌无关（VNDB 注明），注意与 Alice Soft 区分",
+      "aliases": [
+        "Aries software creation"
+      ]
+    },
+    {
+      "company_id": 87,
+      "standard_name": "Astronauts",
+      "jp_name": "アストロノーツ",
+      "cn_name": null,
+      "vndb_id": "p2692",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "俗称太空人社（VNDB aliases）；子品牌 Sirius/Spica/Alya/Comet 不并入（Sirius 同用「太空人社」俗称，为避免归一化键冲突只收主条目）",
+      "aliases": [
+        "太空人社"
+      ]
+    },
+    {
+      "company_id": 88,
+      "standard_name": "PeasSoft",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p325",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": null,
+      "aliases": [
+        "ピースソフト"
+      ]
+    },
+    {
+      "company_id": 89,
+      "standard_name": "RococoWorks",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p457",
+      "status": "discontinued",
+      "successor_company_id": null,
+      "comment": "Tarte 破产后由其员工成立；2011-12 解散（VNDB description）",
+      "aliases": [
+        "Rococo Works"
+      ]
+    },
+    {
+      "company_id": 90,
+      "standard_name": "rootnuko+H",
+      "jp_name": "rootnuko＋Ｈ",
+      "cn_name": null,
+      "vndb_id": "p2771",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "全年龄主品牌 rootnuko（p1018）不并入本条",
+      "aliases": [
+        "√nuko+H",
+        "root nuko+H"
+      ]
+    },
+    {
+      "company_id": 91,
+      "standard_name": "Rosebleu",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p518",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "由原 Navel 员工创立的品牌（VNDB description）",
+      "aliases": [
+        "ロゼブル"
+      ]
+    },
+    {
+      "company_id": 92,
+      "standard_name": "SILKY'S",
+      "jp_name": "シルキーズ",
+      "cn_name": null,
+      "vndb_id": "p254",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "elf 系品牌；SILKY'S PLUS 独立条目",
+      "aliases": []
+    },
+    {
+      "company_id": 93,
+      "standard_name": "SILKY'S PLUS",
+      "jp_name": "シルキーズプラス",
+      "cn_name": null,
+      "vndb_id": "p4449",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "9 -nine- 系列；俗称シルプラ（VNDB aliases）",
+      "aliases": [
+        "シルプラ"
+      ]
+    },
+    {
+      "company_id": 94,
+      "standard_name": "Silver Bullet",
+      "jp_name": null,
+      "cn_name": null,
+      "vndb_id": "p330",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "俗称银弹社（VNDB aliases）；暁の護衛 系列",
+      "aliases": [
+        "银弹社",
+        "シルバーバレット"
+      ]
+    },
+    {
+      "company_id": 95,
+      "standard_name": "SofthouseChara",
+      "jp_name": "ソフトハウスキャラ",
+      "cn_name": null,
+      "vndb_id": "p211",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "中文俗称直接采自 VNDB aliases（软屋社/软房社/伽羅社等）",
+      "aliases": [
+        "Softhouse Chara",
+        "shchara",
+        "软屋社",
+        "软房社",
+        "软房子",
+        "伽羅社"
+      ]
+    },
+    {
+      "company_id": 96,
+      "standard_name": "Windmill",
+      "jp_name": "ういんどみる",
+      "cn_name": null,
+      "vndb_id": "p221",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "俗称风车社；子品牌 Oasis 独立条目",
+      "aliases": [
+        "风车社"
+      ]
+    },
+    {
+      "company_id": 97,
+      "standard_name": "Windmill Oasis",
+      "jp_name": "ういんどみる Oasis",
+      "cn_name": null,
+      "vndb_id": "p2316",
+      "status": "active",
+      "successor_company_id": null,
+      "comment": "Windmill 旗下品牌",
+      "aliases": [
+        "Windmill Oasis"
+      ]
+    }
+  ]
+}

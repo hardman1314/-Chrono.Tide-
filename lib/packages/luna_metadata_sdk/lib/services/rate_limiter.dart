@@ -103,6 +103,21 @@ class RateLimiter {
           maxInWindow: 60,
           windowDuration: const Duration(seconds: 60),
         );
+      case SourceType.nextmoe:
+        // NextMoe free 档官方限额 60 次/分（超限 429 + Retry-After）。
+        // 每游戏消耗 2 次（搜索+详情），预留安全余量取 55/分
+        return RateLimiter(
+          minInterval: const Duration(milliseconds: 1100),
+          maxInWindow: 55,
+          windowDuration: const Duration(seconds: 60),
+        );
+      case SourceType.ct:
+        // CT 探索库：自建 PocketBase（京东云），资源自有，限流宽松
+        return RateLimiter(
+          minInterval: const Duration(milliseconds: 200),
+          maxInWindow: 100,
+          windowDuration: const Duration(seconds: 60),
+        );
       default:
         return RateLimiter(
           minInterval: const Duration(milliseconds: 500),

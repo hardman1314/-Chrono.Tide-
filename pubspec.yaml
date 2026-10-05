@@ -1,7 +1,7 @@
 name: chrono_tide
 description: "Chrono Tide - Galgame Manager"
 publish_to: 'none'
-version: 1.7.0
+version: 3.0.0
 
 environment:
   sdk: ^3.5.3
@@ -9,7 +9,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  cupertino_icons: ^1.0.8
   window_manager: ^0.4.3
   flutter_svg: ^2.0.10
   pocketbase: ^0.23.2
@@ -30,8 +29,13 @@ dependencies:
   fl_chart: ^0.69.0
   archive: ^3.6.1
   ffi: ^2.1.2
+  # .enc 解密（S.S.E. File Encryptor v4）：AES/Serpent/Twofish/Blowfish/Skein/SHA3/Argon2id/HKDF
+  pointycastle: ^3.9.1
+  onnxruntime: ^1.4.1
   luna_metadata_sdk:
     path: lib/packages/luna_metadata_sdk
+  video_player: ^2.9.5
+  video_player_win: ^3.3.0
 
 dependency_overrides:
   uuid: ^4.4.2
@@ -47,23 +51,35 @@ flutter:
   assets:
     - assets/images/
     - assets/images/themes/
-    - assets/images/batch_import/
     - assets/images/app_icon.ico
-    - assets/tools/rar_lz4_unzip.exe
     - assets/tools/bz.exe
     - assets/tools/UnRAR.exe
-    - assets/tools/Rar.exe
     - assets/tools/ark.x64.dll
     - assets/tools/ark.x64.lgpl.dll
     - assets/tools/bdzshl.x64.dll
     - assets/magpie/scaling_modes_template.json
-    - assets/data/vndb_tags_zh_cn.json
-    - assets/data/manifest.yaml
+    # 会社归一化别名词典（features/company_alias_normalization.md §3）
+    - assets/data/company_aliases.json
+    # 分类匣·标签受控词表（维度注册表 + 概念/别名；features/category_box.md）
+    - assets/data/tag_dimensions.json
+    - assets/data/tag_vocabulary.json
+    - assets/data/manifest.yaml.gz
+    - assets/models/anime_dbrating_mv3_v0.onnx
+    - assets/bpm_import/mode_single.png
+    - assets/bpm_import/mode_batch.png
 
+  # 字体声明（2026-09-08 三字体分工策略 → 2026-09-08 v2 改用得意黑）
+  # F1 得意黑 (Smiley Sans) - 中文装饰大标题（24-38px），几何装饰/重笔画，OFL
+  # F2 Outfit - 英文/数字装饰，Outfit（OFL）
+  # F3 Noto Sans SC - UI 功能字体（11-16px），Noto Sans SC（OFL，Adobe+Google 联合）
+  # 全部字体经 fonttools 子集化，子集内含项目扫描字符 + GB2312 一级常用字表（3755 字，字频序）
   fonts:
-    - family: ZhiMangXing
+    - family: SmileySans
       fonts:
-        - asset: assets/fonts/钟齐志莽行书.ttf
-    - family: Mali
+        - asset: assets/fonts/SmileySans.ttf
+    - family: Outfit
       fonts:
-        - asset: assets/fonts/Mali-Regular.ttf
+        - asset: assets/fonts/Outfit.ttf
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC.ttf

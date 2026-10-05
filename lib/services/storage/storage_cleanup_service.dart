@@ -7,6 +7,7 @@ import '../../core/path_helper.dart';
 import '../../core/portable_image_cache_manager.dart';
 import '../discover_metadata_service.dart';
 import '../metadata_fetcher.dart';
+import '../download_core.dart';
 import 'cleanup_utils.dart';
 import 'log_rotation_service.dart';
 
@@ -418,7 +419,14 @@ class StorageCleanupService {
                 name.endsWith('.rar') ||
                 name.endsWith('.7z') ||
                 name.endsWith('.tar');
-            if (!isArchive) continue;
+            // ★ 2026-09-26 安装审计 P2-2：分片断点残留（.part_*.tmp）此前
+            // 完全无人管理——原注释「由下载流程管理」只覆盖正常取消路径，
+            // 强杀/断电后永久占空间且用户不可见。仅当**无活跃下载**时纳入
+            // 清理：有任务在跑时 .tmp 正被写入，动了就是竞态。
+            final isPartChunk =
+                name.contains('.part_') && name.endsWith('.tmp');
+            final canCleanChunk = isPartChunk && !DownloadCore.hasActiveTask;
+            if (!isArchive && !canCleanChunk) continue;
             final size = await entity.length();
             final ok = await CleanupUtils.deleteWithRetry(
               entity, retries: 1, reason: 'clearDownloadArchives',
@@ -471,10 +479,14 @@ class StorageCleanupService {
       await for (final entity in dlDir.list(followLinks: false)) {
         if (entity is File) {
           final name = entity.path.toLowerCase();
-          if (name.endsWith('.zip') ||
+          final isArchive = name.endsWith('.zip') ||
               name.endsWith('.rar') ||
               name.endsWith('.7z') ||
-              name.endsWith('.tar')) {
+              name.endsWith('.tar');
+          // ★ 2026-09-26 P2-2：统计口径与清理一致（无活跃下载时才计入分片残留）
+          final isPartChunk =
+              name.contains('.part_') && name.endsWith('.tmp');
+          if (isArchive || (isPartChunk && !DownloadCore.hasActiveTask)) {
             try {
               size += await entity.length();
             } catch (_) {}

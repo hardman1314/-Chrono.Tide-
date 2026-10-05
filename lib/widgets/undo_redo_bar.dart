@@ -137,7 +137,6 @@ class UndoRedoBar extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 color: color,
@@ -238,7 +237,6 @@ class ImpactHint extends StatelessWidget {
                 Text(
                   '此修改将会影响',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
                     color: AppColors.infoBlue,
@@ -253,7 +251,6 @@ class ImpactHint extends StatelessWidget {
                   child: Text(
                     '· $loc',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 10,
                       color: AppColors.secondaryText,
                     ),
@@ -273,7 +270,6 @@ class ImpactHint extends StatelessWidget {
                       child: Text(
                         '连锁影响（共享令牌，${chained.length} 个元素联动）',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                           color: AppColors.selectedAccent,
@@ -295,7 +291,6 @@ class ImpactHint extends StatelessWidget {
                       Text(
                         '· ${c.displayName}（共享: ${c.sharedTokens.join(", ")}）',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                           color: AppColors.secondaryText,
@@ -306,7 +301,6 @@ class ImpactHint extends StatelessWidget {
                             child: Text(
                               '↳ $loc',
                               style: TextStyle(
-                                fontFamily: 'Inter',
                                 fontSize: 9,
                                 color: AppColors.secondaryText,
                               ),
@@ -318,7 +312,6 @@ class ImpactHint extends StatelessWidget {
                           child: Text(
                             '↳ +$remaining 处其他位置',
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 9,
                               fontStyle: FontStyle.italic,
                               color: AppColors.placeholderText,

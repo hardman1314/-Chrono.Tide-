@@ -225,6 +225,18 @@ class BangumiMirrorService implements MetadataSourceService {
     String name = safeString(json, 'name_cn') ?? '';
     if (name.isEmpty) name = safeString(json, 'name') ?? '';
 
+    // 原版标题（日文）：主名称为中文译名时，name 字段即原版标题
+    // 仅在含 CJK 字符时采用（排除纯英文标题）
+    String? originalTitle;
+    final nameCn = safeString(json, 'name_cn') ?? '';
+    final rawName = safeString(json, 'name') ?? '';
+    if (nameCn.isNotEmpty &&
+        rawName.isNotEmpty &&
+        rawName != nameCn &&
+        _containsCjk(rawName)) {
+      originalTitle = rawName;
+    }
+
     // 提取评分
     final ratingData = safeMap(json, 'rating') ?? {};
     final rating = normalizeRating(safeDouble(ratingData, 'score') ?? 0.0);
@@ -236,6 +248,7 @@ class BangumiMirrorService implements MetadataSourceService {
       game: Game(
         id: safeString(json, 'id') ?? '',
         name: name,
+        originalTitle: originalTitle,
         coverUrl: coverUrl.isNotEmpty ? coverUrl : null,
         company: _extractCompany(safeList(json, 'infobox')),
         summary: safeString(json, 'summary'),
@@ -247,6 +260,12 @@ class BangumiMirrorService implements MetadataSourceService {
       tags: tags,
     );
   }
+
+  /// 判断文本是否含 CJK 字符（用于过滤纯英文标题）
+  static final RegExp _cjkRegExp =
+      RegExp(r'[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]');
+
+  static bool _containsCjk(String text) => _cjkRegExp.hasMatch(text);
 
   String? _extractCompany(dynamic infobox) {
     if (infobox is! List) return null;

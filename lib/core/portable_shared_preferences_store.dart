@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert' show json;
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 import 'package:shared_preferences_platform_interface/types.dart';
 
@@ -32,6 +32,20 @@ class PortableSharedPreferencesStore extends SharedPreferencesStorePlatform {
 
   PortableSharedPreferencesStore(this._file);
 
+  /// 测试可见的写盘次数（用于断言写入合并）
+  @visibleForTesting
+  static int debugWriteCount = 0;
+
+  /// 待写入 Future（同一事件循环内的多次 set* 合并为一次编码 + 写盘）
+  Future<bool>? _pendingWrite;
+
+  /// 等待当前挂起的写入完成（应用退出 / 测试用）
+  Future<bool> flushPending() async {
+    final pending = _pendingWrite;
+    if (pending != null) return pending;
+    return true;
+  }
+
   /// 从磁盘加载偏好（首次访问时触发，结果缓存）。
   /// 文件不存在或解析失败时返回空 Map，不抛错（保证应用可启动）。
   Future<Map<String, Object>> _ensureLoaded() async {
@@ -60,23 +74,65 @@ class PortableSharedPreferencesStore extends SharedPreferencesStorePlatform {
     return result;
   }
 
-  /// 事务性写入：先写 .tmp 再 rename 覆盖目标，防止崩溃截断。
-  Future<bool> _save() async {
+  /// 事务性写入（★ P0-3 改造，2026-09-16 稳定性审计）：
+  ///
+  /// ① **同轮合并**：`_flush` 先让出一次事件循环再编码，因此同一轮同步代码里的
+  ///    多次 `set*` 只产生**一次** `json.encode` + 一次写盘（旧实现是每次 set*
+  ///    都全量编码整份 prefs 并同步写盘 —— 导入时"其他功能也卡"的共性根因）。
+  /// ② **异步落盘**：改 `writeAsStringSync` 为 `await writeAsString(flush: true)`，
+  ///    不在 UI isolate 上阻塞。
+  /// ③ **串行化**：同一时刻最多一个写盘，避免两次写同一个 `.tmp` 竞争。
+  ///
+  /// 语义保持：`await setXxx()` 返回后本轮变更已落盘（除非写失败）。
+  Future<bool> _save() {
+    final pending = _pendingWrite;
+    if (pending != null) return pending;
+    final future = _flush();
+    _pendingWrite = future;
+    return future;
+  }
+
+  Future<bool>? _inFlight;
+
+  Future<bool> _flush() async {
+    // 让出一次事件循环：收集本轮全部同步变更后再统一编码
+    await Future<void>.delayed(Duration.zero);
     final data = _data;
-    if (data == null) return false;
+    if (data == null) {
+      _pendingWrite = null;
+      return false;
+    }
+    final String encoded = json.encode(data);
+    // 开闸：本次编码之后的变更另起一次写盘（不丢更新）
+    _pendingWrite = null;
+    return _writeSerialized(encoded);
+  }
+
+  Future<bool> _writeSerialized(String encoded) async {
+    while (_inFlight != null) {
+      try {
+        await _inFlight;
+      } catch (_) {}
+    }
+    final completer = Completer<bool>();
+    _inFlight = completer.future;
     try {
       if (!_file.parent.existsSync()) {
-        _file.parent.createSync(recursive: true);
+        await _file.parent.create(recursive: true);
       }
-      final String encoded = json.encode(data);
       final File tmp = File('${_file.path}.tmp');
-      tmp.writeAsStringSync(encoded, flush: true);
+      await tmp.writeAsString(encoded, flush: true);
       // Windows 上 rename 会覆盖已存在目标
       await tmp.rename(_file.path);
+      debugWriteCount++;
+      completer.complete(true);
       return true;
     } catch (e) {
       debugPrint('[PortablePrefs] 写入偏好失败: $e');
+      completer.complete(false);
       return false;
+    } finally {
+      _inFlight = null;
     }
   }
 

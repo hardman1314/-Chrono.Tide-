@@ -9,6 +9,15 @@
 # packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    # luna_metadata_sdk 是独立的 path 依赖包（拥有自己的 pubspec.yaml），
+    # 其源码物理上位于 lib/packages/ 下，但应在自身包上下文中被解析，
+    # 而非作为主项目 lib 的一部分被分析，否则 flutter/foundation 等 URI 解析失败。
+    - lib/packages/**
+    # chrono-tide-opensource 子目录是第三方参考代码，不参与主项目分析
+    - chrono-tide-opensource/**
+
 linter:
   # The lint rules applied to this project can be customized in the
   # section below to disable rules from the `package:flutter_lints/flutter.yaml`

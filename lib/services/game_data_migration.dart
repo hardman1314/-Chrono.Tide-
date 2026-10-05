@@ -5,8 +5,6 @@ import 'game_data_format.dart';
 import '../core/path_helper.dart';
 
 class GameDataMigration {
-  static const String _migratedFlag = '.ct_migrated';
-
   static Future<int> migrateAll() async {
     debugPrint('[MIGRATION] ========== 开始数据格式迁移 ==========');
 

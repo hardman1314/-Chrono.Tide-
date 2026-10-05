@@ -5,9 +5,14 @@ import '../core/pb_config.dart';
 
 /// 集中式网络可达性服务（singleton + ChangeNotifier）。
 ///
-/// 通过直接探测 PocketBase 服务器的 `/api/health` 端点判断在线/离线状态，
+/// 通过探测 PocketBase 服务器的 `/api/health` 端点判断在线/离线状态，
 /// 而非仅判断设备是否有任意网络（connectivity_plus 无法识别 captive portal
-/// 或服务器宕机）。探针带 3s 超时。
+/// 或服务器宕机）。探针带 6s 超时。
+///
+/// ★ 2026-09-08 修复「网络正常却莫名断联」：
+/// 旧实现只探 PB 单点（小型 VPS，慢响应常见）+ 3s 超时 + 连续 2 次失败即
+/// 判离线 → 6~8 秒的服务抖动就会被当成断网，进而阻断探索页加载与登录。
+/// 现改为：服务探不通时再探公共端点，只有「服务不通 且 公网也不通」才判离线。
 ///
 /// ★ 滞回防抖（解决「瞬间离线后自动恢复」抖动）：
 /// - 离线判定需连续 [ _offlineThreshold ] 次失败，单次抖动不切状态；
@@ -35,7 +40,12 @@ class NetworkStatusService extends ChangeNotifier {
   // 当前定时器实际使用的间隔（用于判断是否需要重建定时器，避免无谓 cancel/recreate）
   Duration? _currentTimerInterval;
 
-  static const Duration _probeTimeout = Duration(seconds: 3);
+  /// 复用长连接客户端：旧实现每次探针都 http.get（内部新建再关闭 Client），
+  /// 每轮都要重新 DNS + TCP + TLS 握手，既慢又容易在慢网下超时。
+  http.Client? _client;
+  http.Client get _http => _client ??= http.Client();
+
+  static const Duration _probeTimeout = Duration(seconds: 6);
   static const Duration _onlineInterval = Duration(seconds: 60);
   static const Duration _offlineInterval = Duration(seconds: 10);
   // 在线但最近有失败：快速确认间隔（尽快确认是否真断网，避免等满 60s）
@@ -43,7 +53,17 @@ class NetworkStatusService extends ChangeNotifier {
   // checkNow 防抖：距上次探针不足此时长则直接返回当前值
   static const Duration _manualDebounce = Duration(seconds: 3);
   // 离线判定阈值：连续失败达到此次数才由在线切离线（核心防抖参数）
-  static const int _offlineThreshold = 2;
+  static const int _offlineThreshold = 3;
+
+  /// 公共连通性兜底端点：用于区分「本机断网」与「PB 服务器不可达」。
+  ///
+  /// 旧实现只探测 PocketBase 一个点，而它是一台小型 VPS（117.72.115.30:8090），
+  /// 慢响应/短暂抖动非常常见 —— 结果设备明明联网，App 却判定离线并阻断
+  /// 探索页加载与登录（discover_page / auth_service 均 gate 在 isOnline 上）。
+  static const List<String> _publicProbeUrls = <String>[
+    'https://www.gstatic.com/generate_204',
+    'https://www.baidu.com/',
+  ];
 
   /// 当前是否在线（乐观值，可能尚未完成首次探针）。
   bool get isOnline => _isOnline;
@@ -99,20 +119,47 @@ class NetworkStatusService extends ChangeNotifier {
   Future<void> _probe() async {
     if (_isProbing) return;
     _isProbing = true;
-    bool result;
+    bool online;
     try {
-      final resp = await http
-          .get(Uri.parse('${PBConfig.baseUrl}/api/health'))
-          .timeout(_probeTimeout);
-      // PocketBase /api/health 在服务正常时返回 200
-      result = resp.statusCode == 200;
-    } catch (e) {
-      // 超时、SocketException、服务器不可达等均视为失败
-      result = false;
+      // ① 先探服务本身
+      final serviceOk =
+          await _check('${PBConfig.baseUrl}/api/health', require200: true);
+      if (serviceOk) {
+        online = true;
+      } else {
+        // ② 服务不可达 ≠ 设备离线。再探公共端点区分两者：
+        //    只有「服务不可用 且 公网也不通」才判定离线。
+        online = await _checkAnyPublic();
+        debugPrint(
+            '[NET] 服务探针失败，公共连通性=${online ? "通" : "不通"} → ${online ? "判定在线（服务不可达但设备联网）" : "判定离线"}');
+      }
+    } finally {
+      _isProbing = false;
     }
-    _isProbing = false;
     _lastCheckedAt = DateTime.now();
-    _applyResult(result);
+    _applyResult(online);
+  }
+
+  /// 单次可达性探测。
+  /// [require200] 为真时要求严格 200（服务健康检查）；否则收到任何 HTTP 响应
+  /// （含 3xx/4xx）都说明链路是通的。
+  Future<bool> _check(String url, {required bool require200}) async {
+    try {
+      final resp = await _http.head(Uri.parse(url)).timeout(_probeTimeout);
+      if (require200) return resp.statusCode == 200;
+      return resp.statusCode < 500;
+    } catch (e) {
+      debugPrint('[NET] 探针失败 $url : $e');
+      return false;
+    }
+  }
+
+  /// 依次探测公共端点，任一可达即认为设备在线。
+  Future<bool> _checkAnyPublic() async {
+    for (final url in _publicProbeUrls) {
+      if (await _check(url, require200: false)) return true;
+    }
+    return false;
   }
 
   /// 应用探针结果，带滞回防抖。
@@ -159,6 +206,8 @@ class NetworkStatusService extends ChangeNotifier {
   @override
   void dispose() {
     _timer?.cancel();
+    _client?.close();
+    _client = null;
     super.dispose();
   }
 }

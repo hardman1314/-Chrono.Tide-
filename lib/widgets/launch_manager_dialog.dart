@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
 import '../services/locale_service.dart';
 import '../services/magpie_service.dart';
 import '../services/shortcut_service.dart';
@@ -9,6 +10,7 @@ import '../services/game_data_format.dart';
 import '../services/exe_scanner.dart';
 import 'interactive_wrapper.dart';
 import 'app_dialog.dart';
+import 'app_snack_bar.dart';
 
 /// 启动管理对话框
 ///
@@ -89,8 +91,8 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
   // 快捷方式相关
   bool _hasShortcut = false;
   bool _isProcessingShortcut = false;
-  // 首次启动自动生成快捷方式（默认开启，与 game.json auto_create_shortcut 字段绑定）
-  bool _autoCreateShortcut = true;
+  // （2026-09-27 起「首次启动自动生成」开关已迁至设置窗口的全局偏好，
+  //   本弹窗不再持有该状态，见 lib/services/auto_shortcut_preference.dart）
 
   // 图标设置
   IconSource _iconSource = IconSource.exeDefault;
@@ -125,8 +127,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
     final jsonData = await GameDataFormat.readGameJson(widget.metaDataDir);
     final customIconPath = jsonData?.customIconPath ?? '';
     final storedShortcutPath = jsonData?.shortcutPath ?? '';
-    // 读取"首次启动自动生成"选项（默认 true，与 game.json 字段绑定）
-    final autoCreateShortcut = jsonData?.autoCreateShortcut ?? true;
 
     // ★ 一致性修复：.lnk 不存在但 shortcut_path 非空 → 清空 shortcut_path
     // 触发场景：用户从文件资源管理器手动删除 .lnk，此时 game.json 字段已陈旧
@@ -144,7 +144,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
     if (mounted) {
       setState(() {
         _hasShortcut = hasShortcut;
-        _autoCreateShortcut = autoCreateShortcut;
         _iconSource = (hasCustomIcon || customIconPath.isNotEmpty)
             ? IconSource.coverCustom
             : IconSource.exeDefault;
@@ -207,7 +206,7 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
         height: 640,
         decoration: BoxDecoration(
           color: AppColors.background,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(AppRadius.xl),
           border: Border.all(color: AppColors.border, width: 1.5),
           boxShadow: [
             BoxShadow(
@@ -258,14 +257,12 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
           const SizedBox(width: 10),
           Text('启动管理',
               style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryText)),
           const SizedBox(width: 8),
           Text('· ${widget.gameTitle}',
               style: TextStyle(
-                  fontFamily: 'Mali',
                   fontSize: 13,
                   color: AppColors.secondaryText)),
           const Spacer(),
@@ -317,11 +314,10 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
   Widget _buildSearchBar() {
     return TextField(
       onChanged: (v) => setState(() => _searchQuery = v),
-      style: const TextStyle(fontFamily: 'Inter', fontSize: 13),
+      style: const TextStyle(fontSize: 13),
       decoration: InputDecoration(
         hintText: '搜索程序名...',
         hintStyle: TextStyle(
-            fontFamily: 'Inter',
             fontSize: 13,
             color: AppColors.placeholderText),
         prefixIcon:
@@ -385,14 +381,12 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
                 children: [
                   Text(fileName,
                       style: TextStyle(
-                          fontFamily: 'Mali',
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                           color: AppColors.primaryText)),
                   const SizedBox(height: 2),
                   Text(relativePath,
                       style: TextStyle(
-                          fontFamily: 'Mali',
                           fontSize: 11.5,
                           color: AppColors.secondaryText)),
                 ],
@@ -419,7 +413,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
             const SizedBox(height: 8),
             Text('未找到可执行文件',
                 style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 13,
                     color: AppColors.secondaryText)),
           ],
@@ -497,7 +490,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
               children: [
                 Text(title,
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: AppColors.primaryText,
@@ -505,7 +497,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
                 if (subtitle != null)
                   Text(subtitle,
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 11.5,
                           color: subtitleColor ?? AppColors.secondaryText)),
               ],
@@ -536,35 +527,10 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
             trailingColor: _hasShortcut ? AppColors.successGreen : null,
           ),
           const SizedBox(height: 8),
-          // ★ 首次启动自动生成开关（默认勾选，与 game.json auto_create_shortcut 字段绑定）
-          // 只有勾选时，首次启动游戏才会自动生成桌面快捷方式
-          _buildToggleRow(
-            icon: Icons.auto_awesome_rounded,
-            iconColor:
-                _autoCreateShortcut ? AppColors.primaryText : null,
-            title: '首次启动自动生成',
-            subtitle: _autoCreateShortcut
-                ? '首次启动游戏时自动创建桌面快捷方式'
-                : '已关闭，需手动生成桌面快捷方式',
-            value: _autoCreateShortcut,
-            activeColor: AppColors.primaryText,
-            onChanged: (value) async {
-              setState(() => _autoCreateShortcut = value);
-              try {
-                await GameDataFormat.updateGameJson(widget.metaDataDir, {
-                  'auto_create_shortcut': value,
-                });
-              } catch (e) {
-                debugPrint('[SHORTCUT] 保存 auto_create_shortcut 异常: $e');
-              }
-            },
-          ),
-          const SizedBox(height: 6),
           // 图标设置
           if (_hasShortcut || _selectedFile != null) ...[
             Text('图标设置',
                 style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: AppColors.secondaryText)),
@@ -672,13 +638,11 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
                 children: [
                   Text(title,
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 12.5,
                           fontWeight: FontWeight.w600,
                           color: AppColors.primaryText)),
                   Text(subtitle,
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 11,
                           color: AppColors.secondaryText)),
                 ],
@@ -710,11 +674,11 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
           outputPath: customIconPath,
         );
         if (!success) {
-          _showSnackBar('封面图标转换失败，将使用程序默认图标');
+          _showSnackBar('封面图标转换失败，将使用程序默认图标', level: NoticeLevel.warning);
           customIconPath = null;
         }
       } else {
-        _showSnackBar('未找到封面图片，将使用程序默认图标');
+        _showSnackBar('未找到封面图片，将使用程序默认图标', level: NoticeLevel.warning);
       }
     } else {
       // 使用程序图标，删除已有的自定义图标
@@ -739,7 +703,7 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
 
   Future<void> _handleCreateShortcut() async {
     if (_currentExePath.isEmpty) {
-      _showSnackBar('请先选择启动程序');
+      _showSnackBar('请先选择启动程序', level: NoticeLevel.warning);
       return;
     }
 
@@ -751,12 +715,12 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
         setState(() {
           _hasShortcut = true;
         });
-        _showSnackBar('桌面快捷方式已生成');
+        _showSnackBar('桌面快捷方式已生成', level: NoticeLevel.success);
       } else {
-        _showSnackBar('快捷方式创建失败');
+        _showSnackBar('快捷方式创建失败', level: NoticeLevel.error);
       }
     } catch (e) {
-      _showSnackBar('操作失败: $e');
+      _showSnackBar('操作失败: $e', level: NoticeLevel.error);
     } finally {
       if (mounted) setState(() => _isProcessingShortcut = false);
     }
@@ -780,12 +744,12 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
           _hasShortcut = false;
           _iconSource = IconSource.exeDefault;
         });
-        _showSnackBar('桌面快捷方式已删除');
+        _showSnackBar('桌面快捷方式已删除', level: NoticeLevel.success);
       } else {
-        _showSnackBar('未找到快捷方式');
+        _showSnackBar('未找到快捷方式', level: NoticeLevel.warning);
       }
     } catch (e) {
-      _showSnackBar('操作失败: $e');
+      _showSnackBar('操作失败: $e', level: NoticeLevel.error);
     } finally {
       if (mounted) setState(() => _isProcessingShortcut = false);
     }
@@ -805,7 +769,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
         const SizedBox(width: 6),
         Text(title,
             style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
                 color: AppColors.primaryText)),
@@ -813,7 +776,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
         if (trailing != null)
           Text(trailing,
               style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   color: trailingColor ?? AppColors.secondaryText)),
       ],
@@ -867,7 +829,6 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
             const SizedBox(width: 6),
             Text(label,
                 style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                     color: textColor)),
@@ -941,12 +902,12 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
       try {
         final success = await _applyShortcut();
         if (success) {
-          _showSnackBar('桌面快捷方式已自动同步更新');
+          _showSnackBar('桌面快捷方式已自动同步更新', level: NoticeLevel.success);
         } else {
-          _showSnackBar('快捷方式同步失败，请手动点击"重新生成"');
+          _showSnackBar('快捷方式同步失败，请手动点击"重新生成"', level: NoticeLevel.error);
         }
       } catch (e) {
-        _showSnackBar('快捷方式同步失败: $e');
+        _showSnackBar('快捷方式同步失败: $e', level: NoticeLevel.error);
       } finally {
         if (mounted) setState(() => _isProcessingShortcut = false);
       }
@@ -955,14 +916,9 @@ class _LaunchManagerDialogState extends State<LaunchManagerDialog> {
     if (mounted) Navigator.of(context).pop();
   }
 
-  void _showSnackBar(String message) {
+  void _showSnackBar(String message, {NoticeLevel level = NoticeLevel.info}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    AppSnackBar.show(context, level, message);
   }
 }
 

@@ -102,7 +102,14 @@ class AnimatedOverlayState extends State<AnimatedOverlay>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
+    // 🔴 兜底：本组件挂在 Overlay 上、且自身不提供 Material 祖先。
+    // 缺 Material 时，子树上任何未显式写 style 的 Text 会继承 MaterialApp 的
+    // 全局兜底 DefaultTextStyle —— 即框架内部 _errorTextStyle
+    // （flutter/packages/flutter/lib/src/material/app.dart:33，
+    //   decorationColor: 0xFFFFFF00 + decorationStyle: double ⇒ 纯黄双下划线）。
+    // 透明 Material 只兜底文本样式，不绘制背景、不影响布局。
+    // 详见 docs/DEV/features/explore_resource_sources_plan.md §8.5。
+    final content = AnimatedBuilder(
       animation: _controller,
       builder: (context, child) {
         return Stack(
@@ -161,5 +168,7 @@ class AnimatedOverlayState extends State<AnimatedOverlay>
       },
       child: widget.child,
     );
+    // 透明 Material 兜底子树文本样式（理由见方法头注释）
+    return Material(type: MaterialType.transparency, child: content);
   }
 }

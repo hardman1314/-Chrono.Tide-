@@ -1,28 +1,29 @@
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
 
-/// 字体使用策略（修复 BUG-02）：
-/// - [uiFontFamily]（Inter）：用于所有 UI 正文、功能性文字、输入提示、导航激活态等
-/// - [zhDecorativeFont]（ZhiMangXing）：书法体，仅限装饰性大标题使用（如页面标题）
-/// - [enDecorativeFont]（Mali）：手写体，仅限装饰性英文/数字标题使用（如百分比数字）
-/// 禁止将装饰字体用于功能性文字，否则严重影响可读性
+/// 字体策略（2026-09-08 三字体分工 → 2026-09-08 v2 改用得意黑）：
+/// - F1 [zhDecorativeFont] 得意黑 (Smiley Sans)：中文装饰大标题（24-38px），几何装饰/重笔画
+/// - F2 [enDecorativeFont] Outfit：英文/数字装饰，跨字号稳定
+/// - F3 [uiFontFamily] Noto Sans SC：UI 功能字体（11-16px 按钮/标签/正文）
+/// - 全部经 fonttools 子集化（项目扫描字符 + GB2312 一级常用字表 3755 字，覆盖动态游戏标题避免回退）
+/// - pubspec.yaml fonts 段对应声明 SmileySans / Outfit / NotoSansSC
 class AppStyles {
   AppStyles._();
 
-  /// UI 正文字体，适用于所有功能性文字
-  static const String uiFontFamily = 'Inter';
+  /// F3 · UI 功能字体（Noto Sans SC）
+  static const String? uiFontFamily = 'NotoSansSC';
 
-  /// 中文装饰字体（书法体），仅用于装饰性大标题
-  static const String zhDecorativeFont = 'ZhiMangXing';
+  /// F1 · 中文装饰大标题字体（得意黑 Smiley Sans）
+  static const String? zhDecorativeFont = 'SmileySans';
 
-  /// 英文装饰字体（手写体），仅用于装饰性英文/数字标题
-  static const String enDecorativeFont = 'Mali';
+  /// F2 · 英文/数字装饰字体（Outfit）
+  static const String? enDecorativeFont = 'Outfit';
 
   // === 向后兼容别名（保留旧调用，避免破坏现有代码） ===
-  static const String zhFontFamily = zhDecorativeFont;
-  static const String enFontFamily = enDecorativeFont;
+  static const String? zhFontFamily = zhDecorativeFont;
+  static const String? enFontFamily = enDecorativeFont;
 
-  // === 装饰性标题样式（仅用于页面大标题） ===
+  // === 装饰性标题样式（F1 得意黑） ===
 
   static TextStyle get titleLarge => TextStyle(
         fontFamily: zhDecorativeFont,
@@ -42,8 +43,7 @@ class AppStyles {
         color: AppColors.primaryText,
       );
 
-  // === UI 功能性文字样式（使用 Inter 字体，修复 BUG-02） ===
-  // 原 navActive/navInactive/inputPlaceholder 使用装饰字体，已修正为 UI 字体
+  // === UI 功能性文字样式（F3 Noto Sans SC） ===
 
   static TextStyle get navActive => TextStyle(
         fontFamily: uiFontFamily,
@@ -98,7 +98,7 @@ class AppStyles {
   // === 补全 MD3 标准字体排版层级（修复 UX-02） ===
   // 完整覆盖 MD3 五大层级：display / headline / title / body / label
 
-  // --- Display 层级（装饰性大标题，使用书法体） ---
+  // --- Display 层级（F1 得意黑） ---
 
   static TextStyle get displayLarge => TextStyle(
         fontFamily: zhDecorativeFont,
@@ -127,7 +127,7 @@ class AppStyles {
         color: AppColors.primaryText,
       );
 
-  // --- Headline 层级（区域标题，使用书法体） ---
+  // --- Headline 层级（F1 得意黑） ---
 
   static TextStyle get headlineLarge => TextStyle(
         fontFamily: zhDecorativeFont,
@@ -156,7 +156,7 @@ class AppStyles {
         color: AppColors.primaryText,
       );
 
-  // --- Title 层级（功能性标题/导航，使用 UI 字体） ---
+  // --- Title 层级（F3 Noto Sans SC） ---
 
   static TextStyle get titleMedium => TextStyle(
         fontFamily: uiFontFamily,
@@ -176,7 +176,7 @@ class AppStyles {
         color: AppColors.primaryText,
       );
 
-  // --- Body 层级（正文内容，使用 UI 字体） ---
+  // --- Body 层级（F3 Noto Sans SC） ---
 
   static TextStyle get bodyLarge => TextStyle(
         fontFamily: uiFontFamily,
@@ -202,7 +202,7 @@ class AppStyles {
         color: AppColors.secondaryText,
       );
 
-  // --- Label 层级（按钮/标签/辅助信息，使用 UI 字体） ---
+  // --- Label 层级（F3 Noto Sans SC） ---
 
   static TextStyle get labelLarge => TextStyle(
         fontFamily: uiFontFamily,
@@ -239,10 +239,10 @@ class AppStyles {
         color: AppColors.secondaryText,
       );
 
-  // === 便捷别名（UX-02: 覆盖代码中高频使用的中间字号） ===
+  // === 便捷别名（UX-02: 覆盖代码中高频使用的中间字号，F3 Noto Sans SC） ===
 
   /// 对话框/设置页正文（fontSize 15）—— 介于 bodyMedium(14) 和 bodyLarge(16) 之间
-  /// 用于替代大量内联 `TextStyle(fontFamily: 'Inter', fontSize: 15)`
+  /// 用于替代大量内联 `TextStyle(fontSize: 15)`
   static TextStyle get dialogBody => TextStyle(
         fontFamily: uiFontFamily,
         fontSize: 15,
@@ -252,7 +252,7 @@ class AppStyles {
       );
 
   /// 辅助说明文字（fontSize 13）—— 介于 bodySmall(12) 和 bodyMedium(14) 之间
-  /// 用于替代大量内联 `TextStyle(fontFamily: 'Inter', fontSize: 13)`
+  /// 用于替代大量内联 `TextStyle(fontSize: 13)`
   static TextStyle get hintRegular => TextStyle(
         fontFamily: uiFontFamily,
         fontSize: 13,
@@ -270,7 +270,7 @@ class AppStyles {
         color: AppColors.secondaryText,
       );
 
-  /// 装饰性数字字体（仅用于百分比、统计数字等装饰场景）
+  /// 装饰性数字字体（F2 Outfit）—— 用于时间统计、版本号、装饰数字
   static TextStyle get decorativeNumber => TextStyle(
         fontFamily: enDecorativeFont,
         fontSize: 20,

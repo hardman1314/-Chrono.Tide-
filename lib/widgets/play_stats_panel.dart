@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
 import '../services/local_game_registry.dart';
 import '../services/game_data_format.dart';
 import '../services/stats_aggregator.dart';
@@ -344,7 +345,7 @@ class _PlayStatsPanelState extends State<PlayStatsPanel> {
         color: Colors.transparent,
         child: InkWell(
           onTap: () => setState(() => _expanded = true),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(AppRadius.md),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(

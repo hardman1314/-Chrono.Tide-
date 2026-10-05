@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
 import 'interactive_wrapper.dart';
 
 enum PaymentMode { select, qr }
@@ -46,6 +47,7 @@ class _PaymentModalState extends State<PaymentModal> {
       decoration: BoxDecoration(
         color: AppColors.sidebarBackground,
         border: Border.all(color: AppColors.border, width: 1.6),
+        borderRadius: BorderRadius.circular(AppRadius.xl),
         boxShadow: [
           BoxShadow(
             color: AppColors.border,
@@ -54,7 +56,7 @@ class _PaymentModalState extends State<PaymentModal> {
           ),
         ],
       ),
-      clipBehavior: Clip.hardEdge,
+      clipBehavior: Clip.antiAlias,
       child: Stack(
         children: [
           Padding(
@@ -93,7 +95,6 @@ class _PaymentModalState extends State<PaymentModal> {
         Text(
           '选择赞赏金额',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w700,
             fontSize: 26,
             height: 32 / 26,
@@ -111,7 +112,6 @@ class _PaymentModalState extends State<PaymentModal> {
         '你的支持是对纯爱世界最大的鼓励！(๑•̀ㅂ•́)و✧',
         textAlign: TextAlign.center,
         style: TextStyle(
-          fontFamily: 'Inter',
           fontSize: 16,
           height: 24 / 16,
           color: AppColors.primaryText,
@@ -153,7 +153,6 @@ class _PaymentModalState extends State<PaymentModal> {
               child: Text(
                 '¥$amount',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 20,
                   height: 28 / 20,
@@ -195,7 +194,6 @@ class _PaymentModalState extends State<PaymentModal> {
             Text(
               '确认赞赏 (¥$_selectedAmount)',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w700,
                 fontSize: 18,
                 height: 28 / 18,
@@ -215,6 +213,7 @@ class _PaymentModalState extends State<PaymentModal> {
       decoration: BoxDecoration(
         color: AppColors.sidebarBackground,
         border: Border.all(color: AppColors.border, width: 1.6),
+        borderRadius: BorderRadius.circular(AppRadius.xl),
         boxShadow: [
           BoxShadow(
             color: AppColors.border,
@@ -223,7 +222,7 @@ class _PaymentModalState extends State<PaymentModal> {
           ),
         ],
       ),
-      clipBehavior: Clip.hardEdge,
+      clipBehavior: Clip.antiAlias,
       child: Stack(
         children: [
           Padding(
@@ -270,7 +269,6 @@ class _PaymentModalState extends State<PaymentModal> {
         Text(
           '感谢你的支持',
           style: TextStyle(
-            fontFamily: 'ZhiMangXing',
             fontSize: 36,
             height: 40 / 36,
             letterSpacing: 2.0,
@@ -294,7 +292,6 @@ class _PaymentModalState extends State<PaymentModal> {
         Text(
           '本次赞赏金额',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w600,
             fontSize: 16,
             height: 24 / 16,
@@ -305,7 +302,6 @@ class _PaymentModalState extends State<PaymentModal> {
         Text(
           '¥$_selectedAmount',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w800,
             fontSize: 36,
             height: 44 / 36,
@@ -348,7 +344,6 @@ class _PaymentModalState extends State<PaymentModal> {
                 child: Text(
                   '图片加载失败',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 14,
                     color: AppColors.secondaryText,
                   ),
@@ -369,7 +364,6 @@ class _PaymentModalState extends State<PaymentModal> {
         '请用微信扫码，手动输入 ¥$_selectedAmount 完成赞赏',
         textAlign: TextAlign.center,
         style: TextStyle(
-          fontFamily: 'Inter',
           fontSize: 14,
           height: 20 / 14,
           color: AppColors.secondaryText,

@@ -47,7 +47,6 @@ class _RecentColorsStripState extends State<RecentColorsStrip> {
         Text(
           '${widget.title} · 最近颜色',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontSize: 10,
             fontWeight: FontWeight.w600,
             color: AppColors.secondaryText,

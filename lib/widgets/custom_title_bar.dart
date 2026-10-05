@@ -154,7 +154,6 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
           title: Text(
             '正在$taskName',
             style: TextStyle(
-              fontFamily: 'ZhiMangXing',
               fontSize: 22,
               letterSpacing: 1.5,
               color: AppColors.border,
@@ -163,7 +162,6 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
           content: Text(
             '当前有任务正在进行，退出将取消$taskName\n并删除已产生的临时文件，确定要退出吗？',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 15,
               color: AppColors.primaryText,
               height: 1.5,
@@ -494,7 +492,6 @@ class _CloseChoiceDialogState extends State<_CloseChoiceDialog> {
       title: Text(
         '关闭窗口',
         style: TextStyle(
-          fontFamily: 'ZhiMangXing',
           fontSize: 22,
           letterSpacing: 1.5,
           color: AppColors.border,
@@ -507,7 +504,6 @@ class _CloseChoiceDialogState extends State<_CloseChoiceDialog> {
           Text(
             '你希望怎么做？',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 15,
               color: AppColors.primaryText,
               height: 1.5,
@@ -549,7 +545,6 @@ class _CloseChoiceDialogState extends State<_CloseChoiceDialog> {
               Text(
                 '记住选择，不再询问',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 13,
                   color: AppColors.secondaryText,
                 ),
@@ -598,7 +593,6 @@ class _CloseChoiceDialogState extends State<_CloseChoiceDialog> {
                   Text(
                     title,
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
                       color: AppColors.primaryText,
@@ -607,7 +601,6 @@ class _CloseChoiceDialogState extends State<_CloseChoiceDialog> {
                   Text(
                     subtitle,
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 12,
                       color: AppColors.secondaryText,
                     ),

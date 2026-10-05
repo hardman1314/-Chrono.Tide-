@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import 'animated_overlay.dart';
 import 'interactive_wrapper.dart';
 
@@ -124,16 +125,25 @@ class _NameDialogContentState extends State<_NameDialogContent> {
           width: 360,
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: AppColors.background,
-            border: Border.all(color: AppColors.border, width: 1.6),
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.border,
-                offset: const Offset(4, 6),
-                blurRadius: 0,
-              ),
-            ],
+            // v3.9 Aurora：白卡面 + e3 浮层阴影 + 大圆角无勾边
+            color: AppStyle.isModern
+                ? AppColors.buttonBackground
+                : AppColors.background,
+            border: AppStyle.isModern
+                ? Border.all(
+                    color: AppColors.borderLight, width: AppStyle.wHairline)
+                : Border.all(color: AppColors.border, width: 1.6),
+            borderRadius: BorderRadius.circular(
+                AppStyle.isModern ? AppStyle.rXl : 8),
+            boxShadow: AppStyle.isModern
+                ? AppStyle.e3
+                : [
+                    BoxShadow(
+                      color: AppColors.border,
+                      offset: const Offset(4, 6),
+                      blurRadius: 0,
+                    ),
+                  ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -147,7 +157,6 @@ class _NameDialogContentState extends State<_NameDialogContent> {
                   const SizedBox(width: 8),
                   Text(widget.title,
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
                           color: AppColors.primaryText)),
@@ -159,14 +168,12 @@ class _NameDialogContentState extends State<_NameDialogContent> {
                 controller: _controller,
                 focusNode: _focusNode,
                 style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: AppColors.primaryText),
                 decoration: InputDecoration(
                   hintText: widget.hint,
                   hintStyle: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 14,
                       color: AppColors.placeholderText),
                   isDense: true,
@@ -203,7 +210,6 @@ class _NameDialogContentState extends State<_NameDialogContent> {
                       ),
                       child: Text('取消',
                           style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                               color: AppColors.secondaryText)),
@@ -218,15 +224,21 @@ class _NameDialogContentState extends State<_NameDialogContent> {
                       decoration: BoxDecoration(
                         color: AppColors.selectedAccent,
                         border: Border.all(
-                            color: AppColors.border, width: 0.8),
-                        borderRadius: BorderRadius.circular(5),
+                            color: AppStyle.isModern
+                                ? AppColors.selectedAccent
+                                : AppColors.border,
+                            width: 0.8),
+                        borderRadius: BorderRadius.circular(
+                            AppStyle.isModern ? AppStyle.rSm : 5),
                       ),
                       child: Text(widget.confirmLabel,
                           style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
-                              color: AppColors.primaryText)),
+                              // 极光档主按钮：强调色底 + 白字（保证对比度）
+                              color: AppStyle.isModern
+                                  ? Colors.white
+                                  : AppColors.primaryText)),
                     ),
                   ),
                 ],

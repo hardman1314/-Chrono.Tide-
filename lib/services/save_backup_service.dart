@@ -231,9 +231,97 @@ class SaveBackupService {
         '[SaveBackup] ✅ 恢复完成 | 已恢复: $restoredCount/${filesToRestore.length} 个文件');
   }
 
-  /// 列出指定游戏的所有备份
-  Future<List<SaveBackup>> listBackups(String gameName) async {
+  /// 游戏本体目录迁移后，同步改写备份清单中的存档原始路径。
+  ///
+  /// 背景：存档通常位于 Documents / Saved Games 等本体目录之外（备份与恢复
+  /// 按游戏名组织、与本体目录解耦）；但部分 portable galgame 会把存档写在
+  /// 本体目录内，此时 backup.json 的 files 值（原始绝对路径）会随迁移失效
+  /// → 必须把以旧本体目录为前缀的条目改写到新目录，否则下次恢复会指向
+  /// 已不存在的旧位置。
+  ///
+  /// 仅改写"以旧本体目录为前缀（大小写不敏感）"的条目，其余条目不动；
+  /// 失败不抛出（best-effort，写回前先在内存中完成全部替换）。
+  /// 返回改写的条目总数。
+  Future<int> rewriteOriginalPathsPrefix({
+    required String gameName,
+    required String oldBodyDir,
+    required String newBodyDir,
+  }) async {
+    if (oldBodyDir.isEmpty || newBodyDir.isEmpty) return 0;
+    final oldLower = _lowerNoTailSep(oldBodyDir);
+    if (oldLower.isEmpty) return 0;
+    final newPrefix = newBodyDir.replaceAll('/', '\\');
+
     final savesDir = getSavesDir(gameName);
+    final savesDirectory = Directory(savesDir);
+    if (!savesDirectory.existsSync()) return 0;
+
+    int rewritten = 0;
+    await for (final entity in savesDirectory.list()) {
+      if (entity is! Directory) continue;
+      final metadataPath = p.join(entity.path, _metadataFileName);
+      final metadataFile = File(metadataPath);
+      if (!metadataFile.existsSync()) continue;
+
+      try {
+        final content = await metadataFile.readAsString();
+        final json = jsonDecode(content) as Map<String, dynamic>;
+        final filesRaw = json['files'] as Map<String, dynamic>?;
+        if (filesRaw == null || filesRaw.isEmpty) continue;
+
+        var changed = false;
+        final updated = <String, String>{};
+        filesRaw.forEach((key, value) {
+          final original = value.toString();
+          final sepOnly = original.replaceAll('/', '\\');
+          // lower 与 sepOnly 仅大小写不同，长度恒等 → 字符对齐安全
+          final lower = _lowerNoTailSep(sepOnly);
+          final isUnderOldBody =
+              lower == oldLower || lower.startsWith('$oldLower\\');
+          if (isUnderOldBody) {
+            final tailLen = lower.length - oldLower.length;
+            final tail = tailLen > 0 ? sepOnly.substring(sepOnly.length - tailLen) : '';
+            final newValue = tail.startsWith('\\')
+                ? '$newPrefix$tail'
+                : tailLen > 0
+                    ? '$newPrefix\\$tail'
+                    : newPrefix;
+            updated[key] = newValue;
+            if (newValue != original) changed = true;
+          } else {
+            updated[key] = original;
+          }
+        });
+
+        if (changed) {
+          json['files'] = updated;
+          final updatedContent =
+              const JsonEncoder.withIndent('  ').convert(json);
+          await metadataFile.writeAsString(updatedContent, flush: true);
+          rewritten += updated.length;
+          debugPrint(
+              '[SaveBackup] ✅ 已改写备份清单路径: ${p.basename(entity.path)}');
+        }
+      } catch (e) {
+        debugPrint('[SaveBackup] ⚠️ 改写备份清单失败: ${entity.path} | $e');
+      }
+    }
+    return rewritten;
+  }
+
+  /// 备份清单路径比较用归一化：统一分隔符 → 小写 → 去尾部斜杠。
+  /// 刻意不用 p.normalize（`..` 折叠会破坏与原串的字符对齐；
+  /// 绝对路径含 `..` 属罕见脏数据，漏改写的后果等同现状，方向安全）。
+  String _lowerNoTailSep(String path) {
+    var n = path.replaceAll('/', '\\').toLowerCase();
+    while (n.endsWith('\\')) {
+      n = n.substring(0, n.length - 1);
+    }
+    return n;
+  }
+
+  /// 列出指定游戏的所有备份
+  Future<List<SaveBackup>> listBackups(String gameName) async {    final savesDir = getSavesDir(gameName);
     final savesDirectory = Directory(savesDir);
 
     if (!savesDirectory.existsSync()) {

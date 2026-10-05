@@ -202,7 +202,6 @@ class _EyedropperViewState extends State<_EyedropperView> {
                     child: Text(
                       '点击提取颜色  |  Esc 取消',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: AppColors.primaryText,
@@ -305,7 +304,6 @@ class _EyedropperViewState extends State<_EyedropperView> {
                     Text(
                       '#${_colorToHex(_currentColor)}',
                       style: const TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
                         color: Colors.black87,

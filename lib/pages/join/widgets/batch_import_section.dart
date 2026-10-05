@@ -8,8 +8,10 @@ import 'package:file_picker/file_picker.dart';
 import '../batch_import_controller.dart';
 import '../join_controller.dart';
 import '../../../theme/app_colors.dart';
+import '../../../theme/app_styles.dart';
 import '../../../widgets/interactive_wrapper.dart';
 import '../../../widgets/confirm_dialog.dart';
+import '../../../widgets/nsfw/nsfw_image.dart';
 import '../../../services/scan_logger.dart';
 import 'platform_badge.dart';
 
@@ -17,10 +19,17 @@ class BatchImportSection extends StatefulWidget {
   final BatchImportController batchController;
   final JoinController singleController;
 
+  /// ★ 2026-10-04 拖拽修复：仅在批量模式启用系统拖放监听。
+  /// desktop_drop 的 DropTarget 不走 Flutter hitTest，SwipeSwitcher 的
+  /// Stack 里隐藏页的 DropTarget 仍会收到系统拖放（与可见页完全重叠），
+  /// 用 enable 互斥（任一时刻只有当前模式在监听）。
+  final bool dropEnabled;
+
   const BatchImportSection({
     super.key,
     required this.batchController,
     required this.singleController,
+    this.dropEnabled = true,
   });
 
   @override
@@ -176,7 +185,8 @@ class _BatchImportSectionState extends State<BatchImportSection> {
       width: double.infinity,
       decoration: BoxDecoration(
         color: AppColors.background,
-        border: Border.all(color: AppColors.border, width: 1.6),
+        // 设计稿「Section - 待入库游戏列表」666×329，边框 0.93
+        border: Border.all(color: AppColors.border, width: 1),
       ),
       child: Column(
         children: [
@@ -185,7 +195,11 @@ class _BatchImportSectionState extends State<BatchImportSection> {
             _buildScanSummaryBanner(widget.batchController.lastScanSummary!),
           // 预览确认条：扫描后暂停，等待用户点击"开始处理"
           if (widget.batchController.isAwaitingConfirmation)
-            _buildPreviewConfirmationBar(),
+            _buildPreviewConfirmationBar()
+          // 重新处理条（2026-10-03）：存在数据不全的游戏时，
+          // 提供批量重新抓取元数据的入口（与预览条互斥）
+          else if (widget.batchController.incompleteCount > 0)
+            _buildReprocessBar(),
           Expanded(
             child: widget.batchController.hasGames
                 ? _buildGamesList(context)
@@ -258,7 +272,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
             child: Text(
               summary.humanReadable,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 color: AppColors.secondaryText,
                 fontWeight: FontWeight.w500,
@@ -274,12 +287,13 @@ class _BatchImportSectionState extends State<BatchImportSection> {
 
   /// 收起态：迷你胶囊，彩色圆点 + 浓缩文案
   Widget _buildCollapsedSummary(String text, Color accentColor) {
+    // 设计稿摘要胶囊 118×23：全圆角、左右内边距 9、上下 4，水平居中
     return Container(
-      margin: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      margin: const EdgeInsets.fromLTRB(12, 7, 12, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
       decoration: BoxDecoration(
-        color: accentColor.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(10),
+        color: accentColor.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(11.5),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -296,7 +310,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
           Text(
             text,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 11,
               color: AppColors.secondaryText,
               fontWeight: FontWeight.w500,
@@ -333,7 +346,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
             child: Text(
               '已识别 $count 个游戏，请确认列表后开始处理',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 color: AppColors.primaryText,
                 fontWeight: FontWeight.w500,
@@ -356,7 +368,64 @@ class _BatchImportSectionState extends State<BatchImportSection> {
                   const SizedBox(width: 4),
                   Text('开始处理',
                       style: TextStyle(
-                          fontFamily: 'Inter',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 重新处理条（2026-10-03）
+  ///
+  /// 存在数据不全的游戏（已完成但封面/简介缺失）时展示，
+  /// 提供批量重新抓取元数据的入口（[BatchImportController.reprocessIncompleteGames]）。
+  /// 与预览确认条互斥：预览态显示「开始处理」，处理后显示本条。
+  Widget _buildReprocessBar() {
+    final count = widget.batchController.incompleteCount;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.starGold.withOpacity(0.1),
+        border: Border.all(color: AppColors.starGold, width: 1.5),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, size: 16, color: AppColors.starGold),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '$count 款游戏数据不全（缺封面/简介），已保留在列表',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.primaryText,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          InteractiveWrapper(
+            onTap: () =>
+                widget.batchController.reprocessIncompleteGames(),
+            hoverScale: 1.04,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.starGold,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.refresh, size: 14, color: Colors.white),
+                  const SizedBox(width: 4),
+                  Text('重新处理',
+                      style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                           color: Colors.white)),
@@ -371,6 +440,7 @@ class _BatchImportSectionState extends State<BatchImportSection> {
 
   Widget _buildEmptyState(BuildContext context) {
     return DropTarget(
+      enable: widget.dropEnabled,
       onDragDone: (details) {
         final paths = details.files.map((f) => f.path).toList();
         widget.batchController.handleDraggedFiles(paths);
@@ -389,14 +459,12 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               const SizedBox(height: 20),
               Text('批量置入游戏文件',
                   style: TextStyle(
-                      fontFamily: 'ZhiMangXing',
                       fontSize: 24,
                       letterSpacing: 2.0,
                       color: AppColors.border)),
               const SizedBox(height: 8),
               Text('支持选择或拖入多个游戏文件夹',
                   style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                       color: AppColors.secondaryText)),
@@ -453,6 +521,7 @@ class _BatchImportSectionState extends State<BatchImportSection> {
   Widget _buildGamesList(BuildContext context) {
     // 将整个列表包裹在 DropTarget 中，支持持续拖入新增
     return DropTarget(
+      enable: widget.dropEnabled,
       onDragEntered: (details) {
         // 拖拽进入时改变视觉反馈
         setState(() {
@@ -510,7 +579,8 @@ class _BatchImportSectionState extends State<BatchImportSection> {
                   itemBuilder: (context, index) {
                     final game = widget.batchController.games[index];
                     return Padding(
-                      padding: const EdgeInsets.only(bottom: 20),
+                      // 设计稿卡片间距 13（卡1 底 189 → 卡2 顶 202）
+                      padding: const EdgeInsets.only(bottom: 13),
                       child: BatchGameCard(
                         game: game,
                         isSelected:
@@ -557,16 +627,20 @@ class _BatchImportSectionState extends State<BatchImportSection> {
         onTap: () => widget.batchController.pickFolders(),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          // 设计稿「新增文件夹」栏 611.6×37.1：上下内边距 8、左右 14
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
             color: _isAddBtnHovered ? AppColors.cardHoverBg : AppColors.background,
             borderRadius: BorderRadius.circular(4),
-            border: Border(
-              bottom: BorderSide(
-                color: AppColors.border.withOpacity(0.5),
-                width: 1,
-              ),
-            ),
+            // 设计稿为四边完整 1px 浅边框 + 右下硬阴影（原实现仅底边框）
+            border: Border.all(color: AppColors.borderLight, width: 1),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.borderLight,
+                offset: const Offset(2, 3),
+                blurRadius: 0,
+              )
+            ],
           ),
           child: Row(
             children: [
@@ -581,7 +655,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               Text(
                 '新增文件夹',
                 style: TextStyle(
-                  fontFamily: 'ZhiMangXing',
                   fontSize: 15,
                   letterSpacing: 1.2,
                   color: _isAddBtnHovered
@@ -594,7 +667,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               Text(
                 '共 ${widget.batchController.games.length} 个',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   color: AppColors.secondaryText,
                   fontWeight: FontWeight.w400,
@@ -630,7 +702,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               Text(
                 phase.label,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
                   color: AppColors.secondaryText,
@@ -640,7 +711,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
               Text(
                 '${phase.current}/${phase.total}',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryText,
@@ -654,7 +724,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
                   child: Text(
                     '· ${ctrl.batchStatusMessage}',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 11,
                       color: AppColors.secondaryText,
                     ),
@@ -669,7 +738,6 @@ class _BatchImportSectionState extends State<BatchImportSection> {
                 Text(
                   eta,
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     color: AppColors.secondaryText,
                     fontWeight: FontWeight.w400,
@@ -763,30 +831,29 @@ class _BatchGameCardState extends State<BatchGameCard> {
             ],
           ),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-          // 使用 minHeight 而非固定 height，让卡片根据内容自适应：
-          // 封面恢复 44×58 后：cover 58 + path ~28 + padding 6 ≈ 92
-          // 双标题态约 104，minHeight 92 保证最小高度，单屏可见更多卡片
-          constraints: const BoxConstraints(minHeight: 92),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
+          // ★ 目录框不再独占第二行（原「信息行 + 路径框行」两行结构，路径框只占左半，
+          // 右半大片留白，卡片被动撑到 ~102）。现改为「信息 : 目录框 = 2 : 1」同排，
+          // 卡片高度收敛到 ~70~78，单屏可见卡片数明显增加（设计稿路径框也位于
+          // 信息区右带、与信息同排而非独占一行）。
+          constraints: const BoxConstraints(minHeight: 70),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildCoverImage(),
-                  const SizedBox(width: 12),
-                  Expanded(child: _buildGameInfo()),
-                  const SizedBox(width: 8),
-                  _buildActionButtons(),
-                ],
+              _buildCoverImage(),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(flex: 2, child: _buildGameInfo()),
+                    const SizedBox(width: 8),
+                    // 目录框上移：与信息区同排停放，不再是独立一行
+                    Expanded(flex: 1, child: _buildPathDisplay()),
+                  ],
+                ),
               ),
-              // 路径框单独一行，放在底部
-              // left: 56 = cover 宽 44 + gap 12，对齐到信息区域起始位置
-              Padding(
-                padding: const EdgeInsets.only(top: 3, left: 56),
-                child: _buildPathDisplay(),
-              ),
+              const SizedBox(width: 8),
+              _buildActionButtons(),
             ],
           ),
         ),
@@ -815,9 +882,16 @@ class _BatchGameCardState extends State<BatchGameCard> {
         fit: BoxFit.fill,
         alignment: Alignment.center,
         clipBehavior: Clip.hardEdge,
-        child: Image.file(
-          File(widget.game.coverFilePath!),
+        child: NsfwImage.file(
+          widget.game.coverFilePath!,
+          contentKind: NsfwContentKind.cover,
           fit: BoxFit.fill,
+          child: Image.file(
+            File(widget.game.coverFilePath!),
+            fit: BoxFit.fill,
+            // ★ 性能优化：卡片封面 44×58，限宽解码（132 = 44 × 3x DPR）
+            cacheWidth: 132,
+          ),
         ),
       );
     }
@@ -830,7 +904,13 @@ class _BatchGameCardState extends State<BatchGameCard> {
           fit: BoxFit.fill,
           alignment: Alignment.center,
           clipBehavior: Clip.hardEdge,
-          child: CachedNetworkImage(
+          // 刮削候选：URL 渲染，缓存落盘后按需补检（§7.1 风险🟠4）
+          child: NsfwImage.network(
+            coverUrl,
+            contentKind: NsfwContentKind.cover,
+            fit: BoxFit.fill,
+            detectOnDemand: true,
+            child: CachedNetworkImage(
             cacheManager: PortableImageCacheManager(),
             imageUrl: coverUrl,
             fit: BoxFit.fill,
@@ -846,6 +926,7 @@ class _BatchGameCardState extends State<BatchGameCard> {
               child: Icon(Icons.broken_image_outlined,
                   size: 16, color: AppColors.border),
             ),
+          ),
           ),
         );
       }
@@ -894,9 +975,39 @@ class _BatchGameCardState extends State<BatchGameCard> {
                   child: Text(
                     '处理失败: ${widget.game.errorMessage}',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 11,
                       color: AppColors.dangerRed,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          )
+        // 数据不全提示条（2026-10-03）：封面/简介任一缺失，
+        // 确认导入时会被拦截保留在列表，需补全或重试
+        else if (widget.game.taskStatus == GameTaskStatus.completed &&
+            widget.game.missingCoreFields.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.starGold.withOpacity(0.12),
+              border: Border.all(color: AppColors.starGold, width: 1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, size: 12, color: AppColors.starGold),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    '数据不全: 缺${widget.game.missingCoreFields.join('、')}，'
+                    '补全后确认导入或点重试',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.starGold,
                       fontWeight: FontWeight.w500,
                     ),
                     maxLines: 1,
@@ -929,7 +1040,6 @@ class _BatchGameCardState extends State<BatchGameCard> {
             Expanded(
               child: Text(widget.game.gameName,
                   style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: AppColors.titleBrown),
@@ -952,7 +1062,6 @@ class _BatchGameCardState extends State<BatchGameCard> {
                   ? '原标题: ${widget.game.originalTitle}'
                   : '元数据: ${widget.game.metadataTitle}',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 10,
                 color: AppColors.secondaryText,
               ),
@@ -963,7 +1072,6 @@ class _BatchGameCardState extends State<BatchGameCard> {
         const SizedBox(height: 3),
         Text(releaseDate.isNotEmpty ? '$releaseDate发行' : '',
             style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 color: AppColors.secondaryText)),
       ],
@@ -1034,7 +1142,6 @@ class _BatchGameCardState extends State<BatchGameCard> {
             child: Text(
               text,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 11,
                 color: color,
                 fontWeight: FontWeight.w500,
@@ -1061,25 +1168,27 @@ class _BatchGameCardState extends State<BatchGameCard> {
       },
       hoverScale: 1.02,
       child: Container(
-        // 移除 maxWidth: 280 限制，让路径框占满可用宽度，
-        // 扩大可点击区域，解决"点击区域过小"问题
-        constraints: const BoxConstraints(minHeight: 32),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        // 目录框现与信息区同排（宽度由外层 flex 2:1 决定），内部用 Expanded 文本把
+        // ✎ 顶到右缘，与设计稿「文件夹图标 — 路径 — 编辑铅笔」三段式一致（框 144×25）。
+        // width: infinity 是必需的：InteractiveWrapper 内层 AnimatedContainer(alignment)
+        // 只给子级松约束，不显式撑满的话短路径会把框缩成一小块。
+        width: double.infinity,
+        constraints: const BoxConstraints(minHeight: 25),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          border: Border.all(color: AppColors.infoBlue, width: 1.5),
-          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: AppColors.infoBlue, width: 1),
+          borderRadius: BorderRadius.circular(3),
           color: AppColors.background,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.folder_open, size: 16, color: AppColors.infoBlue),
-            const SizedBox(width: 8),
-            Flexible(
+            Icon(Icons.folder_open, size: 13, color: AppColors.infoBlue),
+            const SizedBox(width: 6),
+            Expanded(
               child: Text(
                 displayPath,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   color: AppColors.primaryText,
                   fontWeight: FontWeight.w500,
@@ -1087,8 +1196,8 @@ class _BatchGameCardState extends State<BatchGameCard> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const SizedBox(width: 8),
-            Icon(Icons.edit, size: 16, color: AppColors.infoBlue),
+            const SizedBox(width: 6),
+            Icon(Icons.edit, size: 12, color: AppColors.infoBlue),
           ],
         ),
       ),
@@ -1116,6 +1225,9 @@ class _BatchGameCardState extends State<BatchGameCard> {
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+              ),
               title: Text('修改游戏路径'),
               content: SizedBox(
                 width: 480,

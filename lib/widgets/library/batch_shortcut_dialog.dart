@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_styles.dart';
 import '../../services/local_game_registry.dart';
 import '../../services/game_data_format.dart';
 import '../../services/shortcut_service.dart';
+import '../app_snack_bar.dart';
 
 /// UX-13: 从 library_page.dart 抽取的批量快捷方式生成对话框。
 ///
@@ -99,11 +101,10 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
           ? '批量生成完成: 成功 $success 个，失败 $fail 个'
               '${failedTitles.length <= 3 ? '（${failedTitles.join('、')}）' : ''}'
           : '批量生成完成: 成功 $success 个';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(msg),
-          duration: const Duration(seconds: 3),
-        ),
+      AppSnackBar.show(
+        context,
+        fail > 0 ? NoticeLevel.warning : NoticeLevel.success,
+        msg,
       );
       Navigator.of(context).pop();
     }
@@ -118,7 +119,7 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
         height: 520,
         decoration: BoxDecoration(
           color: AppColors.background,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(AppRadius.xl),
           border: Border.all(color: AppColors.border, width: 1.5),
         ),
         clipBehavior: Clip.hardEdge,
@@ -139,7 +140,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
                   const SizedBox(width: 10),
                   Text('批量生成桌面快捷方式',
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                           color: AppColors.primaryText)),
@@ -176,7 +176,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
                               ? '取消全选'
                               : '全选未生成',
                           style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 13,
                               color: AppColors.primaryText),
                         ),
@@ -186,7 +185,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
                   const Spacer(),
                   Text('已选 ${_selected.length} / ${widget.games.length}',
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 12,
                           color: AppColors.secondaryText)),
                 ],
@@ -229,7 +227,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
                       ),
                       child: Text('取消',
                           style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                               color: AppColors.primaryText)),
@@ -257,7 +254,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
                             )
                           : Text('生成快捷方式',
                               style: TextStyle(
-                                  fontFamily: 'Inter',
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                   color: _selected.isEmpty
@@ -308,7 +304,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
             Expanded(
               child: Text(game.title,
                   style: TextStyle(
-                      fontFamily: 'Mali',
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: AppColors.primaryText)),
@@ -322,7 +317,6 @@ class _BatchShortcutDialogState extends State<BatchShortcutDialog> {
                 ),
                 child: Text('已生成',
                     style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 11,
                         color: AppColors.successGreen)),
               ),

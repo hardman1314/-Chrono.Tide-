@@ -87,14 +87,17 @@ class BackgroundImageConfig {
   });
 
   /// 内置特色主题便捷构造（bundled asset）
+  ///
+  /// [alignment] 可选对齐（默认 center）——用于按图调整取景位置，
+  /// 如樱花主题用 top 让人物头部入画（2026-09-13）。
   const BackgroundImageConfig.bundled(
     String this.assetPath, {
     this.overlayOpacity = 0.30,
+    this.alignment = BackgroundImageAlignment.center,
   })  : source = BackgroundImageSource.bundled,
         filename = null,
         blurSigma = 0.0,
         fit = BackgroundImageFit.cover,
-        alignment = BackgroundImageAlignment.center,
         scale = 1.0,
         offsetX = 0.0,
         offsetY = 0.0;
@@ -129,6 +132,20 @@ class BackgroundImageConfig {
 
   /// 兼容旧 CTThemeData.backgroundOverlayOpacity getter
   double get legacyOverlayOpacity => overlayOpacity;
+
+  /// v3.10：是否为动态背景（GIF）。
+  ///
+  /// **派生值，不落盘** —— 不参与 [toJson] / [fromJson] / [==] / [hashCode]，
+  /// 因此零 schema 变更、零迁移。之所以敢用扩展名判身份：背景文件在落盘前
+  /// 已由 `BackgroundMediaInspector` 做**魔数 + 扩展名交叉校验**，
+  /// 「内容 == 扩展名」是有保证的。
+  ///
+  /// 内置（bundled）主题当前全为 PNG，本期不引入动图内置资源，
+  /// 故 bundled 分支恒为静态。
+  bool get isAnimated =>
+      source == BackgroundImageSource.file &&
+      filename != null &&
+      filename!.toLowerCase().endsWith('.gif');
 
   Map<String, dynamic> toJson() => {
     'source': source.name,

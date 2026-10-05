@@ -1,36 +1,59 @@
 import 'dart:typed_data';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../services/update/update_service.dart';
+// 本地账号体系（local_account_mode.md）：账号区块本地态分支
+import '../modules/auth/local_account_service.dart';
 import '../services/update/update_models.dart';
 import 'update_dialog.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
+import '../theme/app_spacing.dart';
+import '../theme/app_styles.dart';
 import '../theme/app_theme_manager.dart';
 import '../theme/background_image_config.dart';
+import '../theme/background_media.dart';
+import 'background_image_editor_dialog.dart';
 import '../theme/theme_storage.dart';
 import '../theme/ct_theme_package.dart';
 import 'interactive_wrapper.dart';
 import 'app_snack_bar.dart';
 import 'theme_editor_dialog.dart';
 import 'my_themes_section.dart';
+import 'settings/settings_tab.dart';
+import 'settings/settings_section.dart';
+import 'settings/archive_library_settings_card.dart';
+import 'settings/cloud_backup_settings_card.dart';
+import 'gamepad/gamepad_settings_section.dart';
+import 'settings/settings_tile.dart';
+import 'settings/settings_switch_tile.dart';
 import '../modules/auth/auth_service.dart';
 import '../modules/auth/user_model.dart';
 import '../services/user_cache_service.dart';
 import '../core/path_helper.dart';
 import '../services/install_path_preference.dart';
+import '../services/bpm_guide_preference.dart';
 import '../services/metadata_fetcher.dart';
 import '../services/local_game_registry.dart';
+import '../services/quick_window_service.dart';
 import '../services/game_data_format.dart'; // ★ v3 阶段 2: 统计重建
 import '../services/magpie_service.dart';
+import '../services/nsfw/nsfw_settings.dart';
+import '../services/nsfw/nsfw_detection_service.dart';
+import '../services/nsfw/nsfw_detection_store.dart';
+import '../services/nsfw/nsfw_scan_service.dart';
 import '../services/autostart_service.dart';
 import '../services/storage/storage_cleanup_service.dart';
-
-enum SettingsTab { profile, preference, about }
+import '../services/download_intensity.dart';
+import '../services/motion_preference.dart';
+import '../services/auto_shortcut_preference.dart';
+import '../services/bpm_op_video_preference.dart';
 
 class SettingsModal extends StatefulWidget {
   final VoidCallback onClose;
@@ -59,12 +82,21 @@ class _SettingsModalState extends State<SettingsModal> {
   String? _tempAvatarFileName;
   String _appVersion = '0.8.0';
   bool _closeHovered = false;
-  bool _themeDesignerExpanded = false;
+  // v3.9：外观栏拆为两张独立项目卡（2026-09-13）：
+  // 「软件主题」= 系统主题（含跟随系统开关）+ 特色主题 + 快速上传背景图；
+  // 「自定义设计」= 主题设计器入口 + 我的主题（默认展开——否则导入等
+  // 快捷功能被折叠藏住，2026-09-13 用户反馈修正）。
+  bool _softwareThemeExpanded = true;
+  bool _customDesignExpanded = true;
   bool _magpieExpanded = false;
   bool _magpieExternalPathHovered = false;
   String? _magpieStatusMessage;
   bool _magpieStatusSuccess = false;
   bool _autoStartEnabled = false;
+  // ===== 首次启动自动生成桌面快捷方式（2026-09-27 全局偏好，默认关闭）=====
+  bool _autoShortcutEnabled = false;
+  // ===== 快捷自定义窗口开关 =====
+  bool _quickWindowEnabled = false;
   // ===== ★ v3 阶段 2：统计重建状态 =====
   bool _isRebuildingStats = false;
   String? _rebuildStatsMessage;
@@ -77,6 +109,36 @@ class _SettingsModalState extends State<SettingsModal> {
   bool _isCleaningCache = false;
   String? _cacheCleanupMessage;
   bool _cacheCleanupSuccess = false;
+  // ===== NSFW 内容保护（v2：YOLO 局部检测 + 局部马赛克）=====
+  bool _nsfwEnabled = false;
+  bool _nsfwReady = false;
+  String? _nsfwInitError;
+  bool _nsfwAllowReveal = true;
+  NsfwDisplayMode _nsfwMode = NsfwDisplayMode.clean;
+  // 上次见到的 modelSignature，用于检测"阈值/精度被用户调整"
+  String _nsfwLastSignature = '';
+
+  // ===== 下载强度（2026-09-26 批D：自动/轻量/全速 + 全局限速）=====
+  DownloadIntensity _downloadIntensity = DownloadIntensity.auto;
+  double _downloadSpeedLimitMbps = 0; // 0 = 不限
+
+  // ===== 窗口尺寸（2026-09-08 IA 重构：由固定 700×500 改为可拉伸）=====
+  // ⚠️ 设置窗口是 Overlay 内组件（main_container.dart:616-638），不是独立 OS 窗口，
+  //    因此**不能用 window_manager 改尺寸**（会把整个主窗口一起放大），
+  //    只能在组件内改 Container 的 width/height。
+  static const double _kDefaultWidth = 900;
+  static const double _kDefaultHeight = 620;
+  static const double _kMinWidth = 820;
+  static const double _kMinHeight = 520;
+  static const double _kMaxWidth = 1200;
+  static const double _kMaxHeight = 860;
+  static const String _kPrefWidth = 'settings_modal_size_w';
+  static const String _kPrefHeight = 'settings_modal_size_h';
+
+  /// 用 ValueNotifier 驱动尺寸，配合 ValueListenableBuilder 的 child 缓存，
+  /// 保证拖拽时**只重建最外层容器**、不重建内容子树（方案 §7 性能硬要求）。
+  final ValueNotifier<Size> _size =
+      ValueNotifier<Size>(const Size(_kDefaultWidth, _kDefaultHeight));
 
   @override
   void initState() {
@@ -91,6 +153,78 @@ class _SettingsModalState extends State<SettingsModal> {
     _loadDefaultInstallPath();
     _loadProxySettings();
     _loadAutoStartStatus();
+    _loadAutoShortcutPref();
+    _loadQuickWindowStatus();
+    _loadNsfwStatus();
+    _loadWindowSize();
+    _loadDownloadIntensity();
+  }
+
+  /// NSFW 设置与模型状态。
+  ///
+  /// 只在这里做一次 `load()`；后续设置变化通过 [NsfwSettings] 的
+  /// ChangeNotifier 回调同步，避免每次 build 都读 SharedPreferences。
+  Future<void> _loadNsfwStatus() async {
+    final NsfwSettings settings = NsfwSettings.instance;
+    await settings.load();
+    settings.addListener(_onNsfwSettingsChanged);
+    // 全量扫描进度通知 → 卡片状态行实时刷新
+    NsfwScanService.instance.addListener(_onNsfwScanChanged);
+    // 判定缓存变更（每次 put 有 200ms 去抖）→ 「待检测 N 张」跟随队列消耗刷新
+    NsfwDetectionStore.instance.addListener(_onNsfwScanChanged);
+    if (!mounted) return;
+    setState(() {
+      _nsfwEnabled = settings.enabled;
+      _nsfwAllowReveal = settings.allowReveal;
+      _nsfwMode = settings.mode;
+    });
+    // 记录当前签名，供 _onNsfwSettingsChanged 检测阈值/精度变化
+    _nsfwLastSignature = settings.modelSignature;
+    // 开启状态下才启动 worker isolate，避免无谓的 12MB 模型加载
+    if (settings.enabled) await _ensureNsfwReady();
+  }
+
+  void _onNsfwSettingsChanged() {
+    if (!mounted) return;
+    final NsfwSettings settings = NsfwSettings.instance;
+    setState(() {
+      _nsfwEnabled = settings.enabled;
+      _nsfwAllowReveal = settings.allowReveal;
+      _nsfwMode = settings.mode;
+    });
+    // 置信度变化（推理档位已固定，不再参与变化）→ modelSignature 变化 →
+    // 检测缓存整表失效，已扫过的图不会被任何触发点重新入队，必须强制重扫补齐判定
+    final String sig = settings.modelSignature;
+    if (settings.enabled &&
+        _nsfwLastSignature.isNotEmpty &&
+        sig != _nsfwLastSignature) {
+      NsfwScanService.instance.startFullScan(force: true);
+    }
+    _nsfwLastSignature = sig;
+  }
+
+  void _onNsfwScanChanged() {
+    if (!mounted) return;
+    setState(() {}); // 扫描进度（isScanning/total/enqueued）变化
+  }
+
+  Future<void> _ensureNsfwReady() async {
+    // 工作模式不做任何内容判定，不必加载 16.8MB 模型 / 起 worker isolate。
+    if (NsfwSettings.instance.mode == NsfwDisplayMode.work) {
+      if (mounted) {
+        setState(() {
+          _nsfwReady = false;
+          _nsfwInitError = null;
+        });
+      }
+      return;
+    }
+    final bool ok = await NsfwDetectionService.instance.ensureReady();
+    if (!mounted) return;
+    setState(() {
+      _nsfwReady = ok;
+      _nsfwInitError = NsfwDetectionService.instance.initError;
+    });
   }
 
   void _loadAppVersion() async {
@@ -109,11 +243,80 @@ class _SettingsModalState extends State<SettingsModal> {
     _proxyController.dispose();
     _nicknameFocusNode.dispose();
     _bioFocusNode.dispose();
+    NsfwSettings.instance.removeListener(_onNsfwSettingsChanged);
+    NsfwScanService.instance.removeListener(_onNsfwScanChanged);
+    NsfwDetectionStore.instance.removeListener(_onNsfwScanChanged);
+    _size.dispose();
     super.dispose();
   }
 
+  /// 恢复上次拉伸后的窗口尺寸；未存过则用默认值。
+  ///
+  /// 读取一律 `?? 默认值`，不引入迁移。
+  Future<void> _loadWindowSize() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final double w = prefs.getDouble(_kPrefWidth) ?? _kDefaultWidth;
+    final double h = prefs.getDouble(_kPrefHeight) ?? _kDefaultHeight;
+    if (!mounted) return;
+    _size.value = Size(w, h);
+  }
+
+  Future<void> _saveWindowSize(Size size) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_kPrefWidth, size.width);
+    await prefs.setDouble(_kPrefHeight, size.height);
+  }
+
+  /// 下载强度与限速加载（批D）。读取一律 `?? 默认值`，不引入迁移。
+  Future<void> _loadDownloadIntensity() async {
+    final intensity = await DownloadIntensityPrefs.load();
+    final limit = await DownloadIntensityPrefs.loadSpeedLimitMbps();
+    if (!mounted) return;
+    setState(() {
+      _downloadIntensity = intensity;
+      _downloadSpeedLimitMbps = limit;
+    });
+  }
+
+  Future<void> _onIntensityChanged(DownloadIntensity v) async {
+    setState(() => _downloadIntensity = v);
+    await DownloadIntensityPrefs.save(v);
+    // ★ 方案约定：切到轻量档时限速未配置（0=不限）则自动带默认 2MB/s，
+    //   保证「弱网不抢前台」的档位语义开箱即得；其余档位不隐式改动。
+    if (v == DownloadIntensity.light && _downloadSpeedLimitMbps <= 0) {
+      setState(() => _downloadSpeedLimitMbps =
+          DownloadIntensityPrefs.lightDefaultLimitMbps);
+      await DownloadIntensityPrefs.saveSpeedLimitMbps(
+          DownloadIntensityPrefs.lightDefaultLimitMbps);
+    }
+  }
+
+  Future<void> _onSpeedLimitCommit(double v) async {
+    await DownloadIntensityPrefs.saveSpeedLimitMbps(v);
+  }
+
+  /// 拖拽右下角手柄调整尺寸。
+  ///
+  /// 上下限同时受屏幕尺寸约束，避免小屏上拖出不可用尺寸。
+  void _onResizeDrag(DragUpdateDetails details, Size screen) {
+    final double maxW = math.min(_kMaxWidth, screen.width - 40);
+    final double maxH = math.min(_kMaxHeight, screen.height - 40);
+    final double minW = math.min(_kMinWidth, maxW);
+    final double minH = math.min(_kMinHeight, maxH);
+    final Size current = _size.value;
+    _size.value = Size(
+      (current.width + details.delta.dx).clamp(minW, maxW).toDouble(),
+      (current.height + details.delta.dy).clamp(minH, maxH).toDouble(),
+    );
+  }
+
   Future<void> _loadUserData() async {
-    final user = await AuthService.getCurrentUser();
+    // ★ 本地账号体系：无云端会话时读本地账户（getCurrentUser 无 token
+    // 直接返回 null 且零网络调用，见 auth_service.dart:1031-1034）。
+    var user = await AuthService.getCurrentUser();
+    if (user == null && LocalAccountService.exists) {
+      user = LocalAccountService.load();
+    }
     if (!mounted) return;
     setState(() {
       _user = user;
@@ -157,6 +360,21 @@ class _SettingsModalState extends State<SettingsModal> {
 
     debugPrint(
         '[USER_PROFILE] 提交用户信息修改：昵称=$nickname，简介=${bio.isNotEmpty ? bio.substring(0, bio.length.clamp(0, 20)) + (bio.length > 20 ? "..." : "") : "(空)"}');
+
+    // ★ 本地账号体系：本地账户资料写本地（local_account_*），不走云端。
+    if (_user?.isLocalAccount ?? false) {
+      await LocalAccountService.updateProfile(name: nickname, bio: bio);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveMessage = '修改已保存';
+        _saveSuccess = true;
+        _user = _user!.copyWith(name: nickname, bio: bio);
+        _tempAvatarBytes = null;
+        _tempAvatarFileName = null;
+      });
+      return;
+    }
 
     setState(() {
       _isSaving = true;
@@ -212,46 +430,65 @@ class _SettingsModalState extends State<SettingsModal> {
       );
     } else if (result.result == UpdateResult.alreadyLatest ||
         result.result == UpdateResult.skipped) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('当前已是最新版本'), duration: Duration(seconds: 2)),
+      AppSnackBar.info(
+        context,
+        '当前已是最新版本',
+        duration: Duration(seconds: 2),
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('检查更新失败：${result.userFriendlyError}'),
-            duration: Duration(seconds: 3)),
+      AppSnackBar.error(
+        context,
+        '检查更新失败：${result.userFriendlyError}',
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final Size screen = MediaQuery.of(context).size;
     return Center(
       child: Material(
         color: Colors.transparent,
-        child: Container(
-          width: 700,
-          height: 500,
-          decoration: BoxDecoration(
-            color: AppColors.sidebarBackground,
-            border: Border.all(color: AppColors.border, width: 1.6),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.border,
-                offset: const Offset(4, 6),
-                blurRadius: 0,
+        child: ValueListenableBuilder<Size>(
+          valueListenable: _size,
+          builder: (BuildContext context, Size size, Widget? child) {
+            return Container(
+              width: size.width,
+              height: size.height,
+              decoration: BoxDecoration(
+                color: AppColors.sidebarBackground,
+                border: Border.all(color: AppColors.border, width: 1.6),
+                borderRadius: BorderRadius.circular(AppRadius.xl),
+                // 软阴影替代原硬边投影（原 Offset(4,6) blur 0），见方案 §5.3 U5
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: AppColors.border.withOpacity(0.18),
+                    offset: const Offset(0, 8),
+                    blurRadius: 24,
+                  ),
+                ],
               ),
-            ],
-          ),
-          clipBehavior: Clip.hardEdge,
+              clipBehavior: Clip.antiAlias,
+              child: Stack(
+                children: <Widget>[
+                  Positioned.fill(child: child!),
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: _buildResizeHandle(screen),
+                  ),
+                ],
+              ),
+            );
+          },
+          // 内容子树在此缓存：拖拽改变尺寸时不会重建（方案 §7 性能硬要求）
           child: Column(
-            children: [
+            children: <Widget>[
               _buildHeader(),
               Expanded(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+                  children: <Widget>[
                     _buildSidebar(),
                     _buildContentArea(),
                   ],
@@ -259,6 +496,30 @@ class _SettingsModalState extends State<SettingsModal> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 右下角拖拽手柄：拖拽调整尺寸，双击复位默认尺寸。
+  ///
+  /// ⚠️ 设置窗口是 Overlay 内组件，这里改的是**组件自身**尺寸，
+  /// 不涉及 `window_manager`（那会放大整个主窗口）。
+  Widget _buildResizeHandle(Size screen) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeDownRight,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (DragUpdateDetails d) => _onResizeDrag(d, screen),
+        onPanEnd: (_) => _saveWindowSize(_size.value),
+        onDoubleTap: () {
+          _size.value = const Size(_kDefaultWidth, _kDefaultHeight);
+          _saveWindowSize(_size.value);
+        },
+        child: const SizedBox(
+          width: 20,
+          height: 20,
+          child: CustomPaint(painter: _ResizeGripPainter()),
         ),
       ),
     );
@@ -287,7 +548,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 '设置 / Settings',
                 style: TextStyle(
-                  fontFamily: 'ZhiMangXing',
                   fontSize: 30,
                   height: 36 / 30,
                   letterSpacing: 2.0,
@@ -345,34 +605,28 @@ class _SettingsModalState extends State<SettingsModal> {
 
   Widget _buildSidebar() {
     return Container(
-      width: 192,
+      width: 200,
       decoration: BoxDecoration(
         color: AppColors.sidebarBackground,
         border: Border(
           right: BorderSide(color: AppColors.border, width: 1.6),
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(16, 15, 16, 33),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.lg,
+        AppSpacing.lg,
+        AppSpacing.xl,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildTabButton(
-            label: '个人资料',
-            iconPath: 'assets/images/tab_profile_icon.svg',
-            tab: SettingsTab.profile,
-          ),
-          const SizedBox(height: 9),
-          _buildTabButton(
-            label: '偏好设置',
-            iconPath: 'assets/images/tab_preference_icon.svg',
-            tab: SettingsTab.preference,
-          ),
-          const SizedBox(height: 8),
-          _buildTabButton(
-            label: '关于应用',
-            iconPath: 'assets/images/tab_about_icon.svg',
-            tab: SettingsTab.about,
-          ),
+        children: <Widget>[
+          // 2026-09-08 IA 重构：由 3 项（含「偏好设置」）改为 6 项，
+          // 顺序与图标统一在 SettingsTabMeta.items 维护。
+          for (int i = 0; i < SettingsTabMeta.items.length; i++) ...<Widget>[
+            if (i > 0) const SizedBox(height: AppSpacing.sm),
+            _buildTabButton(meta: SettingsTabMeta.items[i]),
+          ],
           const Spacer(),
           InteractiveWrapper(
             onTap: widget.onBack ?? widget.onClose,
@@ -396,52 +650,41 @@ class _SettingsModalState extends State<SettingsModal> {
     );
   }
 
-  Widget _buildTabButton({
-    required String label,
-    required String iconPath,
-    required SettingsTab tab,
-  }) {
-    final isSelected = _currentTab == tab;
+  Widget _buildTabButton({required SettingsTabMeta meta}) {
+    final bool isSelected = _currentTab == meta.tab;
     return InteractiveWrapper(
-      onTap: () => setState(() => _currentTab = tab),
+      onTap: () => setState(() => _currentTab = meta.tab),
       hoverScale: 1.0,
       hoverOffset: const Offset(0, -1),
       child: Container(
-        width: 158,
-        height: 51,
+        width: double.infinity,
+        height: 40,
         decoration: BoxDecoration(
           color: isSelected ? AppColors.buttonBackground : Colors.transparent,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(AppRadius.lg),
           border: Border.all(
             color: isSelected ? AppColors.border : Colors.transparent,
             width: 1.6,
           ),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: AppColors.border,
-                    offset: const Offset(2, 2),
-                    blurRadius: 0,
-                  ),
-                ]
-              : null,
         ),
-        padding: const EdgeInsets.fromLTRB(12, 10, 49, 13),
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SvgPicture.asset(iconPath, width: 18, height: 18),
+          children: <Widget>[
+            SvgPicture.asset(meta.iconPath, width: 18, height: 18),
             const SizedBox(width: 10),
-            Text(
-              label,
-              style: TextStyle(
-                fontFamily: 'Inter',
-                fontWeight: FontWeight.w700,
-                fontSize: 16,
-                height: 24 / 16,
-                color: isSelected
-                    ? AppColors.primaryText
-                    : AppColors.secondaryText,
+            Expanded(
+              child: Text(
+                meta.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                  height: 24 / 16,
+                  color: isSelected
+                      ? AppColors.primaryText
+                      : AppColors.secondaryText,
+                ),
               ),
             ),
           ],
@@ -454,13 +697,22 @@ class _SettingsModalState extends State<SettingsModal> {
     return Expanded(
       child: Container(
         color: AppColors.background,
-        padding: const EdgeInsets.fromLTRB(24, 24, 39, 24),
+        // 原为 fromLTRB(24, 24, 39, 24)，右侧 39 属历史遗留的不对称值，统一为 24
+        padding: const EdgeInsets.all(AppSpacing.xl),
         child: () {
           switch (_currentTab) {
             case SettingsTab.profile:
               return _buildProfileContent();
-            case SettingsTab.preference:
-              return _buildPreferenceContent();
+            case SettingsTab.appearance:
+              return _buildAppearanceContent();
+            case SettingsTab.gameLaunch:
+              return _buildGameLaunchContent();
+            case SettingsTab.bigPicture:
+              return _buildBigPictureContent();
+            case SettingsTab.networkStorage:
+              return _buildNetworkStorageContent();
+            case SettingsTab.contentSafety:
+              return _buildContentSafetyContent();
             case SettingsTab.about:
               return _buildAboutContent();
           }
@@ -468,6 +720,348 @@ class _SettingsModalState extends State<SettingsModal> {
       ),
     );
   }
+
+  /// 大屏模式页（2026-09-27 新增）：BPM 背景 OP 视频的两个偏好开关。
+  ///
+  /// 归属桌面设置页（用户拍板 Q1）—— 这两个开关只影响 BPM，但统一在设置里
+  /// 管理，不给 BPM 顶部栏增加设置入口。
+  ///
+  /// 单个游戏的视频上传 / 移除在「编辑游戏信息」窗口内（BPM 详情面板 → 编辑）。
+  Widget _buildBigPictureContent() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SettingsSection(
+            title: '背景 OP 视频',
+            description: '为大屏模式主页上传 OP 视频后，选中该游戏停留 3 秒即自动播放，'
+                '播完淡出恢复原背景。上传 / 移除在「编辑游戏信息」窗口内。',
+            children: <Widget>[
+              AnimatedBuilder(
+                animation: BpmOpVideoPreference.instance,
+                builder: (BuildContext context, Widget? _) {
+                  final bool on = BpmOpVideoPreference.instance.soundEnabled;
+                  return SettingsSwitchTile(
+                    title: '播放声音',
+                    icon: Icons.volume_up_rounded,
+                    value: on,
+                    // v3.18: 明确「默认」语义 —— 该游戏单独拨过开关后以详情页为准
+                    statusText: on
+                        ? '已开启 · 新游戏默认出声（可在详情内单独关）'
+                        : '已关闭 · 新游戏默认静音（可在详情内单独开）',
+                    onChanged: (bool value) async {
+                      await BpmOpVideoPreference.instance
+                          .setSoundEnabled(value);
+                    },
+                  );
+                },
+              ),
+              AnimatedBuilder(
+                animation: BpmOpVideoPreference.instance,
+                builder: (BuildContext context, Widget? _) {
+                  final bool on = BpmOpVideoPreference.instance.autoplayAlways;
+                  return SettingsSwitchTile(
+                    title: '每次选中都自动播放',
+                    icon: Icons.repeat_rounded,
+                    value: on,
+                    statusText: on
+                        ? '已开启 · 每次选中该游戏都会自动播放（默认）'
+                        : '已关闭 · 本次进入大屏后每个游戏只自动播一次',
+                    onChanged: (bool value) async {
+                      await BpmOpVideoPreference.instance
+                          .setAutoplayAlways(value);
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+          const GamepadSettingsSection(),
+          // v3.21: 操作引导总开关（用户拍板：开启显示、关闭完全不显示）
+          SettingsSection(
+            title: '操作引导',
+            description: '在大屏模式显示上下文按键提示（图标化键帽，随键鼠/手柄'
+                '自动切换）：卡片操作角标、搜索快捷键、侧缘翻页、LB/RB 切页等。',
+            children: <Widget>[
+              AnimatedBuilder(
+                animation: BpmGuidePreference.instance,
+                builder: (BuildContext context, Widget? _) {
+                  final bool on = BpmGuidePreference.instance.enabled;
+                  return SettingsSwitchTile(
+                    title: '显示操作引导',
+                    icon: Icons.gamepad_rounded,
+                    value: on,
+                    statusText: on
+                        ? '已开启 · 各界面显示当前可用的快捷操作提示'
+                        : '已关闭 · 完全不显示任何操作提示',
+                    onChanged: (bool value) async {
+                      await BpmGuidePreference.instance.setEnabled(value);
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 2026-09-08 IA 重构新增的四个页（由原「偏好设置」页拆分而来）。
+  ///
+  /// Phase 2 阶段先占位，Phase 3 分 4 批把原卡片方法迁移进来。
+  /// 外观页（原「主题设计器」卡片迁移而来）。
+  ///
+  /// ⚠️ 该卡片是 450 行的单体可折叠组件（含内置配色网格、特色主题、背景上传、
+  /// `MyThemesSection`），本次**保持内部实现零改动**整体迁入，仅在外层加分组容器。
+  /// 深度拆分与视觉令牌化留到 Phase 4，本阶段优先保证功能零回归。
+  Widget _buildAppearanceContent() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SettingsSection(
+            title: '软件主题',
+            isFirst: true,
+            description: '选择系统配色或特色背景主题，可上传自定义背景图并自由调整其位置。',
+            children: <Widget>[
+              _buildThemeDesignerCard(),
+              // v3.10 R4：全局「减少动效」。
+              // ⚠️ 作用范围**仅动态背景图**（GIF 不再循环播放，只渲染静态首帧），
+              // 不包含界面过渡动效——文案必须与此保持一致，不得写成"关闭全部动画"。
+              // 用 AnimatedBuilder 直连偏好单例，因此本页不需要额外的 State 字段，
+              // 也不需要在 initState 里加载（值已在 main.dart 首帧前读好）。
+              AnimatedBuilder(
+                animation: MotionPreference.instance,
+                builder: (BuildContext context, Widget? _) {
+                  final bool on = MotionPreference.instance.reduceMotion;
+                  return SettingsSwitchTile(
+                    title: '减少动效',
+                    icon: Icons.motion_photos_off_rounded,
+                    value: on,
+                    statusText: on
+                        ? '已开启 · 动态背景图只显示首帧，不再循环播放'
+                        : '已关闭 · GIF 动态背景图正常循环播放',
+                    onChanged: (bool value) async {
+                      await MotionPreference.instance.setReduceMotion(value);
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+          SettingsSection(
+            title: '自定义设计',
+            description: '打开主题设计器逐项调色，管理我的主题（新建 / 编辑 / 导入 / 删除）。',
+            children: <Widget>[_buildCustomDesignCard()],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 游戏与启动页（原「开机自启动」「快捷窗口控制」「超分增强 Magpie」
+  /// 「游玩时长统计模式」四张卡片迁移而来）。
+  ///
+  /// 同样保持各卡片内部实现零改动，仅按主题域分四个组。
+  Widget _buildGameLaunchContent() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SettingsSection(
+            title: '系统',
+            isFirst: true,
+            children: <Widget>[
+              _buildAutoStartCard(),
+              _buildAutoShortcutCard(),
+            ],
+          ),
+          SettingsSection(
+            title: '游戏窗口',
+            children: <Widget>[_buildQuickWindowCard()],
+          ),
+          SettingsSection(
+            title: '超分增强',
+            description: '用 Magpie 对启动的游戏做实时超分，可切换内置版本或外接本地 Magpie。',
+            children: <Widget>[_buildMagpieCard()],
+          ),
+          SettingsSection(
+            title: '游玩记录',
+            children: <Widget>[_buildPlaytimeTrackingCard()],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 网络与存储页（原「网络代理设置」「默认游戏安装路径」「缓存管理」
+  /// 三张卡片迁移而来）。
+  Widget _buildNetworkStorageContent() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SettingsSection(
+            title: '网络',
+            isFirst: true,
+            children: <Widget>[_buildProxyCard(), _buildDownloadIntensityCard()],
+          ),
+          SettingsSection(
+            title: '游戏库目录',
+            description: '从探索页安装的游戏默认存放到此位置，游戏本体与元数据分离存储。',
+            children: <Widget>[_buildInstallPathCard()],
+          ),
+          // 「归档库」分组（方案 §7 Phase 4）：位置 / 保留份数 / 压缩档位。
+          // 面板整体独立成 widget 文件，本文件只做挂载，避免继续膨胀。
+          SettingsSection(
+            title: '归档库',
+            description: '「保存游戏数据 / 打包」产出的游戏数据归档存放位置与清理策略。',
+            children: <Widget>[const ArchiveLibrarySettingsCard()],
+          ),
+          // 「云备份」分组（方案 §7 Phase 5）：WebDAV 直连 Provider，
+          // 凭据 DPAPI 加密。上传入口在游戏数据弹窗的归档条目上（手动）。
+          SettingsSection(
+            title: '云备份',
+            description: '把游戏归档手动上传到你的 WebDAV 网盘（坚果云 / Nextcloud / NAS）。',
+            children: <Widget>[const CloudBackupSettingsCard()],
+          ),
+          SettingsSection(
+            title: '缓存',
+            children: <Widget>[_buildStorageManagementCard()],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 内容保护页（原「NSFW 内容保护」卡片迁移而来）。
+  ///
+  /// 2026-09-08 IA 重构：卡片平铺 → 分组列表。
+  /// ⚠️ 判定逻辑与 service 调用**一律未改**，只换容器与文案。
+  Widget _buildContentSafetyContent() {
+    final NsfwScanService scan = NsfwScanService.instance;
+    final int pending = NsfwDetectionService.instance.pendingCount;
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SettingsSection(
+            title: '内容保护',
+            isFirst: true,
+            description:
+                '纯净模式由本地 AI 识别 R18+ 内容后模糊或隐藏；'
+                    '工作模式不做判定，全部图片替换为占位图。'
+                    '原图文件字节级不变，全程不联网。',
+            children: <Widget>[
+              SettingsSwitchTile(
+                title: 'NSFW 内容保护',
+                icon: Icons.visibility_off_rounded,
+                value: _nsfwEnabled,
+                statusText: _nsfwStatusText(),
+                warning: _nsfwEnabled && !_nsfwReady,
+                onChanged: (bool value) async {
+                  await NsfwSettings.instance.setEnabled(value);
+                  if (value) {
+                    await _ensureNsfwReady();
+                    // 首次开启：把库里存量封面/截图补进检测队列
+                    // （仅跑一次，hasEverFullScanned 持久化防重；重复扫描幂等跳过）
+                    // 工作模式不做判定，无需扫描。
+                    if (NsfwSettings.instance.mode != NsfwDisplayMode.work) {
+                      NsfwScanService.instance.startFullScan();
+                    }
+                  }
+                },
+              ),
+              // 全量扫描进行中：单独一行显示进度，否则几百张图扫描期间用户无从感知
+              if (_nsfwEnabled && scan.isScanning)
+                SettingsTile(
+                  title: '全量扫描中',
+                  subtitle: '已入队 ${scan.enqueued}/${scan.total}'
+                      '${pending > 0 ? ' · 待推理 $pending' : ''}',
+                  icon: Icons.hourglass_top,
+                ),
+            ],
+          ),
+          if (_nsfwEnabled) ...<Widget>[
+            SettingsSection(
+              title: '处理模式',
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: _buildNsfwModeOption(
+                        NsfwDisplayMode.clean,
+                        '本地 AI 判定敏感内容后模糊或隐藏，其余画面不受影响',
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: _buildNsfwModeOption(
+                        NsfwDisplayMode.work,
+                        '所有图片替换为占位图，不做判定，最省资源',
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            SettingsSection(
+              title: '高级',
+              children: <Widget>[
+                SettingsSwitchTile(
+                  title: '允许点击临时揭示',
+                  icon: Icons.touch_app_outlined,
+                  value: _nsfwAllowReveal,
+                  // v2.5：揭示入口由「整图点击」改为「右下角眼睛角标」，
+                  // 网格卡片随之可用（此前为避免抢点击而一律关闭）。
+                  statusText: '点右下角眼睛角标显示原图，再点恢复遮蔽'
+                      '（封面卡片 / 详情封面 / 截图轮播生效）',
+                  onChanged: (bool value) =>
+                      NsfwSettings.instance.setAllowReveal(value),
+                ),
+                SettingsTile(
+                  title: '补扫全部封面与截图',
+                  subtitle: pending > 0
+                      ? '待检测 $pending 张'
+                      : '有新增或漏检的本地图片时可强制重扫（已判定的不会重复推理）',
+                  icon: Icons.refresh,
+                  trailing: OutlinedButton(
+                    onPressed: (scan.isScanning || !_nsfwReady)
+                        ? null
+                        : () => scan.startFullScan(force: true),
+                    child: Text(scan.isScanning ? '扫描中…' : '补扫'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// NSFW 状态文案。
+  ///
+  /// 2026-09-08 修复：原文案固定写「敏感部位自动局部打码」，
+  /// 选「纯净模式」时与实际行为（隐藏 R18+ 截图 + 封面打码）不符。
+  /// 另：**未启用**时用「已关闭」，启用态统一用「已启用」（术语统一，方案 §5.3 U3）。
+  ///
+  /// 2026-09-08 补：工作模式**不加载模型**（[NsfwDisplayMode.work]），
+  /// 此时 [_nsfwReady] 恒为 false，故必须**先于**未就绪分支返回，
+  /// 否则会误报「模型未就绪」。
+  String _nsfwStatusText() {
+    if (!_nsfwEnabled) return '已关闭 · 封面与截图原样显示';
+    if (_nsfwMode == NsfwDisplayMode.work) {
+      return '已启用 · 工作模式：全部图片替换为占位图，不做判定';
+    }
+    if (!_nsfwReady) return '模型未就绪 · ${_nsfwInitError ?? '等待加载'}';
+    return switch (_nsfwMode) {
+      NsfwDisplayMode.clean => '已启用 · 纯净模式：R18+ 截图隐藏、封面模糊',
+      NsfwDisplayMode.work => '已启用 · 工作模式：全部图片替换为占位图',
+    };
+  }
+
 
   Widget _buildProfileContent() {
     return SingleChildScrollView(
@@ -493,7 +1087,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 Text(
                   ' 修改资料',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w700,
                     fontSize: 20,
                     height: 28 / 20,
@@ -540,7 +1133,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     child: Text(
                       _saveMessage!,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 13,
                         color: _saveSuccess
@@ -646,7 +1238,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         '上传新头像',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w700,
                           fontSize: 14,
                           height: 20 / 14,
@@ -661,7 +1252,6 @@ class _SettingsModalState extends State<SettingsModal> {
             Text(
               '支持 JPG, PNG 格式，最大 2MB。',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 12,
                 height: 16 / 12,
@@ -682,7 +1272,6 @@ class _SettingsModalState extends State<SettingsModal> {
         Text(
           label,
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w700,
             fontSize: 14,
             height: 20 / 14,
@@ -714,7 +1303,6 @@ class _SettingsModalState extends State<SettingsModal> {
         controller: _nicknameController,
         focusNode: _nicknameFocusNode,
         style: TextStyle(
-          fontFamily: 'Inter',
           fontWeight: FontWeight.w500,
           fontSize: 16,
           height: 24 / 16,
@@ -727,7 +1315,6 @@ class _SettingsModalState extends State<SettingsModal> {
           isDense: true,
           hintText: '输入昵称',
           hintStyle: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w400,
             fontSize: 16,
             color: AppColors.inputHint,
@@ -757,7 +1344,6 @@ class _SettingsModalState extends State<SettingsModal> {
         focusNode: _bioFocusNode,
         maxLines: null,
         style: TextStyle(
-          fontFamily: 'Inter',
           fontWeight: FontWeight.w500,
           fontSize: 14,
           height: 20 / 14,
@@ -769,7 +1355,6 @@ class _SettingsModalState extends State<SettingsModal> {
           isDense: true,
           hintText: '写点什么介绍自己吧~',
           hintStyle: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w400,
             fontSize: 14,
             color: AppColors.inputHint,
@@ -822,7 +1407,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 Text(
                   ' 保存修改',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w700,
                     fontSize: 18,
                     height: 28 / 18,
@@ -837,56 +1421,44 @@ class _SettingsModalState extends State<SettingsModal> {
     );
   }
 
-  Widget _buildPreferenceContent() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.only(bottom: 9),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(
-                  color: AppColors.borderLight,
-                  width: 1.6,
-                ),
+  Widget _buildNsfwModeOption(NsfwDisplayMode mode, String hint) {
+    final bool selected = _nsfwMode == mode;
+    return InteractiveWrapper(
+      onTap: () => NsfwSettings.instance.setMode(mode),
+      hoverScale: 1.0,
+      hoverOffset: const Offset(0, -1),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.buttonBackground : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? AppColors.border : AppColors.borderLight,
+            width: 1.4,
+          ),
+        ),
+        child: Column(
+          children: <Widget>[
+            Text(
+              mode.label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: AppColors.primaryText,
               ),
             ),
-            child: Row(
-              children: [
-                SvgPicture.asset('assets/images/tab_preference_icon.svg',
-                    width: 20, height: 20),
-                const SizedBox(width: 8),
-                Text(
-                  ' 外观与通知',
-                  style: TextStyle(
-                    fontFamily: 'Inter',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 20,
-                    height: 28 / 20,
-                    color: AppColors.border,
-                  ),
-                ),
-              ],
+            const SizedBox(height: 2),
+            Text(
+              hint,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.secondaryText,
+              ),
             ),
-          ),
-          const SizedBox(height: 24),
-          _buildThemeDesignerCard(),
-          const SizedBox(height: 20),
-          _buildAutoStartCard(),
-          const SizedBox(height: 20),
-          _buildInstallPathCard(),
-          const SizedBox(height: 20),
-          _buildProxyCard(),
-          const SizedBox(height: 20),
-          _buildMagpieCard(),
-          const SizedBox(height: 20),
-          _buildStorageManagementCard(),
-          const SizedBox(height: 20),
-          _buildPlaytimeTrackingCard(),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -901,15 +1473,22 @@ class _SettingsModalState extends State<SettingsModal> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -918,7 +1497,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '游玩时长统计模式',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w700,
               fontSize: 16,
               height: 24 / 16,
@@ -930,7 +1508,6 @@ class _SettingsModalState extends State<SettingsModal> {
             '精准模式：仅游戏窗口在前台时才计时（推荐）\n'
             '宽松模式：从启动到退出的墙钟时长',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 12,
               height: 18 / 12,
               color: AppColors.secondaryText,
@@ -969,7 +1546,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       '精准模式（推荐）',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w600,
                         fontSize: 13,
                         color: AppColors.primaryText,
@@ -1009,7 +1585,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       '宽松模式',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w600,
                         fontSize: 13,
                         color: AppColors.primaryText,
@@ -1041,7 +1616,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       child: Text(
                         '统计重建（自愈）',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
                           color: AppColors.primaryText,
@@ -1055,7 +1629,6 @@ class _SettingsModalState extends State<SettingsModal> {
                   '当游玩时长统计不准确时，可从会话历史记录全量重算。\n'
                   '会话记录是事实表，统计是其投影，损坏时可由此重建。',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     height: 16 / 11,
                     color: AppColors.secondaryText,
@@ -1103,7 +1676,6 @@ class _SettingsModalState extends State<SettingsModal> {
                             Text(
                               _isRebuildingStats ? '重建中...' : '重建所有游戏统计',
                               style: TextStyle(
-                                fontFamily: 'Inter',
                                 fontWeight: FontWeight.w600,
                                 fontSize: 12,
                                 color: AppColors.primaryText,
@@ -1119,11 +1691,10 @@ class _SettingsModalState extends State<SettingsModal> {
                         child: Text(
                           _rebuildStatsMessage!,
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontSize: 11,
                             color: _rebuildStatsSuccess
-                                ? const Color(0xFF4CAF50)
-                                : const Color(0xFFE57373),
+                                ? AppColors.successGreen
+                                : kSettingsWarning,
                           ),
                         ),
                       ),
@@ -1200,19 +1771,163 @@ class _SettingsModalState extends State<SettingsModal> {
     }
   }
 
+  /// 首次启动自动生成桌面快捷方式（全局偏好，2026-09-27）。
+  ///
+  /// [AutoShortcutPreference.load] 幂等（`main.dart` 首帧前已加载过），
+  /// 此处只做一次读取回填。本页是唯一写入方，故不挂 listener。
+  void _loadAutoShortcutPref() async {
+    final AutoShortcutPreference pref = AutoShortcutPreference.instance;
+    await pref.load();
+    if (!mounted) return;
+    setState(() => _autoShortcutEnabled = pref.enabled);
+  }
+
+  void _loadQuickWindowStatus() async {
+    // 读设置页开关 prefs（控制"游戏启动后是否默认自动开启"），
+    // 同步 UI 状态；与"当前会话 g_enabled"是两个独立概念。
+    if (!mounted) return;
+    final autoEnable = await QuickWindowService.instance.getAutoEnable();
+    if (mounted) {
+      setState(() {
+        _quickWindowEnabled = autoEnable;
+      });
+    }
+  }
+
+  // ========== 快捷自定义窗口卡片（AltSnap 式游戏窗口控制） ==========
+  Widget _buildQuickWindowCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: _quickWindowEnabled
+                      ? const Color(0xFF7C6CF0).withOpacity(0.12)
+                      : AppColors.background,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  Icons.web_asset_rounded,
+                  size: 22,
+                  color: _quickWindowEnabled
+                      ? const Color(0xFF7C6CF0)
+                      : AppColors.secondaryText,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      '快捷窗口控制',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                        height: 24 / 16,
+                        color: AppColors.primaryText,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _quickWindowEnabled
+                          ? '已开启 · 游戏启动后自动启用快捷窗口控制'
+                          : '已关闭 · 游戏启动后需长按中键手动开启',
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 18 / 13,
+                        color: AppColors.secondaryText,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch.adaptive(
+                value: _quickWindowEnabled,
+                activeColor: const Color(0xFF7C6CF0),
+                onChanged: (value) async {
+                  if (value && !QuickWindowService.instance.isAvailable) {
+                    if (mounted) {
+                      AppSnackBar.warning(
+                        context,
+                        '当前构建不支持快捷窗口控制，请更新程序',
+                      );
+                    }
+                    return;
+                  }
+                  // 写 prefs（决定游戏启动后是否默认自动开启）并立即应用到当前会话
+                  final ok =
+                      await QuickWindowService.instance.setAutoEnable(value);
+                  if (ok && mounted) {
+                    setState(() => _quickWindowEnabled = value);
+                  }
+                },
+              ),
+            ],
+          ),
+          if (_quickWindowEnabled)
+            Padding(
+              padding: const EdgeInsets.only(top: 12, left: 54),
+              child: Text(
+                '手势：中键单击弹出菜单 · Alt+左键拖拽移动 · Alt+边缘拖拽调整大小 · Alt+滚轮调透明度\n快捷开关：长按中键约1秒可临时挂起/恢复本功能（鼠标旁有进度提示，不影响此处的开关设置）\n菜单：置顶 / 透明度 / 静音（仅游戏进程）/ 最大化 / 居中 / 关闭',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 18 / 12,
+                  color: AppColors.secondaryText,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAutoStartCard() {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(16),
       child: Row(
@@ -1222,7 +1937,7 @@ class _SettingsModalState extends State<SettingsModal> {
             height: 40,
             decoration: BoxDecoration(
               color: _autoStartEnabled
-                  ? const Color(0xFF4CAF50).withOpacity(0.1)
+                  ? AppColors.successGreen.withOpacity(0.1)
                   : AppColors.background,
               borderRadius: BorderRadius.circular(8),
             ),
@@ -1230,7 +1945,7 @@ class _SettingsModalState extends State<SettingsModal> {
               Icons.power_settings_new_rounded,
               size: 22,
               color: _autoStartEnabled
-                  ? const Color(0xFF4CAF50)
+                  ? AppColors.successGreen
                   : AppColors.secondaryText,
             ),
           ),
@@ -1243,7 +1958,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 Text(
                   '开机自启动',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w700,
                     fontSize: 16,
                     height: 24 / 16,
@@ -1256,7 +1970,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       ? '已开启 · 开机后自动静默运行于系统托盘'
                       : '开启后，开机自动运行于系统托盘，随时快速启动游戏',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 13,
                     height: 18 / 13,
                     color: AppColors.secondaryText,
@@ -1267,7 +1980,7 @@ class _SettingsModalState extends State<SettingsModal> {
           ),
           Switch.adaptive(
             value: _autoStartEnabled,
-            activeColor: const Color(0xFF4CAF50),
+            activeColor: AppColors.successGreen,
             onChanged: (value) async {
               bool success;
               if (value) {
@@ -1285,19 +1998,115 @@ class _SettingsModalState extends State<SettingsModal> {
     );
   }
 
+  /// 全局「首次启动自动生成桌面快捷方式」开关卡片。
+  ///
+  /// 2026-09-27：该能力原为启动管理弹窗中的**每游戏**开关
+  /// （`game.json.auto_create_shortcut`，默认 `true`），现改为全局偏好
+  /// （[AutoShortcutPreference]）并**默认关闭**。
+  /// 样式与同组 [_buildAutoStartCard] 保持一致（同一分组内两张同款卡片）。
+  Widget _buildAutoShortcutCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _autoShortcutEnabled
+                  ? AppColors.successGreen.withOpacity(0.1)
+                  : AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.desktop_windows_rounded,
+              size: 22,
+              color: _autoShortcutEnabled
+                  ? AppColors.successGreen
+                  : AppColors.secondaryText,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  '首次启动自动生成桌面快捷方式',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    height: 24 / 16,
+                    color: AppColors.primaryText,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _autoShortcutEnabled
+                      ? '已开启 · 首次启动游戏时自动创建桌面快捷方式'
+                      : '已关闭 · 不再自动创建，可在启动管理中手动生成',
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 18 / 13,
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            value: _autoShortcutEnabled,
+            activeColor: AppColors.successGreen,
+            onChanged: (value) async {
+              setState(() => _autoShortcutEnabled = value);
+              await AutoShortcutPreference.instance.setEnabled(value);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNotificationCard() {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(16),
       child: Row(
@@ -1310,7 +2119,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 Text(
                   '接收系统通知',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w700,
                     fontSize: 16,
                     height: 24 / 16,
@@ -1321,7 +2129,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 Text(
                   '开启后会收到新游戏推荐或评论提醒。',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w500,
                     fontSize: 14,
                     height: 20 / 14,
@@ -1384,15 +2191,22 @@ class _SettingsModalState extends State<SettingsModal> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -1401,7 +2215,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '默认游戏安装路径',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w700,
               fontSize: 16,
               height: 24 / 16,
@@ -1412,7 +2225,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '设置后，从探索页安装的游戏将默认存放到此位置。游戏本体与元数据分离存储。',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w500,
               fontSize: 13,
               height: 18 / 13,
@@ -1435,7 +2247,6 @@ class _SettingsModalState extends State<SettingsModal> {
                   child: Text(
                     _defaultInstallPath ?? LocalGameRegistry.gamesBaseDir,
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontWeight: FontWeight.w500,
                       fontSize: 14,
                       height: 20 / 14,
@@ -1482,7 +2293,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     child: Text(
                       _pathSaveMessage!,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 13,
                         color: _pathSaveSuccess
@@ -1534,7 +2344,6 @@ class _SettingsModalState extends State<SettingsModal> {
                         Text(
                           '浏览...',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontWeight: FontWeight.w700,
                             fontSize: 14,
                             height: 20 / 14,
@@ -1560,7 +2369,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     child: Text(
                       '清除设置',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 13,
                         color: AppColors.secondaryText,
@@ -1651,19 +2459,153 @@ class _SettingsModalState extends State<SettingsModal> {
     }
   }
 
+  /// 下载强度卡（2026-09-26 批D）：三档 + 全局限速滑条。
+  ///
+  /// 修改即时写 prefs；对**下一次**下载任务生效（内核 start 时读取）。
+  Widget _buildDownloadIntensityCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '下载强度',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 16,
+              height: 24 / 16,
+              color: AppColors.primaryText,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '控制下载占用的连接数与带宽，修改对下一次下载生效。',
+            style: TextStyle(
+              fontWeight: FontWeight.w500,
+              fontSize: 13,
+              height: 18 / 13,
+              color: AppColors.secondaryText,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...DownloadIntensity.values.map(_buildIntensityRow),
+          const SizedBox(height: 12),
+          Text(
+            _downloadSpeedLimitMbps <= 0
+                ? '全局限速：不限速'
+                : '全局限速：${_downloadSpeedLimitMbps.toStringAsFixed(_downloadSpeedLimitMbps.truncateToDouble() == _downloadSpeedLimitMbps ? 0 : 1)} MB/s',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+              height: 18 / 13,
+              color: AppColors.primaryText,
+            ),
+          ),
+          Slider(
+            value: _downloadSpeedLimitMbps.clamp(0.0, 100.0),
+            min: 0,
+            max: 100,
+            divisions: 200,
+            label: _downloadSpeedLimitMbps <= 0
+                ? '不限'
+                : '${_downloadSpeedLimitMbps.toStringAsFixed(_downloadSpeedLimitMbps.truncateToDouble() == _downloadSpeedLimitMbps ? 0 : 1)} MB/s',
+            onChanged: (v) => setState(() => _downloadSpeedLimitMbps = v),
+            onChangeEnd: _onSpeedLimitCommit,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIntensityRow(DownloadIntensity v) {
+    final bool selected = _downloadIntensity == v;
+    return InkWell(
+      onTap: () => _onIntensityChanged(v),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              selected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_off,
+              size: 18,
+              color: selected
+                  ? AppColors.selectedAccent
+                  : AppColors.secondaryText,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    v.label,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      height: 20 / 14,
+                      color: AppColors.primaryText,
+                    ),
+                  ),
+                  Text(
+                    v.description,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 12,
+                      height: 16 / 12,
+                      color: AppColors.secondaryText,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildProxyCard() {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -1672,7 +2614,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '网络代理设置',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w700,
               fontSize: 16,
               height: 24 / 16,
@@ -1683,7 +2624,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '配置代理服务器以加速访问海外数据源（Steam、DLsite等）。格式示例：http://127.0.0.1:7890',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w500,
               fontSize: 13,
               height: 18 / 13,
@@ -1701,7 +2641,6 @@ class _SettingsModalState extends State<SettingsModal> {
             child: TextField(
               controller: _proxyController,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 14,
                 height: 20 / 14,
@@ -1712,7 +2651,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 isDense: true,
                 hintText: 'http://127.0.0.1:7890',
                 hintStyle: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w400,
                   fontSize: 14,
                   color: AppColors.inputHint,
@@ -1753,7 +2691,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     child: Text(
                       _proxySaveMessage!,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 13,
                         color: _proxySaveSuccess
@@ -1790,7 +2727,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         '保存',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w700,
                           fontSize: 14,
                           height: 20 / 14,
@@ -1814,7 +2750,6 @@ class _SettingsModalState extends State<SettingsModal> {
                   child: Text(
                     '清除',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontWeight: FontWeight.w500,
                       fontSize: 13,
                       color: AppColors.secondaryText,
@@ -1907,7 +2842,6 @@ class _SettingsModalState extends State<SettingsModal> {
                         Text(
                           '超分增强 (Magpie)',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontWeight: FontWeight.w700,
                             fontSize: 16,
                             height: 24 / 16,
@@ -1919,7 +2853,6 @@ class _SettingsModalState extends State<SettingsModal> {
                           child: Text(
                             '为游戏提供分辨率增强功能',
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontWeight: FontWeight.w500,
                               fontSize: 13,
                               color: AppColors.secondaryText,
@@ -1980,7 +2913,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 '数据来源',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 14,
                   color: AppColors.primaryText,
@@ -2020,7 +2952,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 '高级选项',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 14,
                   color: AppColors.primaryText,
@@ -2074,7 +3005,6 @@ class _SettingsModalState extends State<SettingsModal> {
                         child: Text(
                           _magpieStatusMessage!,
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontWeight: FontWeight.w500,
                             fontSize: 13,
                             color: _magpieStatusSuccess
@@ -2135,7 +3065,6 @@ class _SettingsModalState extends State<SettingsModal> {
             Text(
               label,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 14,
                 color:
@@ -2183,7 +3112,6 @@ class _SettingsModalState extends State<SettingsModal> {
             Text(
               label,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 13,
                 color: AppColors.primaryText,
@@ -2213,7 +3141,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             'Magpie 路径',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w600,
               fontSize: 13,
               color: AppColors.primaryText,
@@ -2253,7 +3180,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       child: Text(
                         path.isNotEmpty ? path : '选择 Magpie.exe 所在路径...',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w500,
                           fontSize: 13,
                           color: path.isNotEmpty
@@ -2293,7 +3219,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     ? '已检测到 Magpie'
                     : (path.isEmpty ? '未设置路径' : '路径无效，请重新选择'),
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w500,
                   fontSize: 12,
                   color: pathValid
@@ -2338,7 +3263,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '默认效果预设',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w600,
               fontSize: 13,
               color: AppColors.primaryText,
@@ -2364,7 +3288,6 @@ class _SettingsModalState extends State<SettingsModal> {
             Text(
               '已导入的模板',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
                 color: AppColors.primaryText,
@@ -2415,7 +3338,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         '导入模板',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                           color: AppColors.border,
@@ -2429,7 +3351,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 '支持 Magpie ScalingModes JSON 格式',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w400,
                   fontSize: 12,
                   color: AppColors.secondaryText,
@@ -2455,7 +3376,6 @@ class _SettingsModalState extends State<SettingsModal> {
       preferBelow: true,
       waitDuration: const Duration(milliseconds: 500),
       textStyle: TextStyle(
-        fontFamily: 'Inter',
         fontSize: 12,
         color: Colors.white,
       ),
@@ -2493,7 +3413,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 Text(
                   preset.displayName,
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
                     fontSize: 12,
                     color: isSelected
@@ -2533,7 +3452,7 @@ class _SettingsModalState extends State<SettingsModal> {
 
       if (result != null && result.files.single.path != null) {
         final selectedPath = result.files.single.path!;
-        if (selectedPath.endsWith('Magpie.exe')) {
+        if (selectedPath.toLowerCase().endsWith('magpie.exe')) {
           await MagpieService.instance.setExternalPath(selectedPath);
           setState(() {
             _magpieStatusMessage = '路径已保存';
@@ -2618,7 +3537,6 @@ class _SettingsModalState extends State<SettingsModal> {
                   Text(
                     'CT',
                     style: TextStyle(
-                      fontFamily: 'ZhiMangXing',
                       fontSize: 36,
                       height: 40 / 36,
                       letterSpacing: 2.0,
@@ -2637,7 +3555,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 'Chrono Tide',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontFamily: 'ZhiMangXing',
                   fontSize: 30,
                   height: 36 / 30,
                   letterSpacing: 2.0,
@@ -2649,7 +3566,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 'Version $_appVersion (Galgame Style)',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 16,
                   height: 24 / 16,
@@ -2665,7 +3581,6 @@ class _SettingsModalState extends State<SettingsModal> {
               '一个专为纯爱废萌和剧情向Galgame打造的本地管理与分享平台。用最温馨的设计，记录每一个心动瞬间。(´,,•ω•,,)♡',
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w400,
                 fontSize: 14,
                 height: 20 / 14,
@@ -2705,7 +3620,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     Text(
                       '检查更新',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w700,
                         fontSize: 16,
                         color: Colors.white,
@@ -2729,15 +3643,22 @@ class _SettingsModalState extends State<SettingsModal> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -2751,7 +3672,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 '缓存管理',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 16,
                   height: 24 / 16,
@@ -2764,7 +3684,6 @@ class _SettingsModalState extends State<SettingsModal> {
           Text(
             '所有缓存均存储在软件安装目录内，不占用系统 C 盘。清理仅删除可再生缓存（图片、临时文件、元数据），主题、背景图、游戏配置等用户数据不会被清除。',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w500,
               fontSize: 13,
               height: 18 / 13,
@@ -2808,7 +3727,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     child: Text(
                       _cacheCleanupMessage!,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 13,
                         color: _cacheCleanupSuccess
@@ -2861,7 +3779,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         _isCleaningCache ? '清理中...' : '清理缓存',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w700,
                           fontSize: 14,
                           height: 20 / 14,
@@ -2892,7 +3809,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         '刷新',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w500,
                           fontSize: 13,
                           color: AppColors.secondaryText,
@@ -2903,6 +3819,25 @@ class _SettingsModalState extends State<SettingsModal> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 32),
+          Text(
+            '开源组件致谢',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+              color: AppColors.primaryText,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'SDL3 (Simple DirectMedia Layer) — Copyright (c) Sam Lantinga & libsdl-org contributors, zlib License。用于跨厂商手柄输入（Xbox / PlayStation / Switch 等），完整许可文本见安装目录 runtime/sdl3/LICENSE.txt。',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              height: 17 / 12,
+              color: AppColors.secondaryText,
+            ),
           ),
         ],
       ),
@@ -2934,7 +3869,6 @@ class _SettingsModalState extends State<SettingsModal> {
             Text(
               '正在计算缓存大小...',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 13,
                 color: AppColors.secondaryText,
@@ -2965,7 +3899,6 @@ class _SettingsModalState extends State<SettingsModal> {
                 child: Text(
                   '点击查看缓存占用情况',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w500,
                     fontSize: 13,
                     color: AppColors.secondaryText,
@@ -2995,7 +3928,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 '当前缓存总占用：',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
                   color: AppColors.primaryText,
@@ -3005,7 +3937,6 @@ class _SettingsModalState extends State<SettingsModal> {
               Text(
                 StorageCleanupService.formatBytes(_cacheTotalBytes),
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 14,
                   color: AppColors.selectedAccent,
@@ -3029,7 +3960,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         '超过 1GB',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w600,
                           fontSize: 10,
                           color: Colors.red.shade700,
@@ -3061,7 +3991,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     Text(
                       u.label,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 12,
                         color: AppColors.secondaryText,
@@ -3073,7 +4002,6 @@ class _SettingsModalState extends State<SettingsModal> {
                           ? StorageCleanupService.formatBytes(u.sizeBytes)
                           : '空',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w600,
                         fontSize: 12,
                         color: u.sizeBytes > 0
@@ -3102,7 +4030,6 @@ class _SettingsModalState extends State<SettingsModal> {
                     child: Text(
                       '下载残留压缩包 (${StorageCleanupService.formatBytes(_downloadArchivesSize)})',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 12,
                         color: AppColors.secondaryText,
                       ),
@@ -3121,7 +4048,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       child: Text(
                         '清理',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w600,
                           fontSize: 11,
                           color: AppColors.selectedAccent,
@@ -3228,6 +4154,9 @@ class _SettingsModalState extends State<SettingsModal> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+        ),
         title: const Text('确认清理下载残留'),
         content: Text(
           '将永久删除 downloads 目录下的所有压缩包 '
@@ -3283,22 +4212,29 @@ class _SettingsModalState extends State<SettingsModal> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppColors.sidebarBackground,
-        border: Border.all(color: AppColors.border, width: 1.6),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.borderLight,
-            offset: const Offset(2, 2),
-            blurRadius: 0,
-          ),
-        ],
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InteractiveWrapper(
             onTap: () => setState(
-                () => _themeDesignerExpanded = !_themeDesignerExpanded),
+                () => _softwareThemeExpanded = !_softwareThemeExpanded),
             hoverScale: 1.0,
             hoverOffset: Offset.zero,
             child: Container(
@@ -3306,7 +4242,7 @@ class _SettingsModalState extends State<SettingsModal> {
               padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
               child: Row(
                 children: [
-                  Icon(Icons.palette_outlined,
+                  Icon(Icons.wallpaper_rounded,
                       size: 20, color: AppColors.border),
                   const SizedBox(width: 10),
                   Expanded(
@@ -3314,9 +4250,8 @@ class _SettingsModalState extends State<SettingsModal> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '主题设计器',
+                          '软件主题',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontWeight: FontWeight.w700,
                             fontSize: 16,
                             height: 24 / 16,
@@ -3325,9 +4260,8 @@ class _SettingsModalState extends State<SettingsModal> {
                         ),
                         const SizedBox(height: 1),
                         Text(
-                          '自定义应用外观，含 ${featuredThemes.length} 款特色背景主题',
+                          '系统主题 · 特色主题 · 自定义背景图',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontWeight: FontWeight.w500,
                             fontSize: 13,
                             height: 18 / 13,
@@ -3339,7 +4273,7 @@ class _SettingsModalState extends State<SettingsModal> {
                   ),
                   AnimatedRotation(
                     duration: const Duration(milliseconds: 200),
-                    turns: _themeDesignerExpanded ? 0.5 : 0,
+                    turns: _softwareThemeExpanded ? 0.5 : 0,
                     child: Icon(Icons.expand_more,
                         size: 20, color: AppColors.secondaryText),
                   ),
@@ -3349,7 +4283,7 @@ class _SettingsModalState extends State<SettingsModal> {
           ),
           AnimatedCrossFade(
             duration: const Duration(milliseconds: 250),
-            crossFadeState: _themeDesignerExpanded
+            crossFadeState: _softwareThemeExpanded
                 ? CrossFadeState.showSecond
                 : CrossFadeState.showFirst,
             firstChild: const SizedBox(width: double.infinity, height: 0),
@@ -3370,60 +4304,91 @@ class _SettingsModalState extends State<SettingsModal> {
                           size: 15, color: AppColors.secondaryText),
                       const SizedBox(width: 6),
                       Text(
-                        '经典配色',
+                        '系统主题',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                           height: 18 / 13,
                           color: AppColors.secondaryText,
                         ),
                       ),
+                      const Spacer(),
+                      // v3.9：跟随系统主题开关——默认关闭（软件默认暖白），
+                      // 开启后按设备深浅色自动切换 浅色/深色；
+                      // 手动选择其它主题会自动退出跟随（否则行为不一致）
+                      Text(
+                        '跟随系统',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w500,
+                          fontSize: 12,
+                          color: AppColors.secondaryText,
+                        ),
+                      ),
+                      const SizedBox(width: 2),
+                      Transform.scale(
+                        scale: 0.75,
+                        child: Switch(
+                          value: AppThemeManager.instance.followSystemTheme,
+                          onChanged: (v) =>
+                              AppThemeManager.instance.setFollowSystemTheme(v),
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 10),
+                  // v3.9：系统主题——圆角方形小卡横向排列（2026-09-13 用户
+                  // 指定；竖向通栏卡占纵向空间过多），选中=accent 边+抬升
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: standardThemes.map((theme) {
                       final data = AppThemeManager.themeData(theme);
                       final isSelected = currentTheme == theme;
-                      return InteractiveWrapper(
+                      // ⚠️ 卡片槽位必须先定宽再交给 InteractiveWrapper：
+                      // 其内部 AnimatedContainer 带 alignment(=> Align)，在有界
+                      // 约束下会撑满整行宽度；直接作为 Wrap 子项会导致「每行只
+                      // 放得下一张卡」的竖排（2026-09-19 修复）。
+                      final card = InteractiveWrapper(
                         onTap: () => AppThemeManager.instance.setTheme(theme),
                         hoverScale: 1.04,
                         child: Container(
-                          width: 100,
-                          height: 58,
+                          width: 108,
+                          height: 64,
                           decoration: BoxDecoration(
                             color: data.background,
                             border: Border.all(
-                              color:
-                                  isSelected ? data.border : data.borderLight,
-                              width: isSelected ? 2.0 : 1.0,
+                              color: isSelected
+                                  ? data.selectedAccent
+                                  : data.borderLight,
+                              width: AppStyle.isModern
+                                  ? (isSelected ? 1.4 : AppStyle.wHairline)
+                                  : (isSelected ? 2.0 : 1.0),
                             ),
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(
+                                AppStyle.isModern ? AppStyle.rMd : 10),
                             boxShadow: isSelected
-                                ? [
-                                    BoxShadow(
-                                      color: data.border,
-                                      offset: const Offset(2, 2),
-                                      blurRadius: 0,
-                                    ),
-                                  ]
+                                ? (AppStyle.isModern
+                                    ? AppStyle.e2
+                                    : [
+                                        BoxShadow(
+                                          color: data.border,
+                                          offset: const Offset(2, 2),
+                                          blurRadius: 0,
+                                        ),
+                                      ])
                                 : null,
                           ),
-                          child: Row(
+                          child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
                                 data.emoji,
                                 style: const TextStyle(fontSize: 18),
                               ),
-                              const SizedBox(width: 6),
+                              const SizedBox(height: 4),
                               Text(
                                 data.name,
                                 style: TextStyle(
-                                  fontFamily: 'Inter',
                                   fontWeight: isSelected
                                       ? FontWeight.w700
                                       : FontWeight.w600,
@@ -3435,6 +4400,11 @@ class _SettingsModalState extends State<SettingsModal> {
                             ],
                           ),
                         ),
+                      );
+                      return SizedBox(
+                        width: 108,
+                        height: 64,
+                        child: card,
                       );
                     }).toList(),
                   ),
@@ -3452,7 +4422,6 @@ class _SettingsModalState extends State<SettingsModal> {
                         Text(
                           '特色主题',
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontWeight: FontWeight.w600,
                             fontSize: 13,
                             height: 18 / 13,
@@ -3479,17 +4448,22 @@ class _SettingsModalState extends State<SettingsModal> {
                                 color: isSelected
                                     ? data.selectedAccent
                                     : data.borderLight,
-                                width: isSelected ? 2.2 : 1.2,
+                                width: AppStyle.isModern
+                                    ? (isSelected ? 1.4 : AppStyle.wHairline)
+                                    : (isSelected ? 2.2 : 1.2),
                               ),
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(
+                                  AppStyle.isModern ? 14 : 12),
                               boxShadow: isSelected
-                                  ? [
-                                      BoxShadow(
-                                        color: data.shadowColor,
-                                        offset: const Offset(2, 2),
-                                        blurRadius: 0,
-                                      ),
-                                    ]
+                                  ? (AppStyle.isModern
+                                      ? AppStyle.e2
+                                      : [
+                                          BoxShadow(
+                                            color: data.shadowColor,
+                                            offset: const Offset(2, 2),
+                                            blurRadius: 0,
+                                          ),
+                                        ])
                                   : null,
                             ),
                             clipBehavior: Clip.hardEdge,
@@ -3500,10 +4474,20 @@ class _SettingsModalState extends State<SettingsModal> {
                                   Positioned.fill(
                                     child: Opacity(
                                       opacity: 0.35,
+                                      // v3.10：此预览只渲染**内置 bundled** 主题
+                                      // （当前全为 PNG，无动图资源），因此保持
+                                      // Image.asset。若将来引入动图内置主题，
+                                      // 需改用 AnimatedBackgroundImage 并传
+                                      // degradeToStaticFrame: true（R5 缩略预览）。
                                       child: Image.asset(
                                         data.backgroundImagePath!,
                                         fit: BoxFit.cover,
-                                        alignment: Alignment.center,
+                                        // 取景对齐跟随主题配置（如樱花 top 露头部）
+                                        alignment: data.backgroundImage
+                                                    .alignment ==
+                                                BackgroundImageAlignment.top
+                                            ? Alignment.topCenter
+                                            : Alignment.center,
                                       ),
                                     ),
                                   ),
@@ -3544,7 +4528,6 @@ class _SettingsModalState extends State<SettingsModal> {
                                           Text(
                                             data.name,
                                             style: TextStyle(
-                                              fontFamily: 'Inter',
                                               fontWeight: FontWeight.w600,
                                               fontSize: 16,
                                               height: 22 / 16,
@@ -3557,7 +4540,6 @@ class _SettingsModalState extends State<SettingsModal> {
                                       Text(
                                         data.description ?? '',
                                         style: TextStyle(
-                                          fontFamily: 'Inter',
                                           fontWeight: FontWeight.w500,
                                           fontSize: 12,
                                           height: 15 / 12,
@@ -3598,7 +4580,6 @@ class _SettingsModalState extends State<SettingsModal> {
                       Text(
                         '自定义背景',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                           height: 18 / 13,
@@ -3608,46 +4589,8 @@ class _SettingsModalState extends State<SettingsModal> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  // v3.0 P3：主题设计器（调色板）入口
-                  // 打开 WYSIWYG 调色设计器弹窗，支持 24 个可编辑元素
-                  InteractiveWrapper(
-                    onTap: () => ThemeEditorDialog.show(context),
-                    child: Container(
-                      width: double.infinity,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            AppColors.selectedAccent.withOpacity(0.5),
-                            AppColors.brandBlue.withOpacity(0.5),
-                          ],
-                        ),
-                        border: Border.all(color: AppColors.border, width: 1.2),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.palette_outlined,
-                              size: 18, color: AppColors.primaryText),
-                          const SizedBox(width: 8),
-                          Text(
-                            '主题设计器 · 调色 / 背景 / 保存',
-                            style: TextStyle(
-                              fontFamily: 'Inter',
-                              fontWeight: FontWeight.w700,
-                              fontSize: 12,
-                              color: AppColors.primaryText,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
                   // v3.0 P1：原占位按钮替换为可用入口
                   // 点击直接打开文件选择器，上传后立即应用为当前主题背景
-                  // v3.0 P3 将进一步接入完整主题编辑器（含调色板）
                   InteractiveWrapper(
                     onTap: _onPickCustomBackground,
                     child: Container(
@@ -3668,7 +4611,6 @@ class _SettingsModalState extends State<SettingsModal> {
                           Text(
                             '快速上传背景图',
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontWeight: FontWeight.w500,
                               fontSize: 11,
                               color: AppColors.primaryText,
@@ -3697,11 +4639,25 @@ class _SettingsModalState extends State<SettingsModal> {
                               child: Text(
                                 '当前已应用自定义背景',
                                 style: TextStyle(
-                                  fontFamily: 'Inter',
                                   fontSize: 11,
                                   color: AppColors.secondaryText,
                                 ),
                                 overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            InteractiveWrapper(
+                              onTap: _onAdjustBackgroundPosition,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                child: Text(
+                                  '调整位置',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.infoBlue,
+                                  ),
+                                ),
                               ),
                             ),
                             InteractiveWrapper(
@@ -3712,7 +4668,6 @@ class _SettingsModalState extends State<SettingsModal> {
                                 child: Text(
                                   '移除',
                                   style: TextStyle(
-                                    fontFamily: 'Inter',
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
                                     color: AppColors.dangerRed,
@@ -3725,8 +4680,144 @@ class _SettingsModalState extends State<SettingsModal> {
                       );
                     },
                   ),
-                  // v3.0 P4：我的主题列表区（用户自定义主题 CRUD，空状态自动隐藏）
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「自定义设计」独立项目卡（2026-09-13 外观栏重排）：
+  /// 主题设计器入口 + 我的主题（用户自定义主题 CRUD / 导入）。
+  Widget _buildCustomDesignCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppStyle.isModern
+            ? AppColors.buttonBackground
+            : AppColors.sidebarBackground,
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 1.6),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.borderLight,
+                  offset: const Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InteractiveWrapper(
+            onTap: () => setState(
+                () => _customDesignExpanded = !_customDesignExpanded),
+            hoverScale: 1.0,
+            hoverOffset: Offset.zero,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+              child: Row(
+                children: [
+                  Icon(Icons.design_services_rounded,
+                      size: 20, color: AppColors.border),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '自定义设计',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                            height: 24 / 16,
+                            color: AppColors.primaryText,
+                          ),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          '主题设计器 · 我的主题',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w500,
+                            fontSize: 13,
+                            height: 18 / 13,
+                            color: AppColors.secondaryText,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  AnimatedRotation(
+                    duration: const Duration(milliseconds: 200),
+                    turns: _customDesignExpanded ? 0.5 : 0,
+                    child: Icon(Icons.expand_more,
+                        size: 20, color: AppColors.secondaryText),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedCrossFade(
+            duration: const Duration(milliseconds: 250),
+            crossFadeState: _customDesignExpanded
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            firstChild: const SizedBox(width: double.infinity, height: 0),
+            secondChild: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    height: 1.6,
+                    color: AppColors.borderLight,
+                    margin: const EdgeInsets.only(bottom: 14),
+                  ),
+                  // v3.0 P3：主题设计器（调色板）入口
+                  // 打开 WYSIWYG 调色设计器弹窗，支持 24 个可编辑元素
+                  InteractiveWrapper(
+                    onTap: () => ThemeEditorDialog.show(context),
+                    child: Container(
+                      width: double.infinity,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            AppColors.selectedAccent.withOpacity(0.5),
+                            AppColors.brandBlue.withOpacity(0.5),
+                          ],
+                        ),
+                        border: Border.all(color: AppColors.border, width: 1.2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.palette_outlined,
+                              size: 18, color: AppColors.primaryText),
+                          const SizedBox(width: 8),
+                          Text(
+                            '主题设计器 · 调色 / 背景 / 保存',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                              color: AppColors.primaryText,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 12),
+                  // v3.0 P4：我的主题列表区（用户自定义主题 CRUD，空状态自动隐藏）
                   MyThemesSection(
                     onImport: _onImportTheme,
                   ),
@@ -3746,7 +4837,12 @@ class _SettingsModalState extends State<SettingsModal> {
   Future<void> _onPickCustomBackground() async {
     try {
       final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
+        // v3.10：改用 custom + 显式扩展名。Windows 端 `FileType.image` 的过滤器
+        // 是写死的 `*.bmp;*.gif;*.jpeg;*.jpg;*.png`
+        // （file_picker 8.3.7 file_picker_windows.dart:230），**不含 webp** ——
+        // 不改的话新增的 webp 支持在"选文件"这一步就够不着。
+        type: FileType.custom,
+        allowedExtensions: BackgroundMediaInspector.allowedExtensions,
         allowMultiple: false,
         withData: false,
       );
@@ -3761,9 +4857,14 @@ class _SettingsModalState extends State<SettingsModal> {
       }
 
       // 上传到 user_backgrounds 目录（overlayOpacity=0.25 与特色主题一致）
+      // v3.10：越限由 BackgroundMediaRejectedException 精确回显；
+      // 时长/帧率超建议值只提示不拒绝。
       final bgConfig = await ThemeStorage.uploadBackgroundImage(
         sourcePath,
         overlayOpacity: 0.25,
+        onWarnings: (warnings) {
+          if (mounted) AppSnackBar.warning(context, warnings.join('；'));
+        },
       );
 
       if (!mounted) return;
@@ -3788,9 +4889,58 @@ class _SettingsModalState extends State<SettingsModal> {
       if (mounted) {
         AppSnackBar.success(context, '已应用自定义背景');
       }
+    } on BackgroundMediaRejectedException catch (e) {
+      // v3.10：门槛拒绝，文案已精确到维度（体积/分辨率/帧数/伪装）
+      if (mounted) {
+        AppSnackBar.error(context, e.message);
+      }
     } catch (e) {
       if (mounted) {
         AppSnackBar.error(context, '背景上传失败: $e');
+      }
+    }
+  }
+
+  // v3.9：自由调整当前自定义背景图的位置/缩放（2026-09-13 外观栏重排）。
+  // 复用主题设计器的背景图编辑器（Figma 式拖拽缩放）；当前主题已是用户主题时
+  // 原地更新（applyCustomTheme 同 id 直接通知刷新），否则新建用户主题。
+  Future<void> _onAdjustBackgroundPosition() async {
+    try {
+      final current = AppThemeManager.instance.current;
+      if (current.backgroundImage.source != BackgroundImageSource.file) {
+        return; // 仅用户上传的背景支持自由调整
+      }
+      final result = await BackgroundImageEditorDialog.show(
+        context: context,
+        config: current.backgroundImage,
+      );
+      if (result == null) return; // 用户取消
+      if (!mounted) return;
+
+      final CTThemeData newData;
+      if (current.isUserTheme) {
+        // 用户主题：原地更新背景配置
+        newData = current.withBackgroundImage(result);
+      } else {
+        // 内置主题兜底：新建用户主题（不覆盖内置定义）
+        newData = current
+            .asUserThemeCopy(
+              newId: ThemeStorage.newThemeId(),
+              name: '${current.name} · 位置调整',
+              emoji: current.emoji,
+              description: '调整背景图位置的主题',
+            )
+            .withBackgroundImage(result);
+      }
+      await ThemeStorage.saveUserTheme(newData);
+      await AppThemeManager.instance.applyCustomTheme(newData);
+
+      if (mounted) {
+        AppSnackBar.success(context, '已应用背景图位置');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppSnackBar.error(context, '调整背景位置失败: $e');
       }
     }
   }
@@ -3905,6 +5055,21 @@ class _SettingsModalState extends State<SettingsModal> {
 
       if (!mounted) return;
 
+      // ★ 本地账号体系：本地账户头像写本地（local_account_avatar_b64），
+      // 不写云端缓存 key（user_avatar_base64）、不上传服务器。
+      if (_user?.isLocalAccount ?? false) {
+        await LocalAccountService.updateAvatar(file.bytes!);
+        if (!mounted) return;
+        setState(() {
+          _isUploadingAvatar = false;
+          _tempAvatarBytes = file.bytes!;
+          _tempAvatarFileName = file.name;
+          _avatarUrl = null;
+          _saveMessage = null;
+        });
+        return;
+      }
+
       // 1. 转Base64
       final base64Str = base64Encode(file.bytes!);
 
@@ -3965,4 +5130,30 @@ class _SettingsModalState extends State<SettingsModal> {
       }
     }
   }
+}
+
+/// 右下角尺寸调整手柄的斜线纹样（经典 Windows 调整手柄样式）。
+class _ResizeGripPainter extends CustomPainter {
+  const _ResizeGripPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..color = AppColors.secondaryText.withOpacity(0.55)
+      ..strokeWidth = 1.2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+      Offset(size.width - 5, 8),
+      Offset(8, size.height - 5),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(size.width - 5, 13),
+      Offset(13, size.height - 5),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ResizeGripPainter oldDelegate) => false;
 }

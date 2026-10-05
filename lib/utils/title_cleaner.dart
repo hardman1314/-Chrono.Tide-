@@ -68,4 +68,33 @@ class TitleCleaner {
 
     return cleaned.isEmpty ? name : cleaned;
   }
+
+  /// 生成用于「同名排重比较」的键。
+  ///
+  /// ★ 2026-09-13 智能导入排重修复：同一游戏在不同嵌套层级/不同父目录下
+  /// 的文件夹名往往有全半角、大小写、标点差异（"ＡＴＲＩ" vs "ATRI"、
+  /// "游戏.1" vs "游戏１"等），直接字符串比较会漏判。
+  ///
+  /// 规则：全角 ASCII 折叠（U+FF01–FF5E → ASCII，全角空格 → 空格）
+  /// → 小写 → 只保留 [a-z0-9] 与 CJK/假名/韩文字符，空白与标点全部丢弃。
+  ///
+  /// 返回空串表示无可比较键（调用方应跳过该候选的同名合并，宁可保留也不误删）。
+  static String normalizeForCompare(String name) {
+    final buf = StringBuffer();
+    for (final rune in name.runes) {
+      var c = rune;
+      if (c == 0x3000) c = 0x20; // 全角空格
+      if (c >= 0xFF01 && c <= 0xFF5E) c -= 0xFEE0; // 全角 ASCII → 半角
+      if (c >= 0x41 && c <= 0x5A) c += 0x20; // 大写 → 小写
+      final isAsciiAlnum =
+          (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39);
+      final isCjkKana = (c >= 0x3040 && c <= 0x30FF) || // 假名
+          (c >= 0x3400 && c <= 0x9FFF) || // CJK 统一表意
+          (c >= 0xF900 && c <= 0xFAFF) || // CJK 兼容
+          (c >= 0xAC00 && c <= 0xD7AF); // 韩文
+      if (isAsciiAlnum || isCjkKana) buf.writeCharCode(c);
+      // 其余（空白/标点/符号）丢弃
+    }
+    return buf.toString();
+  }
 }

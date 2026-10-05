@@ -114,6 +114,15 @@ extension DiscoverSizeBucketBounds on DiscoverSizeBucket {
   }
 }
 
+/// 资源来源筛选（顶栏 v3：第一行「来源」多选按钮的选项）
+enum DiscoverResourceSource {
+  /// 官方下载：games.has_official = true（官方直链可一键安装）
+  official,
+
+  /// 个人分享：该作品存在已发布的用户分享资源（communityCount > 0）
+  community,
+}
+
 /// 探索页筛选状态（不可变值对象）
 class DiscoverFilterState {
   final DiscoverSortOption sortOption;

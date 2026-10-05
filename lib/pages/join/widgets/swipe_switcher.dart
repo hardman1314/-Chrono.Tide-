@@ -57,6 +57,8 @@ class _SwipeSwitcherState extends State<SwipeSwitcher>
 
   @override
   void dispose() {
+    // ★ IMP-20: 兜底释放回弹动画控制器（页面在动画期间被销毁的场景）
+    _resetController?.dispose();
     _animationController.dispose();
     super.dispose();
   }
@@ -148,24 +150,34 @@ class _SwipeSwitcherState extends State<SwipeSwitcher>
     });
   }
 
+  /// 回弹动画控制器（★ IMP-20：复用单个实例，避免泄漏）
+  AnimationController? _resetController;
+  double _resetStartOffset = 0;
+
   void _animateReset() {
-    final startOffset = _swipeOffset;
-    final animation = AnimationController(
+    _resetStartOffset = _swipeOffset;
+
+    // ★ IMP-20（2026-09-12 导入审查）：旧实现每次回弹 new 一个 AnimationController、
+    // 且只在"动画完成"时释放 —— 若页面在这 200ms 内被销毁，控制器永远不被释放
+    // （ticker 泄漏，debug 下断言报错）。现改为复用单个实例 + dispose 兜底释放。
+    _resetController?.dispose();
+    final animation = _resetController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 200),
     );
 
     animation.addListener(() {
+      if (!mounted) return;
       setState(() {
-        _swipeOffset = startOffset * (1 - animation.value);
+        _swipeOffset = _resetStartOffset * (1 - animation.value);
       });
     });
 
     animation.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
-        animation.dispose();
         _isDragging = false;
         _isSwipeModeActive = false;
+        if (mounted) setState(() {});
       }
     });
 
@@ -185,7 +197,7 @@ class _SwipeSwitcherState extends State<SwipeSwitcher>
       mainAxisSize: MainAxisSize.min,
       children: [
         _buildModeNavigationBar(),
-        const SizedBox(height: 4),
+        // 连体：原 4px 间隙取消，导航栏底边与置入板块顶边贴合
         Expanded(
           child: Listener(
             onPointerDown: _onPointerDown,
@@ -286,13 +298,32 @@ class _SwipeSwitcherState extends State<SwipeSwitcher>
   }
 
   // 构建模式切换导航栏（三模式）
+  //
+  // ★「连体选项卡」改造（2026-10-02 走查）：
+  // 设计稿实测——导航栏 184×28，悬在置入板块顶边线上方 2px，底边线与板块顶边线
+  // （y=308）几乎重合，顶部圆角实测 ≈14（= 半圆）。故本实现按「选项卡坐在板块顶边上」：
+  //   ① 去掉栏自身底边框 → 底边线改由「置入板块顶边框」充当（两条线合一）；
+  //   ② 顶部 20 圆角（栏高 28 时 Skia 会把半径钳位到 14 → 与设计稿半圆一致）；
+  //   ③ 与板块之间的 4px 间隙取消，选项卡直接坐落在板块顶边上。
+  // 智能模式的内容区是 SingleChildScrollView + 自带边框的卡片（**没有**外框），
+  // 若也去掉底边框会出现「开口」选项卡，故智能模式保留底边框。
   Widget _buildModeNavigationBar() {
+    // 设计稿「模式切换栏」183×28：栏内边距 8、按钮 52~53.5×24、按钮内边距 7、
+    // 文字 11 → 3×(14+3+22+14) + 2×4 + 2×8 ≈ 183，与设计逐像素吻合。
+    final bool fuseWithPanel = _currentMode != ImportMode.smart;
     return Container(
       height: 28,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
-        border: Border.all(color: AppColors.border, width: 1.5),
-        borderRadius: BorderRadius.circular(2),
+        border: Border(
+          top: BorderSide(color: AppColors.border, width: 1),
+          left: BorderSide(color: AppColors.border, width: 1),
+          right: BorderSide(color: AppColors.border, width: 1),
+          bottom: fuseWithPanel
+              ? BorderSide.none
+              : BorderSide(color: AppColors.border, width: 1),
+        ),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
         color: AppColors.background,
       ),
       child: Row(
@@ -355,11 +386,10 @@ class _SwipeSwitcherState extends State<SwipeSwitcher>
         waitDuration: const Duration(milliseconds: 500),
         child: Container(
           height: 24,
-          padding: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 7),
           decoration: BoxDecoration(
-            color: isSelected
-                ? AppColors.border.withOpacity(0.15)
-                : Colors.transparent,
+            // 设计稿选中态底 #eee7dc ≈ buttonBackground，边框 #a58b6c ≈ border
+            color: isSelected ? AppColors.buttonBackground : Colors.transparent,
             borderRadius: BorderRadius.circular(2),
             border: isSelected
                 ? Border.all(color: AppColors.border, width: 1)
@@ -378,7 +408,8 @@ class _SwipeSwitcherState extends State<SwipeSwitcher>
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: 10,
+                  // 设计稿 fs=11
+                  fontSize: 11,
                   fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
                   color: isSelected ? selectedColor : unselectedColor,
                 ),

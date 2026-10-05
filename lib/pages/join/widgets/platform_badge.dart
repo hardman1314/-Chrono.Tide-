@@ -75,6 +75,12 @@ PlatformBadge resolvePlatformBadge(dynamic platform) {
       label: 'TouchGal',
       tooltip: 'TouchGal：中文 Calgame 数据库',
     );
+  } else if (platformLower == 'ct') {
+    return const PlatformBadge(
+      color: Color(0xFFC9506B),
+      label: 'CT',
+      tooltip: 'CT 探索库：Chrono Tide 社区共建中文元数据平台',
+    );
   } else {
     // 未知平台：用 border 色降级，避免空白
     return PlatformBadge(

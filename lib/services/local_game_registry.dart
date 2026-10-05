@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -18,6 +17,15 @@ import 'win32_process_service.dart'; // ★ 重构: Win32 进程操作 FFI（替
 import 'game_launch_logger.dart'; // ★ 游戏启动流程日志
 import 'package:shared_preferences/shared_preferences.dart'; // ★ v2: 追踪模式持久化
 import '../core/path_helper.dart';
+import '../utils/network_path.dart';
+import '../utils/path_normalizer.dart';
+import '../utils/game_key.dart';
+import '../utils/game_config_manager.dart'; // 迁移收尾：启动配置同步（兼容读取，见 P0-2）
+import 'storage/cleanup_utils.dart';
+import 'nsfw/nsfw_detection_store.dart'; // P1-4: 删游戏时清理其 NSFW 判定缓存
+import 'company_alias_store.dart'; // ★ 会社归一化（v4）：company_id 解析
+import 'tag_vocabulary_store.dart'; // ★ 标签归一化（全局重命名/删除口径）
+import 'company_alias_pending.dart'; // ★ 会社归一化（v4）：未命中漏斗
 
 /// UX-34: 注册表变更原因，用于区分全量重建与轻量更新
 /// - structural: 结构性变化（新增/删除/扫描/标题修改）→ 需要全量 rebuild
@@ -80,6 +88,13 @@ extension PlayStatusUI on PlayStatus {
   }
 }
 
+/// 游戏标记（库页卡片徽标 / 上下文菜单）
+///
+/// ⚠️ [favorite] 目前**没有 UI 入口**：`toggleMark` 只在 [none] / [star]
+/// 之间翻转，`_persistMarkToGameJson` 也只是照实把已有值写回。
+/// 保留这个取值的理由是**读兼容**：早期版本允许三态，老 game.json 里
+/// 可能有 `mark: "favorite"`。删掉枚举值会让 `_parseMark` 落到 default 分支，
+/// 把老数据静默降级成 none —— 那不是"清理死代码"，是丢信息。
 enum GameMark { none, star, favorite }
 
 /// ★ v2 时长追踪模式（借鉴 ReinaManager TimeTrackingMode）
@@ -143,6 +158,14 @@ class _GameSession {
   /// - aborted: 误启动过滤（< 60s）
   String exitReason;
 
+  /// ★ 运行任务横幅：会话是否已首次确认进程存活
+  ///
+  /// 用于在「游戏进程真正跑起来」的那一刻触发一次
+  /// [LocalGameRegistry.onGameSessionConfirmed] 回调，驱动横幅从「正在启动」
+  /// 切换到「运行中」并开始墙钟计时。
+  /// 每个会话生命周期内只会从 false 翻转到 true 一次。
+  bool confirmed;
+
   _GameSession({
     required this.startTime,
     required this.gameTitle,
@@ -160,7 +183,8 @@ class _GameSession {
         consecutiveWriteFails = 0,
         backupTriggered = false,
         sessionId = sessionId ?? _generateSessionId(),
-        exitReason = 'normal';
+        exitReason = 'normal',
+        confirmed = false;
 
   /// 生成会话记录 Map（用于持久化到 game.json 的 sessions 数组）
   /// 调用方需在会话结束时设置 exitReason 后再调用此方法。
@@ -190,39 +214,64 @@ class _ForegroundState {
 }
 
 /// 生成 UUID v4 格式的会话 ID
-/// 不依赖第三方库，使用 dart:math Random + 时间戳保证唯一性
-/// 格式：xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx（y ∈ {8,9,a,b}）
-String _generateSessionId() {
-  final rng = math.Random();
-  // 生成 16 字节 = 32 hex 字符
-  final bytes = List<int>.generate(16, (_) => rng.nextInt(256));
-  // 设置 version (4) 和 variant (8/9/a/b)
-  bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
-  bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant 10xxxxxx
-  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20, 32)}';
-}
+///
+/// 实现已统一到 [GameKey.generateId]（P0-1：全项目只保留一处随机 ID 生成），
+/// 这里保留函数名只是为了不打散既有调用点。
+String _generateSessionId() => GameKey.generateId();
 
 class LibraryGame {
+  /// 稳定主键（对应 game.json 的 `game_id`，UUID v4）。
+  ///
+  /// 🔴 与 [metaDataDir] / 目录名的区别：元数据目录名会随标题改动而重命名，
+  /// [directoryPath] 会随用户搬移游戏而变——只有本字段**一辈子不变**。
+  ///
+  /// 用途：① [LocalGameRegistry.getGameById] 的键 ② `_byIdIndex`
+  /// ③ 未来 `library_index.db` 的主键。老数据可能为空串（尚未经过
+  /// v2 迁移），所有读取方必须容忍空值，不得假定非空。
+  String gameId;
+
   String title;
   String directoryPath;
   String metaDataDir;
   String installedAt;
+
+  /// ⚠️ 命名与实际内容不符（P2-3）：这里存的是**本地封面文件的绝对路径**，
+  /// 不是 URL。[coverPath] 是同一份数据的别名 getter。
+  /// 之所以不改名：该字段有 232 处引用，且多个不相关类（WatchFolder /
+  /// GameModel / SDK）也有同名字段，机械替换会误伤；改名收益仅是"读起来更顺"，
+  /// 不足以承担这个面积的风险。读取方请以本注释为准。
   String coverUrl;
+
+  /// ★ 2026-10-04 横幅封面：本地横幅图片文件的**绝对路径**（空串 = 无横幅）。
+  ///
+  /// 与 [coverUrl] 同源（game.json `banner_file` → 磁盘探测），扫描时填充。
+  /// UI 使用优先级：BPM 背景 / 主页大图**横幅优先**，缺失回退 [coverUrl]。
+  String bannerUrl;
   String description;
   List<String> tags;
   GameMark mark;
   String launchPath;
   String source;
   String developer;
+
+  /// 会社归一化解析结果（会社词典 `CompanyAliasStore` 的 company_id，可空）。
+  ///
+  /// 与 [developer]（原文）并存：筛选 / 智能归纳分组以本字段优先、原文兜底。
+  /// null = 未解析（老数据 / 词典未命中 / 词典未加载）；
+  /// [LocalGameRegistry.scan] 的 backfill 会为「有原文无 id」的条目补算。
+  int? companyId;
   PlayStatus playStatus;
   int playTime;
   bool isBlurred;
   String firstOpenedAt;
   String lastOpenedAt;
+  /// 已下载到本地的截图文件名清单（**渲染只看这个**）
   List<String> screenshotFiles;
   // ===== 截图异步抓取相关字段 =====
-  // 原始截图URL列表（来自元数据源，用于后台下载）
+
+  /// 元数据源给的原始截图 URL 清单（**源**，不参与渲染）
+  ///
+  /// 详见 `GameJsonData.screenshotUrls` 的语义说明：urls = 源，files = 产物。
   List<String> screenshotUrls;
   // 截图下载状态：pending | downloading | completed | failed
   String screenshotStatus;
@@ -232,18 +281,45 @@ class LibraryGame {
   String metadataSource;
   String metadataSourceId;
 
+  /// ★ 2026-09-26 P1-4：云端来源主键（探索库云端记录 record.id）。
+  /// 安装入库时写入 game.json 的 `cloud_game_id`；空 = 老数据/非云端来源。
+  /// 「是否已安装」按它优先判定（[isCloudGameInstalled]），不受本地改标题影响。
+  final String cloudGameId;
+  // 副标题：与主标题共同构成标题系统（通常为日文原版标题），用户可自定义
+  String subtitle;
+  // 所属收藏夹 ID 列表（多对多），持久化于 game.json 的 collection_ids
+  List<String> collectionIds;
+
+  // ===== 游戏数据保存（存储状态，2026-10-02）=====
+  //
+  // 与 `GameJsonData.storageState` 同源，语义见 `game_storage_state_controller.dart`。
+  // 库页卡片**只读这里**（零磁盘 I/O，方案 §6）—— 绝不要在卡片构建期去探磁盘。
+
+  /// 存储状态：`normal` / `sealed` / `packed`。
+  /// ⚠️ `display_only` 是派生态，**不写盘**，因此这里不会出现它。
+  String storageState;
+
+  /// 当前生效归档目录的绝对路径（空串 = 无归档）
+  String archiveDir;
+
+  /// 归档时间（ISO8601；空串 = 无归档）
+  String archiveAt;
+
   LibraryGame({
+    this.gameId = '',
     required this.title,
     required this.directoryPath,
     required this.metaDataDir,
     required this.installedAt,
     this.coverUrl = '',
+    this.bannerUrl = '',
     this.description = '',
     this.tags = const [],
     this.mark = GameMark.none,
     this.launchPath = '',
     this.source = 'download',
     this.developer = '',
+    this.companyId,
     this.playStatus = PlayStatus.notStarted,
     this.playTime = 0,
     this.isBlurred = false,
@@ -255,6 +331,12 @@ class LibraryGame {
     this.screenshotRetryCount = 0,
     this.metadataSource = '',
     this.metadataSourceId = '',
+    this.cloudGameId = '',
+    this.subtitle = '',
+    this.collectionIds = const [],
+    this.storageState = 'normal',
+    this.archiveDir = '',
+    this.archiveAt = '',
   });
 
   String get coverPath => coverUrl;
@@ -312,15 +394,89 @@ class LocalGameRegistry extends ChangeNotifier {
   static String get gamesBaseDir => _gamesBaseDir;
 
   final Map<String, LibraryGame> _games = {};
-  final Set<String> _installedTitles = {};
+
+  /// 已入库的**元数据目录名**集合（注意：不是标题）。
+  ///
+  /// 历史字段名 `_installedTitles` 与实际内容不符——里面装的从来都是
+  /// scan 产出的 `dirName`。2026-09-19 审计时改正（P2-3）。
+  /// 对外 getter 见 [installedDirNames]（旧名 [installedTitles] 保留为别名）。
+  final Set<String> _installedDirNames = {};
+
+  // ==================== 派生索引（P0-1 / P1-1） ====================
+  //
+  // 惰性构建：结构性变更时整体置空，下次查询重建。
+  //
+  // 为什么不逐条增量维护：`LibraryGame` 的 `title` / `directoryPath` 是
+  // **可变公开字段**，任何一处直接赋值都会让增量索引失配，而要追踪所有
+  // 赋值点本身就是这类 bug 的来源。整体重建是 O(n) 且只在结构性变更后
+  // 发生一次，比"记账式维护"更难写错。
+  //
+  // 🔴 纪律：任何**绕过 `_notifyStructural` / `notifyDataChanged` 直接**改
+  //    `_games`、`game.title`、`game.directoryPath` 的代码路径，都必须
+  //    显式调用 [_invalidateIndexes]，否则查询会读到旧值。
+  //    （当前所有此类路径都在本文件内，已逐一标注。）
+
+  Map<String, LibraryGame>? _byIdIndex;
+  Map<String, LibraryGame>? _byTitleIndex;
+  Map<String, LibraryGame>? _byDirPathNormIndex;
+  /// ★ 2026-09-26 P1-4：云端主键索引。键 = `'${metadataSource}:${metadataSourceId}'`
+  /// （来源标识防不同平台 ID 撞号；探索库安装写入 `cloud:<record.id>`）。
+  Map<String, LibraryGame>? _byCloudIdIndex;
+
+  /// 建索引时 `_games` 的规模。规模变了说明集合被增删过（哪怕漏了通知），
+  /// 此时强制重建——作为"忘记失效"的兜底（纯改名无法被这一步兜住，
+  /// 靠上面那条纪律保证）。
+  int _indexedGameCount = -1;
+
+  /// [allGames] 的排序结果缓存与其对应的 `_games` 规模
+  List<LibraryGame>? _cachedSortedGames;
+  int _sortedCacheCount = -1;
 
   /// UX-34: 最近一次变更原因，供监听方区分处理
   RegistryChangeReason _lastChangeReason = RegistryChangeReason.structural;
   RegistryChangeReason get lastChangeReason => _lastChangeReason;
 
+  /// 作废全部派生索引与排序缓存（P0-1 / P1-1）。
+  ///
+  /// 任何可能改变「有哪些游戏 / 它们的标题 / 它们的目录」的路径都必须调它。
+  void _invalidateIndexes() {
+    _byIdIndex = null;
+    _byTitleIndex = null;
+    _byDirPathNormIndex = null;
+    _byCloudIdIndex = null;
+    _cachedSortedGames = null;
+    _sortedCacheCount = -1;
+  }
+
+  /// 惰性重建三张索引（O(n)，仅在作废后首次查询时发生）
+  void _ensureIndexes() {
+    if (_byIdIndex != null && _indexedGameCount == _games.length) return;
+    final byId = <String, LibraryGame>{};
+    final byTitle = <String, LibraryGame>{};
+    final byDir = <String, LibraryGame>{};
+    final byCloud = <String, LibraryGame>{};
+    for (final game in _games.values) {
+      // putIfAbsent：与旧实现的"线性遍历取第一个命中"保持一致的确定性
+      if (game.gameId.isNotEmpty) byId.putIfAbsent(game.gameId, () => game);
+      if (game.title.isNotEmpty) byTitle.putIfAbsent(game.title, () => game);
+      final dirKey = PathNormalizer.forCompare(game.directoryPath);
+      if (dirKey.isNotEmpty) byDir.putIfAbsent(dirKey, () => game);
+      // ★ 2026-09-26 P1-4：cloud_game_id 由安装链路写入（source=cloud）
+      if (game.cloudGameId.isNotEmpty) {
+        byCloud.putIfAbsent('cloud:${game.cloudGameId}', () => game);
+      }
+    }
+    _byIdIndex = byId;
+    _byTitleIndex = byTitle;
+    _byDirPathNormIndex = byDir;
+    _byCloudIdIndex = byCloud;
+    _indexedGameCount = _games.length;
+  }
+
   /// UX-34: 结构性变更通知（新增/删除/扫描/标题修改）
   void _notifyStructural() {
     _lastChangeReason = RegistryChangeReason.structural;
+    _invalidateIndexes();
     notifyListeners();
   }
 
@@ -340,22 +496,356 @@ class LocalGameRegistry extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 通用数据变更通知（视图层响应式刷新入口）
+  ///
+  /// 供 UI / 服务在「直接修改了 LibraryGame 内存对象 + game.json 落盘」
+  /// 之后调用，触发所有监听页面（库页/主页/BPM/详情）按 structural 语义
+  /// 重建。与 [notifyListenersForScreenshot] 同为公开轻量入口；
+  /// 注册表内部变更路径（scan/setGameCollection/...）仍走 [_notifyStructural]。
+  void notifyDataChanged() {
+    _lastChangeReason = RegistryChangeReason.structural;
+    _invalidateIndexes();
+    notifyListeners();
+  }
+
+  // ==================== 收藏夹成员关系（多对多） ====================
+
+  /// 设置单个游戏与收藏夹的成员关系
+  ///
+  /// 内存即时更新，game.json 通过写队列原子落盘（C2/C3 保护），
+  /// 成功后发出 structural 通知（收藏夹视图的过滤结果会变化）。
+  Future<bool> setGameCollection(
+      LibraryGame game, String collectionId, bool isMember) async {
+    final current = game.collectionIds;
+    final already = current.contains(collectionId);
+    if (already == isMember) return true;
+
+    final next = List<String>.from(current)..remove(collectionId);
+    if (isMember) next.add(collectionId);
+    game.collectionIds = next;
+
+    final ok = await GameDataFormat.updateGameJsonAtomic(
+        game.metaDataDir, (data) {
+      final fileIds = (data['collection_ids'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          [];
+      final next = List<String>.from(fileIds)..remove(collectionId);
+      if (isMember) next.add(collectionId);
+      return {'collection_ids': next};
+    });
+
+    if (ok) {
+      _notifyStructural();
+    } else {
+      // 写盘失败：回滚内存状态，避免 UI 与磁盘不一致
+      game.collectionIds = current;
+      debugPrint(
+          '[LOCAL-REGISTRY] ⚠️ 收藏夹成员关系写入失败: ${game.title} / $collectionId');
+    }
+    return ok;
+  }
+
+  /// 删除收藏夹后，清理所有游戏对该收藏夹的引用（批量清引用）
+  Future<void> removeCollectionReferences(String collectionId) async {
+    final affected =
+        _games.values.where((g) => g.collectionIds.contains(collectionId));
+    var count = 0;
+    for (final game in affected) {
+      game.collectionIds = List<String>.from(game.collectionIds)
+        ..remove(collectionId);
+      await GameDataFormat.updateGameJson(
+          game.metaDataDir, {'collection_ids': game.collectionIds});
+      count++;
+    }
+    if (count > 0) {
+      debugPrint('[LOCAL-REGISTRY] 🗑️ 已清理收藏夹引用: $collectionId ($count个游戏)');
+      _notifyStructural();
+    }
+  }
+
+  /// 添加 / 移除某个标签（智能归纳板块的"写穿"入口）
+  ///
+  /// 智能归纳的成员关系是**派生**的（标签组 = 含有该标签的游戏集合），
+  /// 因此"把游戏加入/移出标签组"在本项目里的正确做法就是增删游戏自己的标签，
+  /// 而不是另外维护一份成员表——否则会出现分组与数据脱节的双份事实。
+  /// 写法与 [setGameCollection] 完全对齐（原子写入 game.json + 失败回滚内存）。
+  Future<bool> setGameTag(LibraryGame game, String tag, bool enabled) async {
+    final trimmed = tag.trim();
+    if (trimmed.isEmpty) return false;
+
+    final current = game.tags;
+    final already = current.contains(trimmed);
+    if (already == enabled) return true;
+
+    final next = List<String>.from(current)..remove(trimmed);
+    if (enabled) next.add(trimmed);
+    game.tags = next;
+
+    final ok = await GameDataFormat.updateGameJsonAtomic(
+        game.metaDataDir, (data) {
+      final fileTags = (data['tags'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          [];
+      final nextTags = List<String>.from(fileTags)..remove(trimmed);
+      if (enabled) nextTags.add(trimmed);
+      return {'tags': nextTags};
+    });
+
+    if (ok) {
+      _notifyStructural();
+    } else {
+      game.tags = current; // 写盘失败：回滚内存，避免 UI 与磁盘不一致
+      debugPrint('[LOCAL-REGISTRY] ⚠️ 标签写入失败: ${game.title} / $trimmed');
+    }
+    return ok;
+  }
+
+  /// **全局重命名标签**（写穿：改写库内所有游戏的 `tags`，2026-10-04）。
+  ///
+  /// 匹配口径 = [TagVocabularyStore.normalizeTag] 归一化相等（容忍别名变体：
+  /// 大小写 / 全半角 / 标点差异的同一标签都会被改写）；替换值 = [newTag] 原文。
+  ///
+  /// - 逐游戏原子写 `game.json`，单游戏失败只回滚该游戏并继续（不中断整批）；
+  /// - 返回成功改写的游戏数（0 = 无游戏命中或全部失败）；
+  /// - 成功后 `_notifyStructural()` **只发一次**（循环内不发，防通知风暴）。
+  ///
+  /// ⚠️ 不可逆操作（直接改游戏数据），调用方必须先做二次确认。
+  Future<int> renameTagEverywhere(String oldTag, String newTag) async {
+    final oldN = TagVocabularyStore.normalizeTag(oldTag);
+    final nt = newTag.trim();
+    if (oldN.isEmpty || nt.isEmpty) return 0;
+
+    var okCount = 0;
+    for (final game in List<LibraryGame>.of(allGames)) {
+      if (!game.tags.any((t) => TagVocabularyStore.normalizeTag(t) == oldN)) {
+        continue;
+      }
+      final prev = game.tags;
+      // 内存先行（保序 + 去重：目标名可能已存在于该游戏）
+      final next = <String>{
+        for (final t in prev)
+          TagVocabularyStore.normalizeTag(t) == oldN ? nt : t,
+      }.toList();
+      game.tags = next;
+
+      final ok = await GameDataFormat.updateGameJsonAtomic(
+          game.metaDataDir, (data) {
+        final fileTags = (data['tags'] as List?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            [];
+        return {
+          'tags': <String>{
+            for (final t in fileTags)
+              TagVocabularyStore.normalizeTag(t) == oldN ? nt : t,
+          }.toList(),
+        };
+      });
+
+      if (ok) {
+        okCount++;
+      } else {
+        game.tags = prev; // 写盘失败：回滚内存
+        debugPrint('[LOCAL-REGISTRY] ⚠️ 全局重命名失败: ${game.title} / $oldN');
+      }
+    }
+    if (okCount > 0) _notifyStructural();
+    return okCount;
+  }
+
+  /// **全局删除标签**（写穿：从库内所有游戏的 `tags` 中移除，2026-10-04）。
+  ///
+  /// 匹配口径与 [renameTagEverywhere] 一致（归一化相等）。
+  /// 返回成功改写的游戏数。⚠️ 不可逆操作，调用方必须先做二次确认。
+  Future<int> removeTagEverywhere(String tag) async {
+    final n = TagVocabularyStore.normalizeTag(tag);
+    if (n.isEmpty) return 0;
+
+    var okCount = 0;
+    for (final game in List<LibraryGame>.of(allGames)) {
+      if (!game.tags.any((t) => TagVocabularyStore.normalizeTag(t) == n)) {
+        continue;
+      }
+      final prev = game.tags;
+      game.tags = [
+        for (final t in prev)
+          if (TagVocabularyStore.normalizeTag(t) != n) t,
+      ];
+
+      final ok = await GameDataFormat.updateGameJsonAtomic(
+          game.metaDataDir, (data) {
+        final fileTags = (data['tags'] as List?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            [];
+        return {
+          'tags': [
+            for (final t in fileTags)
+              if (TagVocabularyStore.normalizeTag(t) != n) t,
+          ],
+        };
+      });
+
+      if (ok) {
+        okCount++;
+      } else {
+        game.tags = prev;
+        debugPrint('[LOCAL-REGISTRY] ⚠️ 全局删除标签失败: ${game.title} / $n');
+      }
+    }
+    if (okCount > 0) _notifyStructural();
+    return okCount;
+  }
+
+  /// 设置游戏的存储状态（归档流程的写穿入口，2026-10-02）
+  ///
+  /// 三个字段**必须一起写**：状态与归档指针分开写会产生
+  /// 「`storage_state=sealed` 但 `archive_dir` 为空」这类状态机无法解释的组合。
+  ///
+  /// 🔴 回到 `normal` 时**强制清空归档指针**，避免留下悬空路径 ——
+  /// 悬空的 `archive_dir` 会让后续判定去探一个已不存在的目录。
+  ///
+  /// 写法与 [setGameTag] 完全对齐（原子写入 game.json + 失败回滚内存）。
+  Future<bool> setStorageState(
+    LibraryGame game, {
+    required String storageState,
+    required String archiveDir,
+    required String archiveAt,
+  }) async {
+    final dir = storageState == 'normal' ? '' : archiveDir;
+    final at = storageState == 'normal' ? '' : archiveAt;
+
+    final prevState = game.storageState;
+    final prevDir = game.archiveDir;
+    final prevAt = game.archiveAt;
+    if (prevState == storageState && prevDir == dir && prevAt == at) {
+      return true;
+    }
+
+    game.storageState = storageState;
+    game.archiveDir = dir;
+    game.archiveAt = at;
+
+    final ok = await GameDataFormat.updateGameJsonAtomic(game.metaDataDir, (_) => {
+          'storage_state': storageState,
+          'archive_dir': dir,
+          'archive_at': at,
+        });
+
+    if (ok) {
+      _notifyStructural();
+    } else {
+      // 写盘失败：回滚内存，避免 UI 与磁盘不一致
+      game.storageState = prevState;
+      game.archiveDir = prevDir;
+      game.archiveAt = prevAt;
+      debugPrint(
+          '[LOCAL-REGISTRY] ⚠️ 存储状态写入失败: ${game.title} / $storageState');
+    }
+    return ok;
+  }
+
+  /// 设置游戏会社（智能归纳"会社组"的写穿入口；空串 = 清空 → 归入「未填会社」）
+  ///
+  /// ★ 会社归一化（v4）：写入原文的同时解析 company_id 一起落盘
+  /// （null = 词典未命中 / 未加载）；未命中且原文非空时进 pending 漏斗。
+  /// developer 原文不洗写为标准名（展示 / 导出兼容），分组按 companyId 归并。
+  Future<bool> setGameDeveloper(LibraryGame game, String developer) async {
+    final trimmed = developer.trim();
+    if (game.developer == trimmed) return true;
+
+    final current = game.developer;
+    final currentCompanyId = game.companyId;
+    game.developer = trimmed;
+    final match = trimmed.isEmpty
+        ? null
+        : CompanyAliasStore.instanceOrNull?.resolve(trimmed);
+    game.companyId = match?.record.companyId;
+
+    final ok = await GameDataFormat.updateGameJsonAtomic(
+        game.metaDataDir,
+        (data) => {'developer': trimmed, 'company_id': game.companyId});
+
+    if (ok) {
+      if (match == null && trimmed.isNotEmpty) {
+        await CompanyAliasPendingStore.instance
+            .record(trimmed, sampleGameId: game.gameId);
+      } else if (match != null) {
+        // 命中即清待审漏斗（幂等）——词典扩批后旧 pending 条目可被消化
+        await CompanyAliasPendingStore.instance
+            .removeIfResolved(trimmed, match.record.companyId);
+      }
+      _notifyStructural();
+    } else {
+      game.developer = current; // 写盘失败：回滚内存
+      game.companyId = currentCompanyId;
+      debugPrint('[LOCAL-REGISTRY] ⚠️ 会社写入失败: ${game.title} / $trimmed');
+    }
+    return ok;
+  }
+
   /// 游戏被删除时的回调（供 ScreenshotFetchService 注册以清理进度）
   ///
   /// 避免循环依赖：LocalGameRegistry 不直接依赖 ScreenshotFetchService，
   /// 而是通过此回调让 ScreenshotFetchService 自行清理已删除游戏的进度。
   void Function(String gameTitle)? onGameRemoved;
 
+  /// 全量游戏列表，按「首次入库时间」倒序（最近添加在前）。
+  ///
+  /// P1-1：结果是**缓存**的。旧实现每次调用都 `toList() + sort()`，
+  /// 而全库有 65 处引用（含 build 方法内的重复调用），2000 条规模下
+  /// 等于每帧数千次字符串比较。
+  ///
+  /// 返回缓存列表的**副本**：调用方仍可自由排序 / 过滤 / 删除元素，
+  /// 不会污染缓存（旧实现返回的本来就是一次性列表，语义不变）。
   List<LibraryGame> get allGames {
+    final cached = _cachedSortedGames;
+    if (cached != null && _sortedCacheCount == _games.length) {
+      return List<LibraryGame>.of(cached);
+    }
     final list = _games.values.toList();
-    list.sort((a, b) => b.installedAt.compareTo(a.installedAt));
-    return list;
+    list.sort(_compareByInstalledAtDesc);
+    _cachedSortedGames = List<LibraryGame>.unmodifiable(list);
+    _sortedCacheCount = _games.length;
+    return List<LibraryGame>.of(_cachedSortedGames!);
+  }
+
+  /// 「最近添加」排序口径（P2-5）：先解析成 DateTime 再比较。
+  ///
+  /// 旧实现直接 `String.compareTo`。ISO-8601 字符串的字典序通常等于时间序，
+  /// 但只要历史数据里混入 **UTC 带 `Z`** 的值（迁移 / 外部工具写入），
+  /// 字典序就不再等于时间序，排序会静默错乱且毫无提示。
+  ///
+  /// 不可解析时的次序：有效时间在前、空串最后（与旧行为的空值排尾一致），
+  /// 其余退回字典序以保证排序稳定。
+  static int _compareByInstalledAtDesc(LibraryGame a, LibraryGame b) {
+    final ta = DateTime.tryParse(a.installedAt);
+    final tb = DateTime.tryParse(b.installedAt);
+    if (ta != null && tb != null) {
+      final byTime = tb.compareTo(ta);
+      if (byTime != 0) return byTime;
+      // 同一时刻的不同写法（带/不带毫秒）：用原串做确定性兜底
+      return b.installedAt.compareTo(a.installedAt);
+    }
+    if (ta != null) return -1;
+    if (tb != null) return 1;
+    final aEmpty = a.installedAt.isEmpty;
+    final bEmpty = b.installedAt.isEmpty;
+    if (aEmpty != bEmpty) return aEmpty ? 1 : -1;
+    return b.installedAt.compareTo(a.installedAt);
   }
 
   int get gameCount => _games.length;
 
   Map<String, LibraryGame> get gamesMap => Map.unmodifiable(_games);
-  Set<String> get installedTitles => Set.unmodifiable(_installedTitles);
+
+  /// 已入库的元数据目录名集合（P2-3：旧名 `installedTitles` 名不副实）
+  Set<String> get installedDirNames => Set.unmodifiable(_installedDirNames);
+
+  /// [installedDirNames] 的旧名，保留仅为兼容；新代码请用前者。
+  Set<String> get installedTitles => installedDirNames;
 
   bool isTitleInstalled(String title) {
     if (title.isEmpty) return false;
@@ -363,19 +853,87 @@ class LocalGameRegistry extends ChangeNotifier {
     return getGameByTitle(title) != null;
   }
 
+  /// 按**稳定主键**判断是否已入库（P0-1）。
+  ///
+  /// 旧实现是 `_games.containsKey(gameId)`——但 `_games` 的 key 是**目录名**，
+  /// 于是这个"按 id 查"的 API 实际上在做"把 id 当目录名查"，永远返回 false。
+  /// 现改为查 [_byIdIndex]。
   bool isGameIdInstalled(String gameId) {
-    return _games.containsKey(gameId);
+    if (gameId.isEmpty) return false;
+    _ensureIndexes();
+    return _byIdIndex!.containsKey(gameId);
   }
 
+  /// 按云端主键查游戏（O(1)，2026-09-26 P1-4）。
+  ///
+  /// 键为探索库云端记录的 record.id（安装入库时写入 game.json 的
+  /// `cloud_game_id`）。老数据 / 非云端来源为空串，查不到返回 null。
+  LibraryGame? getGameByCloudId(String cloudId) {
+    if (cloudId.isEmpty) return null;
+    _ensureIndexes();
+    final hit = _byCloudIdIndex!['cloud:$cloudId'];
+    if (hit != null && hit.cloudGameId == cloudId) return hit;
+    return null;
+  }
+
+  /// 「这个云端作品是否已入库」——探索库安装判定的统一口径（P1-4）。
+  ///
+  /// 旧口径是 [isTitleInstalled]（标题精确匹配）：本地改过标题、或云端标题
+  /// 与本地标题存在全角/空格/译名差异时判定失效 → 已入库游戏仍可被再次
+  /// 安装，产生重复目录。现优先按稳定外部主键 [getGameByCloudId] 判定，
+  /// cloudId 为空（老数据）时回退标题匹配，保持旧行为不回归。
+  bool isCloudGameInstalled(String cloudId, String title) {
+    if (cloudId.isNotEmpty && getGameByCloudId(cloudId) != null) return true;
+    return isTitleInstalled(title);
+  }
+
+  /// 按稳定主键查游戏（O(1)，P0-1）
+  LibraryGame? getGameById(String gameId) {
+    if (gameId.isEmpty) return null;
+    _ensureIndexes();
+    final hit = _byIdIndex![gameId];
+    // 命中后校验：索引可能因外部直接改字段而陈旧（见索引字段区注释）
+    if (hit != null && hit.gameId == gameId) return hit;
+    return null;
+  }
+
+  /// 按**游戏本体目录**查游戏（O(1)，P0-1 三张索引之一）。
+  ///
+  /// 键是 [PathNormalizer.forCompare] 归一化后的目录路径（反斜杠 + 小写 +
+  /// 去尾斜杠），因此调用方传任何形态的路径都能命中。
+  /// 用途：库页/收藏夹的排序键就是 `directoryPath`（见
+  /// `docs/DEV/features/library_page_experience_overhaul_plan.md`）。
+  /// 未来做 index.db 时这一维也要进表。
+  LibraryGame? getGameByDirectoryPath(String directoryPath) {
+    if (directoryPath.isEmpty) return null;
+    _ensureIndexes();
+    final key = PathNormalizer.forCompare(directoryPath);
+    if (key.isEmpty) return null;
+    final hit = _byDirPathNormIndex![key];
+    // 命中后校验目录未变（索引陈旧的兜底）
+    if (hit != null &&
+        PathNormalizer.forCompare(hit.directoryPath) == key) {
+      return hit;
+    }
+    return null;
+  }
+
+  /// 按标题查游戏（P1-1：由 O(n) 遍历改为 O(1) 索引）。
+  ///
+  /// 语义与旧实现保持一致：
+  /// 1. 精确匹配 `title`（旧实现是线性遍历，现在查索引）；
+  /// 2. 回退到「标题 → 目录名」的兼容索引（历史调用方可能直接传目录名）。
+  ///
+  /// 全库有 83 处调用点，其中导入排重会对每个候选调用一次——
+  /// 旧实现下这是 O(候选数 × 游戏数)，也正是历史上「批量导入越跑越慢」的
+  /// 原因之一。
   LibraryGame? getGameByTitle(String title) {
     if (title.isEmpty) return null;
-    // 遍历查找：标题可能已被修改，safeName 不一定等于 dirName（_games 的 key）
-    for (final game in _games.values) {
-      if (game.title == title) return game;
-    }
-    // 回退：尝试用 safeName 直接索引（兼容标题未被修改的情况）
-    final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-    return _games[safeName];
+    _ensureIndexes();
+    final hit = _byTitleIndex![title];
+    if (hit != null && hit.title == title) return hit;
+    // 回退：兼容标题未被修改、调用方直接传目录名的历史用法
+    return _games[GameKey.dirNameFromTitle(title)];
   }
 
   bool isMarked(String title) {
@@ -398,6 +956,8 @@ class LocalGameRegistry extends ChangeNotifier {
         '[标记] 已修改原对象: ${game.title}，标记状态: ${game.mark == GameMark.star}');
 
     _persistMarkToGameJson(game);
+    // ★ 响应式修复：标记变更同步广播，星标/收藏徽标跨页面即时刷新
+    _notifyStructural();
   }
 
   Future<void> _persistMarkToGameJson(LibraryGame game) async {
@@ -421,7 +981,7 @@ class LocalGameRegistry extends ChangeNotifier {
 
     if (exactMatch.isNotEmpty) {
       _games.remove(exactMatch);
-      _installedTitles.remove(exactMatch);
+      _installedDirNames.remove(exactMatch);
       debugPrint('[删除]   ✅ 精确移除: "$exactMatch"');
       _notifyStructural();
     } else {
@@ -437,6 +997,19 @@ class LocalGameRegistry extends ChangeNotifier {
       final dir = Directory(entry.value.directoryPath);
       try {
         if (!await dir.exists()) {
+          // ★ 2026-09-26 NAS 映射网络驱动器适配（P0）：
+          // 网络位置（UNC / 映射盘）**离线时 exists() 返回 false**，但这不是
+          // 「用户删了游戏」。若其卷根同样不可达，则视为「介质当前不可用」，
+          // **保留条目** —— 否则用户断开 NAS 后启动软件，整个 NAS 库会被
+          // 当作失效条目清空，重新连接后游戏「全部消失」。
+          // 判定失败时方向一律为「保留」（与 ADR-007 一致）。
+          if (NetworkPath.isNetwork(entry.value.directoryPath) &&
+              !await NetworkPath.isVolumeReachableAsync(
+                  entry.value.directoryPath)) {
+            debugPrint('[LOCAL-REGISTRY] ⏸️ 网络位置暂不可达，保留条目: '
+                '${entry.value.title}（${entry.value.directoryPath}）');
+            continue;
+          }
           staleKeys.add(entry.key);
           continue;
         }
@@ -446,14 +1019,18 @@ class LocalGameRegistry extends ChangeNotifier {
           staleKeys.add(entry.key);
         }
       } catch (e) {
-        staleKeys.add(entry.key);
+        // ★ P2-6：exists() 抛异常 ≠ 路径不存在。移动硬盘/网络驱动器未就绪、
+        // 权限抖动等都会在这里抛错——此时条目不应被移出库，否则用户重新挂载
+        // 后会发现游戏"消失"了。只有"确认不存在"与"缺 .ctgame"两种情况才清理。
+        debugPrint(
+            '[LOCAL-REGISTRY] ⏭️ 检查 "${entry.value.title}" 时磁盘异常（保留条目）: $e');
       }
     }
 
     for (final key in staleKeys) {
       final game = _games[key];
       _games.remove(key);
-      _installedTitles.remove(key);
+      _installedDirNames.remove(key);
       removedCount++;
       debugPrint(
           '[LOCAL-REGISTRY] 🗑️ 清除失效条目: ${game?.title ?? key} (磁盘文件已删除)');
@@ -520,11 +1097,16 @@ class LocalGameRegistry extends ChangeNotifier {
             if (gameData != null) {
               existingGame.title =
                   gameData.title.isNotEmpty ? gameData.title : dirName;
+              // ★ P0-1：对齐稳定主键（老数据在首次读取时已由 v1→v2 迁移补发）
+              if (gameData.gameId.isNotEmpty) {
+                existingGame.gameId = gameData.gameId;
+              }
               existingGame.description = gameData.description;
               existingGame.launchPath = gameData.launchPath;
               existingGame.source = gameData.source;
               existingGame.mark = _parseMark(gameData.mark);
               existingGame.developer = gameData.developer;
+              existingGame.companyId = gameData.companyId;
               existingGame.playStatus = _parsePlayStatus(gameData.playStatus);
 
               // ★ 活跃会话保护：游戏运行期间 scan() 不得覆盖正在累加的
@@ -539,11 +1121,23 @@ class LocalGameRegistry extends ChangeNotifier {
 
               existingGame.isBlurred = gameData.isBlurred;
 
+              // 副标题同步（game.json 持有事实数据，与标题一致全量覆盖）
+              existingGame.subtitle = gameData.subtitle;
+
               // 截图相关字段同步
               existingGame.screenshotFiles = gameData.screenshotFiles;
               existingGame.screenshotUrls = gameData.screenshotUrls;
               existingGame.screenshotStatus = gameData.screenshotStatus;
               existingGame.screenshotRetryCount = gameData.screenshotRetryCount;
+
+              // 收藏夹归属同步（game.json 持有事实数据，空列表也需覆盖）
+              existingGame.collectionIds = gameData.collectionIds;
+
+              // ★ 2026-10-02 存储状态同步：game.json 是事实源，空值也要覆盖
+              //   （用户可能在外部把归档删了 / 手动改了状态，重扫必须如实反映）
+              existingGame.storageState = gameData.storageState;
+              existingGame.archiveDir = gameData.archiveDir;
+              existingGame.archiveAt = gameData.archiveAt;
 
               if (gameData.tags.isNotEmpty) {
                 existingGame.tags = gameData.tags;
@@ -553,10 +1147,17 @@ class LocalGameRegistry extends ChangeNotifier {
                 existingGame.directoryPath = gameData.directoryPath;
               }
 
-              final coverFile = GameDataFormat.findCoverFile(entity.path);
+              final coverFile = GameDataFormat.findCoverFile(entity.path,
+                coverFileName: gameData.coverFile);
               if (coverFile != null) {
                 existingGame.coverUrl = coverFile.path;
               }
+
+              // ★ 2026-10-04 横幅封面同步：game.json 是事实源，空值也要覆盖
+              //   （横幅可能被外部删除 / 重复入库被清空，重扫必须如实反映）
+              final bannerFile = GameDataFormat.findBannerFile(entity.path,
+                  bannerFileName: gameData.bannerFile);
+              existingGame.bannerUrl = bannerFile?.path ?? '';
 
               updatedCount++;
             }
@@ -566,9 +1167,14 @@ class LocalGameRegistry extends ChangeNotifier {
 
           final gameData = await GameDataFormat.readGameJson(entity.path);
           if (gameData != null) {
-            final coverFile = GameDataFormat.findCoverFile(entity.path);
+            final coverFile = GameDataFormat.findCoverFile(entity.path,
+                coverFileName: gameData.coverFile);
+            // ★ 2026-10-04 横幅封面：与封面同套路（json 键优先 → 磁盘探测）
+            final bannerFile = GameDataFormat.findBannerFile(entity.path,
+                bannerFileName: gameData.bannerFile);
 
             final game = LibraryGame(
+              gameId: gameData.gameId,
               title: gameData.title.isNotEmpty ? gameData.title : dirName,
               directoryPath: gameData.directoryPath.isNotEmpty
                   ? gameData.directoryPath
@@ -578,12 +1184,14 @@ class LocalGameRegistry extends ChangeNotifier {
                   ? gameData.installedAt
                   : DateTime.now().toIso8601String(),
               coverUrl: coverFile?.path ?? '',
+              bannerUrl: bannerFile?.path ?? '',
               description: gameData.description,
               tags: gameData.tags,
               launchPath: gameData.launchPath,
               mark: _parseMark(gameData.mark),
               source: gameData.source,
               developer: gameData.developer,
+              companyId: gameData.companyId,
               playStatus: _parsePlayStatus(gameData.playStatus),
               playTime: gameData.playTime,
               isBlurred: gameData.isBlurred,
@@ -595,10 +1203,17 @@ class LocalGameRegistry extends ChangeNotifier {
               screenshotRetryCount: gameData.screenshotRetryCount,
               metadataSource: gameData.metadataSource,
               metadataSourceId: gameData.metadataSourceId,
+              cloudGameId: gameData.cloudGameId,
+              subtitle: gameData.subtitle,
+              collectionIds: gameData.collectionIds,
+              // ★ 2026-10-02 存储状态：老 game.json 无此键 → 默认 normal/空
+              storageState: gameData.storageState,
+              archiveDir: gameData.archiveDir,
+              archiveAt: gameData.archiveAt,
             );
 
             _games[dirName] = game;
-            _installedTitles.add(dirName);
+            _installedDirNames.add(dirName);
             foundCount++;
 
             debugPrint(
@@ -615,10 +1230,28 @@ class LocalGameRegistry extends ChangeNotifier {
       for (final key in staleKeys) {
         final game = _games[key];
         if (game == null) continue;
+
+        // ★ 2026-10-02 存储状态门禁（方案 §9 P0，必改项）
+        //
+        // sealed（已封装）/ packed（已打包）的游戏，**本体目录本来就不该存在**
+        // —— 那正是用户按设计删掉腾空间的结果。旧逻辑只看 `directoryPath`
+        // 在不在磁盘上，会把这类条目当「失效游戏」清出内存库：用户封装完
+        // 一刷新，卡片连带归档入口一起凭空消失。
+        //
+        // 因此：**只有 normal 态才允许按目录缺失判失效**。
+        // 非正常态一律保留 —— 即便归档也被用户删了，也只降级为「仅展示」如实
+        // 呈现，由用户自己决定怎么处置（方案 §4.6：不猜测，不自动清理）。
+        if (game.storageState != 'normal') {
+          debugPrint(
+              '[LOCAL-REGISTRY] 🛡️ 保留非正常态游戏: ${game.title} '
+              '(state=${game.storageState}，本体目录不存在属预期，不移除)');
+          continue;
+        }
+
         final dir = Directory(game.directoryPath);
         if (!await dir.exists()) {
           _games.remove(key);
-          _installedTitles.remove(key);
+          _installedDirNames.remove(key);
           // ★ H6: 清理已删除游戏的活跃会话（★ v3 阶段 4: 含定时器）
           _cleanupSession(game.metaDataDir);
           debugPrint(
@@ -630,6 +1263,11 @@ class LocalGameRegistry extends ChangeNotifier {
       debugPrint(
           '[LOCAL-REGISTRY] 扫描完成 | 子目录: $dirCount | 新增: $foundCount | 更新: $updatedCount | 清理失效: ${staleKeys.length} | 当前内存: ${_games.length}');
       debugPrint('[LOCAL-REGISTRY] ════════════════════════════════');
+
+      // ★ 会社归一化（v4）：借扫描为「有会社原文但还没有 company_id」的
+      //   老数据补算（命中才写回，一次成本；未命中进 pending 漏斗）。
+      await _backfillCompanyIds();
+
       if (foundCount > 0 || staleKeys.length > 0) {
         _notifyStructural();
       }
@@ -638,6 +1276,46 @@ class LocalGameRegistry extends ChangeNotifier {
     }
 
     debugPrint('[LOCAL-REGISTRY] ========== 智能增量扫描结束 ==========');
+  }
+
+  /// 会社 backfill 本会话内已记过 pending 的原文键（防每次扫描重复计数）
+  final Set<String> _backfillMissRecorded = {};
+
+  /// 读时回填（会社归一化 v4）：为「developer 非空但 companyId 为空」的
+  /// 游戏补算归一化结果。
+  ///
+  /// - 词典未加载 / 加载失败：整体跳过（降级，零影响，下次扫描再试）；
+  /// - 命中：内存 + game.json（`company_id` 字段，走 updateGameJson 写队列）
+  ///   各写一次；写盘失败回滚内存，下次扫描重试；
+  /// - 未命中：进 [CompanyAliasPendingStore] 漏斗（本会话内同键只记一次，
+  ///   防止扫描周期把计数刷爆），**不写 game.json**。
+  Future<void> _backfillCompanyIds() async {
+    final store = CompanyAliasStore.instanceOrNull;
+    if (store == null) return;
+    for (final game in _games.values) {
+      if (game.companyId != null) continue;
+      final dev = game.developer.trim();
+      if (dev.isEmpty) continue;
+      final match = store.resolve(dev);
+      if (match == null) {
+        final key = CompanyAliasStore.normalize(dev);
+        if (_backfillMissRecorded.add(key)) {
+          await CompanyAliasPendingStore.instance
+              .record(dev, sampleGameId: game.gameId);
+        }
+        continue;
+      }
+      game.companyId = match.record.companyId;
+      final ok = await GameDataFormat.updateGameJson(
+          game.metaDataDir, {'company_id': match.record.companyId});
+      if (ok) {
+        // 命中即清待审漏斗（幂等）——词典扩批后旧 pending 条目可被消化
+        await CompanyAliasPendingStore.instance
+            .removeIfResolved(dev, match.record.companyId);
+      } else {
+        game.companyId = null; // 写盘失败：回滚内存，下次扫描重试
+      }
+    }
   }
 
   GameMark _parseMark(String markStr) {
@@ -664,6 +1342,11 @@ class LocalGameRegistry extends ChangeNotifier {
     }
   }
 
+  /// 登记一个已完成解包/入库的游戏（内存注册表入口）。
+  ///
+  /// [gameId] 可选：由 [GameDataFormat.writeGameDir] 的返回值传入，
+  /// 保证内存对象与磁盘 game.json 使用**同一个**稳定主键。
+  /// 不传时按"读磁盘 → 没有就补发"的顺序自行解析（见 [_readOrCreateGameId]）。
   void registerExtractionComplete({
     required String gameTitle,
     required String directoryPath,
@@ -675,9 +1358,28 @@ class LocalGameRegistry extends ChangeNotifier {
     String? playStatus,
     String? metadataSource,
     String? metadataSourceId,
+    String? subtitle,
+    String? gameId,
   }) {
-    final safeName = gameTitle.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    final safeName = GameKey.dirNameFromTitle(gameTitle);
     final metaDataDir = '${LocalGameRegistry.gamesBaseDir}/$safeName';
+
+    // ★ 会社归一化（v4）：developer 变更 → company_id 同步重算。
+    //   本方法是同步 API，不能等词典异步加载：词典未就位时为 null，
+    //   由 scan() 的 backfill 兜底补算。
+    final resolvedCompanyId =
+        (developer != null && developer.trim().isNotEmpty)
+            ? CompanyAliasStore.instanceOrNull
+                ?.resolve(developer)
+                ?.record.companyId
+            : null;
+    // 命中即清待审漏斗（幂等）——本方法是同步 API，不能 await：
+    // remove 的内存部分同步立即生效，磁盘刷盘本就由 800ms 定时器合并；
+    // 若写盘失败下次扫描 backfill 会重新命中再补写，语义无损。
+    if (resolvedCompanyId != null) {
+      unawaited(CompanyAliasPendingStore.instance
+          .removeIfResolved(developer!, resolvedCompanyId));
+    }
 
     if (coverUrl == null || coverUrl.isEmpty) {
       final detectedCover = GameDataFormat.findCoverFile(directoryPath);
@@ -687,20 +1389,47 @@ class LocalGameRegistry extends ChangeNotifier {
       }
     }
 
+    // ★ 2026-10-04 横幅封面：writeGameDir 刚把 banner.* 落进元数据目录，
+    //   这里同步探测一次，让内存对象立刻可用（否则要等下一次 scan）。
+    //   探测目标是 metaDataDir（横幅只由应用落盘在那里），找不到 = 无横幅。
+    File? detectedBanner;
+    try {
+      detectedBanner = GameDataFormat.findBannerFile(metaDataDir);
+    } catch (_) {}
+    if (detectedBanner != null) {
+      debugPrint('[LOCAL-REGISTRY] 自动检测到横幅封面: ${detectedBanner.path}');
+    }
+
     if (_games.containsKey(safeName)) {
       debugPrint('[LOCAL-REGISTRY] 📝 游戏已存在于库中，原地更新信息: $gameTitle');
       final existing = _games[safeName]!;
       existing.title = gameTitle;
       existing.directoryPath = directoryPath;
       existing.metaDataDir = metaDataDir;
-      existing.installedAt = DateTime.now().toIso8601String();
+      // ★ P0-1：补齐稳定主键（内存里空着才补，绝不覆盖已有值）
+      if (existing.gameId.isEmpty) {
+        existing.gameId = (gameId != null && gameId.isNotEmpty)
+            ? gameId
+            : _readOrCreateGameId(metaDataDir);
+      }
+      // 🔴 installedAt 语义 = "首次入库时间"，原地更新（重导同一游戏 /
+      //    更新元数据 / 换封面）**不得**覆写它：库页「最近添加」排序与
+      //    「手动排序下新游置顶」都依赖它，覆写会让被编辑的游戏凭空跳到最前，
+      //    表现为"改个游戏资料，卡片位置全乱"。
+      //    真正的首次入库时间在下方 else 分支创建对象时写入。
+      //    方案：docs/DEV/features/library_page_experience_overhaul_plan.md §0 #1
       if (coverUrl != null) existing.coverUrl = coverUrl;
+      // 横幅：探测到才覆盖（保留既有值，下一轮 scan 会以 game.json 为准对齐）
+      if (detectedBanner != null) existing.bannerUrl = detectedBanner.path;
       if (description != null) existing.description = description;
       if (tags != null) existing.tags = tags;
       if (launchPath != null && launchPath!.isNotEmpty) {
         existing.launchPath = launchPath!;
       }
-      if (developer != null) existing.developer = developer!;
+      if (developer != null) {
+        existing.developer = developer!;
+        existing.companyId = resolvedCompanyId;
+      }
       // 元数据源：仅在传入非空值时覆盖，避免原地更新清空已有排重信息
       if (metadataSource != null && metadataSource!.isNotEmpty) {
         existing.metadataSource = metadataSource!;
@@ -708,27 +1437,59 @@ class LocalGameRegistry extends ChangeNotifier {
       if (metadataSourceId != null && metadataSourceId!.isNotEmpty) {
         existing.metadataSourceId = metadataSourceId!;
       }
+      // 副标题：仅在传入非空值时覆盖，避免原地更新清空已有副标题
+      if (subtitle != null && subtitle.isNotEmpty) {
+        existing.subtitle = subtitle;
+      }
     } else {
       final game = LibraryGame(
+        gameId: (gameId != null && gameId.isNotEmpty)
+            ? gameId
+            : _readOrCreateGameId(metaDataDir),
         title: gameTitle,
         directoryPath: directoryPath,
         metaDataDir: metaDataDir,
         installedAt: DateTime.now().toIso8601String(),
         coverUrl: coverUrl ?? '',
+        bannerUrl: detectedBanner?.path ?? '',
         description: description ?? '',
         tags: tags ?? [],
         launchPath: launchPath ?? '',
         developer: developer ?? '',
+        companyId: resolvedCompanyId,
         playStatus: _parsePlayStatus(playStatus ?? 'not_started'),
         metadataSource: metadataSource ?? '',
         metadataSourceId: metadataSourceId ?? '',
+        subtitle: subtitle ?? '',
       );
       _games[safeName] = game;
-      _installedTitles.add(safeName);
+      _installedDirNames.add(safeName);
       debugPrint(
           '[LOCAL-REGISTRY] 📝 注册新安装游戏到本地库: $gameTitle → $directoryPath');
     }
     _notifyStructural();
+  }
+
+  /// 读取 game.json 中的稳定主键；文件不存在 / 字段缺失时**补发**一个新的。
+  ///
+  /// 同步读的理由：[registerExtractionComplete] 是同步 API，且调用时
+  /// game.json 通常刚由 [GameDataFormat.writeGameDir] 写好（几百字节），
+  /// 代价可忽略。补发出来的 id 会在下一次 [GameDataFormat.readGameJson]
+  /// 的 v1→v2 迁移里正式落盘。
+  String _readOrCreateGameId(String metaDataDir) {
+    try {
+      final file = File('$metaDataDir/${GameDataFormat.gameJsonFileName}');
+      if (file.existsSync()) {
+        final decoded = jsonDecode(file.readAsStringSync());
+        if (decoded is Map) {
+          final id = (decoded['game_id'] as String?)?.trim() ?? '';
+          if (id.isNotEmpty) return id;
+        }
+      }
+    } catch (e) {
+      debugPrint('[LOCAL-REGISTRY] ⚠️ 读取 game_id 失败（补发新 id）: $e');
+    }
+    return GameKey.generateId();
   }
 
   /// 更新活跃会话的监控exe列表（游戏位置或启动程序变更后调用）
@@ -810,6 +1571,10 @@ class LocalGameRegistry extends ChangeNotifier {
       }
 
       game.directoryPath = newDirectoryPath;
+      // ★ P0-1：directoryPath 变了 → 目录维度索引与排序缓存必须作废。
+      //   本方法刻意不发 structural 通知（避免对话框开着时库页 rebuild），
+      //   所以失效要在这里显式做，不能依赖 _notifyStructural。
+      _invalidateIndexes();
 
       await GameDataFormat.updateGameJson(
         game.metaDataDir,
@@ -931,6 +1696,8 @@ class LocalGameRegistry extends ChangeNotifier {
     // ④ 写入 game 对象 + game.json
     game.directoryPath = newDirectoryPath;
     game.launchPath = newLaunchPath;
+    // ★ P0-1：同上——relink 也不发 structural 通知，索引失效必须显式做
+    _invalidateIndexes();
 
     await GameDataFormat.updateGameJson(
       game.metaDataDir,
@@ -960,17 +1727,130 @@ class LocalGameRegistry extends ChangeNotifier {
     );
   }
 
+  /// 迁移收尾聚合：文件搬运完成后切换全部路径引用（逐项 best-effort）。
+  ///
+  /// 由 `GameMoveService` 在 M4 阶段调用。核心步骤失败即返回；其余单项
+  /// 失败不抛出，以 warning 描述返回，交由 UI 如实展示（「更换游戏目录」
+  /// relink 是修复兜底）。包含：
+  /// ① game.json 路径更新（复用 [updateGameLocation]，含 launchPath 重算
+  ///    与活跃会话刷新）
+  /// ② 启动配置收尾（P0-2：唯一事实源 = game.json.launch_path，
+  ///    逻辑自详情弹窗 `_resyncLauncherConfig` 下沉）
+  /// ③ 桌面快捷方式重建（存在旧快捷方式时才重建）
+  /// ④ Magpie 路径引用（DPI 注册表值改名 + 类名缓存键迁移）
+  /// ⑤ 存档备份清单 `originalPaths` 前缀改写（存档位于本体目录内的场景）
+  Future<List<String>> finalizeGameMove({
+    required String gameTitle,
+    required String newDirectoryPath,
+    required String oldDirectoryPath,
+  }) async {
+    final warnings = <String>[];
+
+    // ① 核心引用：game.json
+    try {
+      await updateGameLocation(
+          gameTitle: gameTitle, newDirectoryPath: newDirectoryPath);
+    } catch (e) {
+      warnings.add('game.json 路径更新失败: $e（可使用「更换游戏目录」修复）');
+      return warnings;
+    }
+
+    final game = getGameByTitle(gameTitle);
+    if (game == null) return warnings;
+
+    // 计算新旧 exe 绝对路径（供 Magpie 引用修正；launchPath 为空则跳过）
+    String oldExeAbsolute = '';
+    String newExeAbsolute = '';
+    if (game.launchPath.isNotEmpty) {
+      oldExeAbsolute = p.isAbsolute(game.launchPath)
+          ? game.launchPath
+          : p.join(oldDirectoryPath, game.launchPath);
+      newExeAbsolute = p.isAbsolute(game.launchPath)
+          ? game.launchPath
+          : p.join(newDirectoryPath, game.launchPath);
+    }
+
+    // ② 启动配置收尾（P0-2）
+    //
+    // ① 的 updateGameLocation 已把重算后的 launch_path 写进 game.json，
+    // 本步骤只剩一件事：**清掉历史存储**。留着它们，一旦 launch_path
+    // 被用户清空/失效，旧值就会作为兜底把过期 exe 复活。
+    // 不再向 GameConfigManager / prefs 写任何东西。
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await GameConfigManager.instance.removeConfig(gameTitle);
+      await prefs.remove('default_exe_$gameTitle');
+    } catch (e) {
+      warnings.add('历史启动配置清理失败: $e');
+    }
+
+    // ③ 桌面快捷方式重建（仅当旧快捷方式存在）
+    try {
+      final shortcutPath = ShortcutService.instance.getShortcutPath(gameTitle);
+      if (File(shortcutPath).existsSync()) {
+        final jsonData = await GameDataFormat.readGameJson(game.metaDataDir);
+        final exePath = GameDataFormat.resolveLaunchPath(
+            game.launchPath, game.directoryPath);
+        if (exePath.isNotEmpty && File(exePath).existsSync()) {
+          await ShortcutService.instance.createShortcut(
+            gameTitle: gameTitle,
+            exePath: exePath,
+            gameDirectory: game.directoryPath,
+            customIconPath: jsonData?.customIconPath,
+            localeMode: jsonData?.localeMode ?? 'none',
+            upscalingMode: jsonData?.upscalingMode ?? 'none',
+          );
+        } else {
+          warnings.add('快捷方式未重建（新目录未找到启动程序），旧快捷方式可能失效');
+        }
+      }
+    } catch (e) {
+      warnings.add('快捷方式重建失败: $e');
+    }
+
+    // ④ Magpie：DPI 注册表值改名 + 类名缓存键迁移
+    if (oldExeAbsolute.isNotEmpty && newExeAbsolute.isNotEmpty) {
+      try {
+        await MagpieService.instance.updateGamePaths(
+          oldExePath: oldExeAbsolute,
+          newExePath: newExeAbsolute,
+        );
+      } catch (e) {
+        warnings.add('Magpie 超分配置更新失败: $e');
+      }
+    }
+
+    // ⑤ 存档备份清单前缀改写
+    try {
+      await SaveBackupService.instance.rewriteOriginalPathsPrefix(
+        gameName: gameTitle,
+        oldBodyDir: oldDirectoryPath,
+        newBodyDir: newDirectoryPath,
+      );
+    } catch (e) {
+      warnings.add('存档备份清单更新失败: $e');
+    }
+
+    return warnings;
+  }
+
   /// 更新游戏标题（编辑模式下修改标题后调用）
   /// 同步更新：_games Map key、_installedTitles、元数据文件夹名、metaDataDir、活跃会话
-  Future<void> updateGameTitle(String oldTitle, String newTitle) async {
+  ///
+  /// 返回 true 表示标题已成功持久化到 game.json；
+  /// false 表示未找到游戏或 game.json 写入失败（调用方需向用户如实反馈）。
+  ///
+  /// ★ 用户主动改标题视为接管标题：写入时使用 forceTitle 绕过 title_locked
+  ///   锁定保护（该保护本意是防元数据抓取覆盖标题，不应拦截用户手动修改），
+  ///   并同时解除 title_locked 标记。
+  Future<bool> updateGameTitle(String oldTitle, String newTitle) async {
     final game = getGameByTitle(oldTitle);
     if (game == null) {
       debugPrint('[LOCAL-REGISTRY] ⚠️ 更新标题失败: 未找到游戏 $oldTitle');
-      return;
+      return false;
     }
 
-    final newSafeName =
-        newTitle.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    final newSafeName = GameKey.dirNameFromTitle(newTitle);
 
     // 获取当前 _games 的 key（即 dirName）
     String? currentKey;
@@ -981,7 +1861,7 @@ class LocalGameRegistry extends ChangeNotifier {
       }
     }
 
-    if (currentKey == null) return;
+    if (currentKey == null) return false;
 
     // 更新 title 字段
     game.title = newTitle;
@@ -995,7 +1875,15 @@ class LocalGameRegistry extends ChangeNotifier {
       // 重命名磁盘上的元数据文件夹
       try {
         final oldDir = Directory(oldMetaDataDir);
-        if (await oldDir.exists()) {
+        // ★ IMP-05 护栏（2026-09-12 导入审查）：元数据目录若**落在游戏本体目录之内
+        // 或与之相同**，说明它就是用户自己的文件夹（本地导入同名重叠）；此时重命名
+        // 等于把用户 300GB 级的游戏文件夹改名搬走。放弃重命名，仅更新标题。
+        // 注意不能反向判断：云端安装时本体恰好在元数据目录**之下**（设计如此），
+        // 那种情况必须继续允许重命名。
+        if (_metaFallsInsideBodyDir(oldMetaDataDir, game.directoryPath)) {
+          debugPrint(
+              '[LOCAL-REGISTRY] ⛔ 元数据目录与用户游戏目录重叠，跳过目录重命名(防移动用户文件夹): $oldMetaDataDir');
+        } else if (await oldDir.exists()) {
           // 检查新名称是否已被占用
           final newDir = Directory(newMetaDataDir);
           if (await newDir.exists()) {
@@ -1019,8 +1907,8 @@ class LocalGameRegistry extends ChangeNotifier {
       if (renameSucceeded) {
         _games.remove(currentKey);
         _games[newSafeName] = game;
-        _installedTitles.remove(currentKey);
-        _installedTitles.add(newSafeName);
+        _installedDirNames.remove(currentKey);
+        _installedDirNames.add(newSafeName);
       }
       // 如果重命名失败，_games 的 key 仍然是 currentKey（旧目录名）
       // game.title 已更新，getGameByTitle 仍能通过遍历找到
@@ -1059,10 +1947,17 @@ class LocalGameRegistry extends ChangeNotifier {
       }
     }
 
-    // 更新 game.json 中的标题
-    await GameDataFormat.updateGameJson(game.metaDataDir, {
-      'title': newTitle,
-    });
+    // 更新 game.json 中的标题（forceTitle：用户主动改名必须绕过 title_locked 保护，
+    // 同时解除锁定标记——用户已接管标题）
+    final titlePersisted = await GameDataFormat.updateGameJson(
+      game.metaDataDir,
+      {'title': newTitle, 'title_locked': false},
+      forceTitle: true,
+    );
+    if (!titlePersisted) {
+      debugPrint('[LOCAL-REGISTRY] ⚠️ 标题写入 game.json 失败: $oldTitle → $newTitle');
+      return false;
+    }
 
     // ★ H8: 同步更新桌面快捷方式的 --launch-game 参数
     try {
@@ -1073,6 +1968,48 @@ class LocalGameRegistry extends ChangeNotifier {
 
     _notifyStructural();
     debugPrint('[LOCAL-REGISTRY] ✅ 已更新游戏标题: $oldTitle → $newTitle');
+    return true;
+  }
+
+  /// ★ IMP-01 数据安全护栏（2026-09-12 导入审查）
+  ///
+  /// 最近一次删除操作中，因**位于应用自有目录之外**而被跳过删除的"游戏本体"路径。
+  ///
+  /// 背景：`game.directoryPath` 对三条本地导入链路而言就是**用户自己的游戏文件夹**
+  /// （智能导入 candidate.dirPath / 批量导入 game.folderPath / 单文件导入用户所选路径），
+  /// 对它做 `delete(recursive: true)` 等于删除用户数据。
+  /// 调用方据此如实告知用户"记录已移除，但本地文件需自行处理"。
+  final List<String> _skippedBodyPaths = [];
+
+  /// 最近一次删除被跳过删除的本体路径（只读副本）
+  List<String> get skippedBodyPaths => List.unmodifiable(_skippedBodyPaths);
+
+  /// 该游戏的"本体目录"是否位于应用自有目录内（可安全删除）。
+  /// 供删除确认 UI 复用，避免 UI 层重复实现归属判定。
+  bool canDeleteGameBody(String title) {
+    final path = getGameByTitle(title)?.directoryPath ?? '';
+    if (path.isEmpty) return true; // 无本体路径 → 不受护栏限制
+    return PathHelper.isInsideAppStorage(path);
+  }
+
+  /// 该游戏的本体目录路径（供 UI 明示即将影响的位置）
+  String gameBodyPath(String title) =>
+      getGameByTitle(title)?.directoryPath ?? '';
+
+  /// 元数据目录是否**落在本体目录之内或与之相同**（★ IMP-05 判定）。
+  ///
+  /// 语义：返回 true 表示"这个元数据目录其实就是用户自己的文件夹"
+  /// （本地导入时元数据目录由清洗后标题拼成，可能与源目录同名）。
+  /// 这种情况下对它的重命名/文件删除都会落到用户文件上，必须跳过。
+  ///
+  /// ⚠️ 刻意**不做反向判断**：云端安装时游戏本体恰好位于元数据目录**之下**
+  /// （`Games/<标题>_N/<标题>`），这是设计如此，必须继续允许重命名与清理。
+  static bool _metaFallsInsideBodyDir(String metaDataDir, String bodyDirPath) {
+    if (metaDataDir.isEmpty || bodyDirPath.isEmpty) return false;
+    final meta = PathNormalizer.forCompare(metaDataDir);
+    final body = PathNormalizer.forCompare(bodyDirPath);
+    if (meta.isEmpty || body.isEmpty) return false;
+    return meta == body || PathNormalizer.isSubdirectory(body, meta);
   }
 
   Future<bool> deleteGame(String title) async {
@@ -1084,10 +2021,11 @@ class LocalGameRegistry extends ChangeNotifier {
 
     final dirName = game.directoryPath.split('/').last.split('\\').last;
     final beforeLen = _games.length;
-    final beforeTitlesLen = _installedTitles.length;
+    final beforeTitlesLen = _installedDirNames.length;
 
     debugPrint(
         '[删除] 开始彻底删除游戏: ${game.title} | 本体目录: $dirName | 元数据: ${game.metaDataDir}');
+    _skippedBodyPaths.clear();
 
     try {
       // ★ H6: 清理活跃会话（★ v3 阶段 4: 含定时器）
@@ -1100,13 +2038,27 @@ class LocalGameRegistry extends ChangeNotifier {
         debugPrint('[删除]   ⚠️ 删除快捷方式失败(可忽略): $e');
       }
 
+      // ★ IMP-01 数据安全护栏（2026-09-12 导入审查）：
+      // game.directoryPath 对三条本地导入链路而言就是**用户自己的游戏文件夹**，
+      // 越界递归删除会造成不可恢复的用户数据丢失（本应用尚无回收站机制）。
+      // 因此只允许删除应用自有目录内的本体，其余一律跳过并交由用户手动处理。
       final bodyDir = Directory(game.directoryPath);
-      if (await bodyDir.exists()) {
-        try {
-          await bodyDir.delete(recursive: true);
+      if (!PathHelper.isInsideAppStorage(game.directoryPath)) {
+        _skippedBodyPaths.add(game.directoryPath);
+        debugPrint(
+            '[删除]   ⛔ 跳过删除游戏本体(位于应用自有目录之外，防止误删用户文件): ${game.directoryPath}');
+      } else if (await bodyDir.exists()) {
+        // ★ IMP-07: 经 CleanupUtils 删除 → 自动写入 data/cleanup_log.jsonl
+        // （reason=delete_game_body），本次事故暴露出"最危险的删除无审计"的问题。
+        final bodyDeleted = await CleanupUtils.deleteWithRetry(
+          bodyDir,
+          retries: 1,
+          reason: 'delete_game_body',
+        );
+        if (bodyDeleted) {
           debugPrint('[删除]   ✅ 已删除游戏本体: ${game.directoryPath}');
-        } catch (e) {
-          debugPrint('[删除]   ⚠️ 删除本体失败(可能已被手动删除): $e');
+        } else {
+          debugPrint('[删除]   ⚠️ 删除本体失败(可能被占用或已手动删除): ${game.directoryPath}');
         }
       }
 
@@ -1157,10 +2109,14 @@ class LocalGameRegistry extends ChangeNotifier {
       }
 
       final afterLen = _games.length;
-      final afterTitlesLen = _installedTitles.length;
+      final afterTitlesLen = _installedDirNames.length;
 
       // 通知截图抓取服务清理已删除游戏的进度记录
       onGameRemoved?.call(game.title);
+      // ★ P1-4：清掉该游戏目录下的 NSFW 判定缓存。不做的话会留下永久孤儿：
+      //   键是归一化后的文件路径，游戏删了以后再也没有代码会去碰它们，
+      //   只能等容量/过期淘汰兜底。
+      NsfwDetectionStore.instance.removeUnderDirectory(game.directoryPath);
 
       debugPrint(
           '[删除] ✅ 彻底删除完成: ${game.title} | 库: $beforeLen→$afterLen | 已安装列表: $beforeTitlesLen→$afterTitlesLen');
@@ -1182,6 +2138,8 @@ class LocalGameRegistry extends ChangeNotifier {
     final dirName = dirPath.split('/').last.split('\\').last;
 
     debugPrint('[删除] ========== 开始彻底移除游戏数据记录(保留游戏本体) ==========');
+    // ★ IMP-01: 本方法不触碰本体目录，清空跳过记录避免调用方读到上次的陈旧值
+    _skippedBodyPaths.clear();
     debugPrint('[删除] 游戏标题: ${game.title}');
     debugPrint('[删除] 元数据目录: $dirPath');
 
@@ -1198,33 +2156,45 @@ class LocalGameRegistry extends ChangeNotifier {
 
       _removeByDirName(dirName);
 
-      try {
-        final ctgameFile = File('$dirPath/${GameDataFormat.ctgameFileName}');
-        if (await ctgameFile.exists()) {
-          await ctgameFile.delete();
-          debugPrint('[删除]   ✅ 已删除: .ctgame');
-        }
+      // ★ IMP-05 护栏（2026-09-12 导入审查）：元数据目录若落在用户游戏目录之内
+      // （本地导入同名重叠），其中的 .ctgame/game.json/cover.* 属于用户文件，
+      // 不得在"仅移除记录"时删除。
+      if (_metaFallsInsideBodyDir(dirPath, game.directoryPath)) {
+        debugPrint(
+            '[删除]   ⛔ 元数据目录位于用户游戏目录内，跳过删除其中的元数据文件(防破坏用户文件): $dirPath');
+      } else {
+        try {
+          final ctgameFile =
+              File('$dirPath/${GameDataFormat.ctgameFileName}');
+          if (await ctgameFile.exists()) {
+            await ctgameFile.delete();
+            debugPrint('[删除]   ✅ 已删除: .ctgame');
+          }
 
-        final gameJsonFile =
-            File('$dirPath/${GameDataFormat.gameJsonFileName}');
-        if (await gameJsonFile.exists()) {
-          await gameJsonFile.delete();
-          debugPrint('[删除]   ✅ 已删除: game.json');
-        }
+          final gameJsonFile =
+              File('$dirPath/${GameDataFormat.gameJsonFileName}');
+          if (await gameJsonFile.exists()) {
+            await gameJsonFile.delete();
+            debugPrint('[删除]   ✅ 已删除: game.json');
+          }
 
-        final coverFile = GameDataFormat.findCoverFile(dirPath);
-        if (coverFile != null && await coverFile.exists()) {
-          await coverFile.delete();
-          debugPrint('[删除]   ✅ 已删除封面: ${coverFile.path.split('\\').last}');
+          final coverFile = GameDataFormat.findCoverFile(dirPath);
+          if (coverFile != null && await coverFile.exists()) {
+            await coverFile.delete();
+            debugPrint(
+                '[删除]   ✅ 已删除封面: ${coverFile.path.split('\\').last}');
+          }
+        } catch (fileErr) {
+          debugPrint('[删除]   ⚠️ 清理本地数据文件时部分失败（可忽略）: $fileErr');
         }
-      } catch (fileErr) {
-        debugPrint('[删除]   ⚠️ 清理本地数据文件时部分失败（可忽略）: $fileErr');
       }
 
       final afterLen = _games.length;
 
       // 通知截图抓取服务清理已删除游戏的进度记录
       onGameRemoved?.call(game.title);
+      // ★ P1-4：同 deleteGame —— 清掉该游戏目录下的 NSFW 判定缓存
+      NsfwDetectionStore.instance.removeUnderDirectory(game.directoryPath);
 
       debugPrint('[删除] ✅✅✅ 游戏数据记录已彻底移除！');
       debugPrint('[删除]   游戏名: ${game.title}');
@@ -1248,7 +2218,10 @@ class LocalGameRegistry extends ChangeNotifier {
       await for (final entity
           in dir.list(recursive: true, followLinks: false)) {
         if (entity is File) {
-          final name = entity.path.toLowerCase();
+          // 🔴 关键字只对文件名匹配，禁止用完整路径（2026-09-13 实锤：
+          // 目录名含 "Install Patch" 时全路径匹配会滤光所有 exe）
+          final name =
+              entity.path.replaceAll('\\', '/').split('/').last.toLowerCase();
           if (name.endsWith('.exe') &&
               !name.contains('uninstall') &&
               !name.contains('setup') &&
@@ -1261,8 +2234,12 @@ class LocalGameRegistry extends ChangeNotifier {
       if (exeFiles.isEmpty) return null;
 
       final chinesePattern = RegExp(r'[\u4e00-\u9fa5]');
+      // 汉化检测只看文件名——目录名含日文汉字（galgame 标题常态）时
+      // 全路径匹配会把任意先遍历到的 exe（可能是 setup/uninst）当"汉化版"
+      String exeBaseName(File f) =>
+          f.path.replaceAll('\\', '/').split('/').last;
       final chineseFiles =
-          exeFiles.where((f) => chinesePattern.hasMatch(f.path)).toList();
+          exeFiles.where((f) => chinesePattern.hasMatch(exeBaseName(f))).toList();
       if (chineseFiles.isNotEmpty) {
         debugPrint(
             '[LOCAL-REGISTRY] 🔍 检测到汉化可执行文件: ${chineseFiles.first.path}');
@@ -1270,7 +2247,7 @@ class LocalGameRegistry extends ChangeNotifier {
       }
 
       final mainFiles = exeFiles.where((f) {
-        final lower = f.path.toLowerCase();
+        final lower = exeBaseName(f).toLowerCase();
         return !lower.contains('patch') &&
             !lower.contains('crack') &&
             !lower.contains('fix');
@@ -1302,7 +2279,10 @@ class LocalGameRegistry extends ChangeNotifier {
       await for (final entity
           in dir.list(recursive: true, followLinks: false)) {
         if (entity is File) {
-          final name = entity.path.toLowerCase();
+          // 🔴 关键字只对文件名匹配，禁止用完整路径（2026-09-13 实锤：
+          // 目录名含 "Install Patch" 时全路径匹配会滤光所有 exe）
+          final name =
+              entity.path.replaceAll('\\', '/').split('/').last.toLowerCase();
           if (name.endsWith('.exe') &&
               !name.contains('uninstall') &&
               !name.contains('setup') &&
@@ -1345,6 +2325,13 @@ class LocalGameRegistry extends ChangeNotifier {
   static const int _minSessionSeconds =
       60; // ★ v2: 过滤误启动（借鉴 ReinaManager MIN_SESSION_SECONDS）
 
+  // ★ P2-6：单次补计的容忍窗口（修复 clamp(0,4) 在 tick 被挤压时系统性少计）
+  // - 宽松模式（存活即计时）：真实间隔即存活时长，容忍到 10 分钟
+  // - 精准模式（仅前台计时）：覆盖 tick 拖延场景，同时限制"切后台很久后回前台"
+  //   时 delta 包含整个后台时长导致的虚高
+  static const int _foregroundCatchUpMaxSec = 30;
+  static const int _elapsedCatchUpMaxSec = 600;
+
   /// v2: 全局追踪模式缓存（启动时从 SharedPreferences 加载）
   TimeTrackingMode _globalTrackingMode = TimeTrackingMode.playtime;
   TimeTrackingMode get globalTrackingMode => _globalTrackingMode;
@@ -1359,6 +2346,42 @@ class LocalGameRegistry extends ChangeNotifier {
   /// 游戏会话结束回调（游戏标题, 本次会话秒数）
   /// 由 TrayService 设置，用于在游戏退出时发送通知和刷新托盘菜单
   void Function(String gameTitle, int sessionSeconds)? onGameSessionEnded;
+
+  /// ★ 运行任务横幅：会话首次确认进程存活回调（游戏标题, 元数据目录）
+  ///
+  /// 与 [onGameSessionEnded] 对称：后者在会话结束时触发，本回调在会话
+  /// **首次被确认进程仍在运行**时触发（每个会话仅一次），供横幅把状态
+  /// 从「正在启动」切换为「运行中」并启动墙钟计时。
+  ///
+  /// 之所以复用既有的进程检测而不是让 UI 自己轮询：检测逻辑已处理
+  /// 启动器型游戏、逃逸进程、Win32 FFI 回退等边界（见 [_isGameStillRunning]），
+  /// 再造一套轮询会与统计口径产生分歧。
+  /// [pid] 为会话的主追踪 PID（`_GameSession.bestPid`），可能为 null
+  /// （启动器型游戏未捕获到 PID）。消费方：运行任务横幅 + 手柄适配协调器
+  /// （`gamepad_adaptation_coordinator.dart`，按 PID 绑定注入守卫）。
+  void Function(String gameTitle, String metaDataDir, int? pid)?
+      onGameSessionConfirmed;
+
+  /// ★ 运行任务横幅：当前活跃会话的元数据目录集合（只读快照）
+  ///
+  /// 供横幅在冷启动（如应用崩溃恢复、用户手动启动游戏后再开软件）时
+  /// 纳管已存在但非本次发起的会话。
+  Set<String> get activeSessionDirs =>
+      debugActiveSessionDirsOverride ?? _activeGameSessions.keys.toSet();
+
+  /// 仅供测试：覆盖 [activeSessionDirs] 的返回值
+  ///
+  /// 让运行任务横幅的状态流转可以在不真正启动游戏进程的前提下被测试。
+  @visibleForTesting
+  Set<String>? debugActiveSessionDirsOverride;
+
+  /// 仅供测试：记录 [stopTracking] 被调用过的 metaDataDir
+  @visibleForTesting
+  final List<String> debugStopTrackingCalls = <String>[];
+
+  /// 仅供测试：记录 [terminateGame] 被调用过的 metaDataDir
+  @visibleForTesting
+  final List<String> debugTerminateCalls = <String>[];
 
   Future<bool> launchGame(String title,
       {String? forceExePath,
@@ -1456,6 +2479,8 @@ class LocalGameRegistry extends ChangeNotifier {
           if (game.playStatus == PlayStatus.notStarted) {
             game.playStatus = PlayStatus.inProgress;
             GameDataFormat.setPlayStatus(game.metaDataDir, 'in_progress');
+            // ★ 响应式修复：状态徽标跨页面即时刷新（playTimeUpdate 轻量语义）
+            _notifyPlayTimeUpdate();
           }
           final now = DateTime.now().toIso8601String();
           final updates = <String, dynamic>{'last_opened_at': now};
@@ -1606,6 +2631,8 @@ class LocalGameRegistry extends ChangeNotifier {
       debugPrint(
           '[LOCAL-REGISTRY] 🔧 directoryPath 无效("${game.directoryPath}")，从 exePath 恢复为: $workDir');
       game.directoryPath = workDir;
+      // ★ P0-1：directoryPath 自愈后同样要作废目录维度索引
+      _invalidateIndexes();
       try {
         await GameDataFormat.updateGameJson(
             game.metaDataDir, {'directory_path': workDir});
@@ -1775,6 +2802,8 @@ class LocalGameRegistry extends ChangeNotifier {
       if (game.playStatus == PlayStatus.notStarted) {
         game.playStatus = PlayStatus.inProgress;
         GameDataFormat.setPlayStatus(game.metaDataDir, 'in_progress');
+        // ★ 响应式修复：状态徽标跨页面即时刷新（playTimeUpdate 轻量语义）
+        _notifyPlayTimeUpdate();
       }
 
       // 记录首次打开时间和最后打开时间
@@ -1933,6 +2962,9 @@ class LocalGameRegistry extends ChangeNotifier {
     if (game.playStatus == PlayStatus.notStarted) {
       game.playStatus = PlayStatus.inProgress;
       GameDataFormat.setPlayStatus(game.metaDataDir, 'in_progress');
+      // ★ 响应式修复：状态徽标跨页面即时刷新（playTimeUpdate 语义轻量：
+      // 库页/主页仅 setState，不触发封面缓存清理与重排序）
+      _notifyPlayTimeUpdate();
     }
 
     // 记录首次打开时间和最后打开时间
@@ -2129,6 +3161,19 @@ class LocalGameRegistry extends ChangeNotifier {
         // ── 进程存活：累加时长 ──
         session.missCount = 0;
 
+        // ★ 运行任务横幅：首次确认进程存活 → 通知 UI 从「正在启动」切到「运行中」
+        // 每个会话只会翻转一次（confirmed 单向 false→true），后续 tick 不再回调。
+        // 用 try-catch 包裹：横幅的 UI 回调抛异常绝不能影响时长累加主流程。
+        if (!session.confirmed) {
+          session.confirmed = true;
+          try {
+            onGameSessionConfirmed?.call(
+                session.gameTitle, metaDataDir, session.bestPid);
+          } catch (e) {
+            debugPrint('[PLAYTIME] ⚠️ 会话确认回调异常（不阻塞计时）: $e');
+          }
+        }
+
         // ★ Fix 1.1：回填 candidatePids（修复首次启动前台检测竞态）
         // 主监控已通过 primaryExe 确认游戏在运行，把对应 PID 并入候选集，
         // 这样前台检测 Hook 的步骤1（candidatePids.contains(fgPid)）即可命中。
@@ -2143,6 +3188,14 @@ class LocalGameRegistry extends ChangeNotifier {
         }
 
         // ★ v2 核心改变：根据 trackingMode 决定是否累加
+        // ★ P2-6：原 clamp(0, monitorInterval*2)=clamp(0,4) 在定时器被挤压
+        // （FFI 回退 PowerShell、存档扫描、杀软扫描等造成 tick 拖延）时，
+        // 真实间隔远超 4s 但每次只补 4s → 时长系统性少计。
+        // 改为按模式区分容忍窗口：
+        // - 宽松模式：单次最多补 10 分钟（真实间隔=进程存活时长，如实在计）；
+        // - 精准模式：单次最多补 30s（覆盖 tick 拖延；同时限制"切后台很久后
+        //   回前台"场景的虚高——delta 会包含整个后台时长，不能全额补计）。
+        // 超过容忍窗口的部分不补（视为系统挂起/休眠，无法区分是否前台）。
         int secondsToAdd = 0;
         if (session.trackingMode == TimeTrackingMode.playtime) {
           // 精准模式：仅前台时累加
@@ -2151,13 +3204,13 @@ class LocalGameRegistry extends ChangeNotifier {
               _foregroundStates[session.metaDataDir]?.isForeground ?? false;
           if (isForeground) {
             final delta = now.difference(session.lastSettledTime).inSeconds;
-            secondsToAdd = delta.clamp(0, _monitorIntervalSec * 2).toInt();
+            secondsToAdd = delta.clamp(0, _foregroundCatchUpMaxSec).toInt();
           }
           // 后台不累加
         } else {
           // 宽松模式：存活即累加
           final delta = now.difference(session.lastSettledTime).inSeconds;
-          secondsToAdd = delta.clamp(0, _monitorIntervalSec * 2).toInt();
+          secondsToAdd = delta.clamp(0, _elapsedCatchUpMaxSec).toInt();
         }
 
         if (secondsToAdd > 0) {
@@ -2745,6 +3798,119 @@ class LocalGameRegistry extends ChangeNotifier {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // ★ 运行任务横幅：会话管控公开 API
+  //
+  // 供「游戏运行任务状态横幅」的两个操作按钮使用：
+  //   • [stopTracking] 解除监控 —— 放弃时长统计，游戏继续独立运行
+  //   • [terminateGame] 关闭游戏 —— 终止游戏进程
+  // 两者都会把会话以 exit_reason='manual' 写入 sessions 事实表，
+  // 保证统计数据的完整性与可审计性。
+  // ═══════════════════════════════════════════════════════════════
+
+  /// 结束指定会话的时长追踪（不终止游戏进程）
+  ///
+  /// 用于横幅的「解除监控」按钮：软件放弃对游戏进程的监控与时长统计，
+  /// 游戏继续独立运行。已产生的时长正常落盘并写入 sessions 事实表。
+  ///
+  /// [exitDetail] 写入日志的退出原因描述，便于区分「解除监控」与「关闭游戏」。
+  ///
+  /// 返回 true 表示确实结束了一个会话；false 表示该会话不存在。
+  Future<bool> stopTracking(String metaDataDir,
+      {String exitDetail = 'manual(用户解除监控)'}) async {
+    debugStopTrackingCalls.add(metaDataDir);
+    final session = _activeGameSessions[metaDataDir];
+    if (session == null) return false;
+
+    // 结算最后一次检测以来未落盘的时长（上限 2 倍监控间隔，与 _cleanupAll 一致）
+    final now = DateTime.now();
+    final pendingDelta = now.difference(session.lastSettledTime).inSeconds;
+    if (pendingDelta > 0 && pendingDelta <= _monitorIntervalSec * 2) {
+      final written = await _writePlayTimeDirect(metaDataDir, pendingDelta);
+      if (written) session.accumulatedSeconds += pendingDelta;
+    }
+
+    session.exitReason = 'manual';
+    await GameLaunchLogger.instance.logGameExit(
+      gameTitle: session.gameTitle,
+      durationSeconds: session.accumulatedSeconds,
+      exitReason: exitDetail,
+    );
+    try {
+      await GameDataFormat.appendSession(
+          metaDataDir, session.toSessionRecord());
+    } catch (e) {
+      debugPrint('[PLAYTIME] ⚠️ 解除监控时写入会话记录失败（不影响主流程）: $e');
+    }
+
+    _cleanupSession(metaDataDir);
+    debugPrint(
+        '[PLAYTIME] 🔓 已结束追踪: ${session.gameTitle} | $exitDetail | 本次 ${GameDataFormat.formatPlayTime(session.accumulatedSeconds)}');
+    return true;
+  }
+
+  /// 终止指定会话对应的游戏进程，并结束时长追踪
+  ///
+  /// 用于横幅的「关闭游戏」按钮。终止范围（尽力而为，单项失败不阻塞）：
+  /// 1. [bestPid] —— 启动时捕获的主进程；
+  /// 2. `candidatePids` —— 运行期间确认过的候选进程（逃逸进程等）；
+  /// 3. 游戏目录内的所有进程 —— 覆盖启动器型游戏 fork 出的子进程。
+  ///
+  /// 先尝试优雅关闭（发关闭消息），800ms 后再对仍存活的进程强制终止，
+  /// 给游戏留出存档写入窗口。
+  ///
+  /// 返回 true 表示会话已被移除（即使部分进程 kill 失败）。
+  Future<bool> terminateGame(String metaDataDir) async {
+    debugTerminateCalls.add(metaDataDir);
+    final session = _activeGameSessions[metaDataDir];
+    if (session == null) return false;
+
+    final pids = <int>{...session.candidatePids};
+    if (session.bestPid != null) pids.add(session.bestPid!);
+    try {
+      pids.addAll(await _scanGameDirPids(session.directoryPath.isNotEmpty
+          ? session.directoryPath
+          : session.metaDataDir));
+    } catch (e) {
+      debugPrint('[PLAYTIME] ⚠️ 关闭游戏时扫描目录进程失败（用已知 PID 继续）: $e');
+    }
+
+    // 第一轮：优雅关闭
+    var anyGraceful = false;
+    for (final pid in pids) {
+      if (await _killPid(pid, force: false)) anyGraceful = true;
+    }
+    // 给游戏 800ms 保存存档，再对残留进程强制终止
+    if (anyGraceful) {
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+    }
+    for (final pid in pids) {
+      await _killPid(pid, force: true);
+    }
+
+    await stopTracking(metaDataDir, exitDetail: 'manual(用户关闭游戏)');
+    debugPrint('[PLAYTIME] ⛔ 已关闭游戏: ${session.gameTitle}');
+    return true;
+  }
+
+  /// 终止单个 PID（含子进程树 /T）
+  /// [force] 为 true 时加 /F 强制终止
+  Future<bool> _killPid(int pid, {required bool force}) async {
+    try {
+      final result = await Process.run(
+        'taskkill',
+        ['/PID', '$pid', '/T', if (force) '/F'],
+      ).timeout(const Duration(seconds: 5), onTimeout: () {
+        debugPrint('[PLAYTIME] ⚠️ taskkill 超时(5s): PID=$pid');
+        return ProcessResult(0, -1, '', '');
+      });
+      return result.exitCode == 0;
+    } catch (e) {
+      debugPrint('[PLAYTIME] ⚠️ taskkill 异常 PID=$pid: $e');
+      return false;
+    }
+  }
+
   /// ★ 诊断方法：获取所有活跃会话的状态信息
   /// 用于排查"时长不统计"问题——调用方可打印此结果查看会话是否真的在运行
   List<Map<String, dynamic>> getActiveSessionsInfo() {
@@ -2807,7 +3973,8 @@ class LocalGameRegistry extends ChangeNotifier {
 
       // 合并自定义路径扫描结果（去重）
       final prefs = await SharedPreferences.getInstance();
-      final customPaths = prefs.getStringList('save_custom_paths_$gameTitle') ?? [];
+      final customPaths =
+          prefs.getStringList('save_custom_paths_$gameTitle') ?? [];
       if (customPaths.isNotEmpty) {
         final customDetected = scanner.scanCustomPaths(customPaths, gameDir);
         final existing = detected.map((f) => f.filePath).toSet();

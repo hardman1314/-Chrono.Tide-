@@ -1,0 +1,255 @@
+# Chrono Tide — 开源版本项目介绍
+
+> 面向贡献者的架构与技术说明。日常使用、安装与功能列表请先看 [README.md](./README.md)。
+
+## 一、这个项目是什么
+
+Chrono Tide 是一款 **Flutter 写的 Windows 桌面端 Galgame / 视觉小说游戏库管理器**。
+一句话概括它的职责：
+
+> **把你硬盘上散落的几十上百个游戏，变成一个有封面、有标签、有系列、能一键启动还能存档备份的本地游戏库。**
+
+它同时也是一个**游玩时逃不开的壳**：启动游戏、转区、超分、计时、手柄适配、大屏模式（BPM），
+这些「游戏之外的事」都在它这里完成。
+
+### 版本状态
+
+当前仓库对应主程序 **v3.0.0**。v3.0.0 不是补丁迭代，而是一次**结构性扩张**——
+新增了游戏内手柄适配、智能解压、安装中心、云备份、CT 探索库接入、横幅封面与相册、
+系列体系等一批独立子系统，`lib/` 下 Dart 文件从 185 涨到 341，整个 `lib/services/` 近乎重写。
+
+| 版本 | 时间 | 状态 |
+|------|------|------|
+| v3.0.0 | 2026-10-05 | 当前（`pubspec.yaml` 中的 version） |
+| v2.5.0 | 2026-09-14 | 上一正式版，历史条目保留 |
+| v1.7.x | 2026-06 | 本仓库最后一次同步快照 |
+| ≤ v1.7 | — | 更早版本，仓库中无完整记录 |
+
+> 📌 **重要**：本仓库在 2026-10-05 之前长期停在自己的 **v1.7.0 快照**上，
+> README、项目结构、功能描述全部停留在那个时间点。所谓「文档落后于代码」，
+> 根源就是这一条同步断流。本次已把源码整体镜像同步到 v3.0.0。
+
+---
+
+## 二、开源仓与官方版的关系
+
+本仓库是 **与正式版共用同一份源码的开源镜像**，不是抽稀后的二次发行版。
+
+- **代码同源**：`lib/` 由主仓「镜像」过来，不是手抄，也不做删减
+- **二进制同源**：`assets/tools/`、`windows/runner/tools/`、`windows/runner/locale_emulator/`
+  里的解压引擎与转区组件，与正式版一致
+- **差异只在后端**：所有在线能力（登录注册、发现页、在线下载、更新检查、CT 探索库检索）
+  都依赖私有后端。后端地址留空时，`lib/core/backend_config.dart` 的健康检查会失败，
+  软件自动进入**本地模式**，这些入口静默隐藏，本地功能全部照常
+
+也就是说：**这个仓库 clone 下来能直接 `flutter run -d windows` 跑起来，
+且是完整可用的单机版游戏库管理器。**
+
+---
+
+## 三、运行时目录布局
+
+理解数据放哪，是改这个项目的第一道门槛。根目录全部以 `PathHelper.exeDir` 为基准
+（可执行文件所在目录，因此**便携版拷走整个文件夹即可带走所有数据**）：
+
+```
+<程序目录>/
+├── Games/                    # 游戏本体（PathHelper.gamesDir）
+├── data/                     # 应用数据（PathHelper.dataDir）
+│   └── prefs/                # SharedPreferences 落盘目录
+├── runtime/                  # 运行时工具（PathHelper.runtimeDir）
+│   ├── sdl3/                 # SDL3.dll —— 手柄输入后端
+│   ├── openlist/             # openlist.exe / data.zip（在线下载后端）
+│   └── ...
+├── logs/                     # 运行日志
+└── downloads/                # 下载暂存
+```
+
+**护栏规则**（`PathHelper.isInsideAppStorage`，`lib/core/path_helper.dart:243`）：
+任何**删除 / 清理**操作，目标路径必须先过这道校验——`downloads/`、`Games/`、`logs/`、
+`data/` 及其全部子目录才算「自己家的东西」，否则一律拒绝。
+这条是数据安全底线（ADR-007）：归属存疑的文件**永远保留**。
+
+---
+
+## 四、分层架构
+
+```
+                    ┌──────────────────────────────────────┐
+    UI 层            │ pages/   widgets/   big_picture/     │  页面与自绘组件
+                    └───────────────────┬──────────────────┘
+                                        │
+                    ┌───────────────────▼──────────────────┐
+    业务层           │ services/  modules/  repositories/    │  业务编排、状态机
+                    └───────────────────┬──────────────────┘
+                                        │
+                    ┌───────────────────▼──────────────────┐
+    领域层           │ models/   utils/   theme/            │  数据模型、纯工具、样式契约
+                    └───────────────────┬──────────────────┘
+                                        │
+                    ┌───────────────────▼──────────────────┐
+    基础设施层       │ core/   packages/luna_metadata_sdk/   │  路径、配置、FFI、元数据源
+                    └──────────────────────────────────────┘
+```
+
+依赖方向**严格自上而下**，反向调用应当通过回调 / 事件，而不是直接 import 上层。
+
+### 各层职责速查
+
+| 目录 | 干什么 | 注意什么 |
+|------|--------|----------|
+| `main.dart` | 启动初始化、窗口配置、全局服务注册 | 稳定区，改动影响全站 |
+| `main_container.dart` | 页面路由、骨架、全局浮层 | 稳定区；BPM 启动依赖它解门闩 |
+| `big_picture/` | 大屏模式 BPM 全套（控制器 / 焦点 / 页面 / 服务 / 组件） | 内部有**槽位结构不变量**，破坏即重建外壳 |
+| `core/` | `backend_config` / `pb_config` / `path_helper` / `portable_*` | `path_helper` 是所有路径的唯一出口 |
+| `models/` | `game_model` / `series_model` / `archive_manifest` 等 | — |
+| `modules/auth/` | 本地游客 + 在线账号双态身份 | — |
+| `packages/luna_metadata_sdk/` | 内嵌元数据抓取 SDK（独立演进节奏） | 有自己的 `pubspec.yaml` |
+| `pages/` | `home_page` / `library_page` / `discover_page` / `join` / `login` / `register` | — |
+| `repositories/` | 数据仓库，隔离上层与具体存储 | — |
+| `services/` | 业务服务，约 100 文件 | 见下 |
+| `theme/` | 主题注册表、元素注册表、背景图解析器 | 稳定区，全部 UI 都吃它 |
+| `utils/` | `fs_scan` / `title_cleaner` / `game_key` / `path_normalizer` | 纯函数，最安全的改动面 |
+| `widgets/` | UI 组件（含 `game_detail` / `library` / `settings` / `gamepad` 子目录） | — |
+
+### `services/` 子域
+
+```
+services/
+├── local_game_registry.dart   # 本地游戏注册表：数据读写核心
+├── game_launch_service.dart   # 启动唯一入口
+├── extract_manager.dart       # 解压引擎与进度
+├── game_data_format.dart      # 数据格式版本 + 迁移链编排
+├── cloud_backup/              # 云备份（WebDAV / S3 / DPAPI 加密）
+├── gamepad/                   # 游戏内手柄适配（SDL3 + SendInput 注入）
+├── enc/                       # 解包密码组与程序化解密
+├── storage/                   # 存储迁移（存档封存四态）
+├── nsfw/                      # NSFW 图源模式
+└── update/                    # 在线更新检查
+```
+
+---
+
+## 五、核心数据约定（改数据相关代码前必读）
+
+| 约定 | 事实 | 位置 |
+|------|------|------|
+| 游戏身份 | `game.json` 的 `game_id`（v2 起为稳定主键） | `lib/services/game_data_format.dart:19` |
+| 启动 exe 唯一事实源 | `launch_path`，所有启动走 `GameLaunchService` | `lib/services/game_launch_service.dart` |
+| 数据格式版本 | 当前 **4**，`format_version` 字段在 json 内 | `lib/services/game_data_format.dart:118` |
+| 迁移机制 | `_migrations` 映射表：把 vN 升到 vN+1；迁移**绕开写队列** execSync | `lib/services/game_data_format.dart:58` |
+| 横幅封面 | `banner_file` 可空字段，**未升 format_version** | `lib/services/game_data_format.dart:36` |
+| 目录名清洗 | 唯一实现 `GameKey.dirNameFromTitle`，禁止另写一份 | `lib/utils/game_key.dart` |
+| 删除清理 | 必须过 `PathHelper.isInsideAppStorage` | `lib/core/path_helper.dart:243` |
+| 确定性 | 「回传路径的回调瞬间」才算确定（ADR-008） | `lib/core/path_helper.dart` |
+
+### 加字段时的两条路
+
+1. **纯新增可空字段**（如 `banner_file`）→ 加 `??` 默认值即可，**可以不升 format_version**
+2. **改既有语义 / 删字段** → 必须在 `_migrations` 里补一条迁移 + 升版本号 + 补测试
+
+---
+
+## 六、测试
+
+仓库带 `test/`，共 **109 个测试文件**，覆盖：
+
+| 区域 | 用例文件数 |
+|------|-----------|
+| `test/services/` | 43 |
+| `test/explore_hall/` | 10 |
+| `test/services/gamepad/` | 8 |
+| `test/widgets/` + `test/big_picture/` | 12 |
+| `test/services/nsfw/` | 5 |
+| `test/theme/` `test/smart_import/` `test/models/` `test/utils/` … | 其余 |
+
+```bash
+flutter test                    # 全量
+flutter test test/services/     # 单目录
+flutter test <具体文件>          # 单文件
+```
+
+> ⚠️ 有两处已知 flaky：`test/smart_import/` 与 `test/services/game_move_service_test.dart`
+> ——单跑全绿，全量跑会偶发挂。这是**存量问题**，不属于本次同步引入。
+
+---
+
+## 七、二次开发流程
+
+### 1. 改代码
+
+```bash
+flutter pub get
+flutter run -d windows          # 本地模式直接跑，无需后端
+```
+
+### 2. 校验
+
+```bash
+./flutter/bin/flutter.bat analyze lib/<改动文件>   # 只看自己改的，关注新增 error
+flutter test <相关用例>
+git status --short              # 自查改动面，别带出计划外的文件
+```
+
+### 3. 提交
+
+一个任务一个 commit，信息写「为什么改」而不是「改了什么」。
+**禁止 `git add -A`**，只 add 你显式改过的文件。
+
+### 4. 同步到 GitHub
+
+本仓库的同步脚本 `push_to_github.ps1` 是五步式（含 Pre-Push Safety Check 敏感扫描）：
+
+```powershell
+.\push_to_github.ps1                          # 正常走完整流程
+.\push_to_github.ps1 -Message "fix: some bug" # 自定义提交信息
+.\push_to_github.ps1 -DryRun                  # 只预览，不真推
+.\push_to_github.ps1 -Force                   # 跳过 commit 直接 push
+```
+
+### 5. 二进制文件规则
+
+`.gitignore` 对 `*.exe` / `*.dll` / `*.so` / `*.dylib` 全局忽略，只对三个目录开例外：
+
+```
+!assets/tools/
+!windows/runner/tools/
+!windows/runner/locale_emulator/
+```
+
+要往例外目录外加二进制，必须在 `.gitignore` 追加例外后 `git add -f`。
+
+---
+
+## 八、已知待办（诚实清单）
+
+当前 v3.0.0 同步后仍未闭环的部分：
+
+| 项 | 状态 |
+|----|------|
+| `SDL3.dll`（2.8 MB）与 `Magpie.exe` 全套（约 12.5 MB）未入库 | 两者被 `.gitignore` 挡住，会影响 clone 后的手柄覆盖面与超分启动；需自行从 v3.0.0 安装包拷贝 |
+| 部分子系统的单元测试尚未补齐 | 大屏 BPM 入场动画、智能解压五情景、横幅/相册、系列 curator |
+| windows 二进制跟踪数 | 17 个（解压工具 + Locale Emulator 全套） |
+| 仓库仍留有两个无引用的旧字体目录 | `Mali/`（12 文件）、`font_7spfmbvhav8/`（6 文件）——v1.7 时代遗留，未被任何代码引用，建议后续清理 |
+| 根目录残留历史文件 | `flutter_01.log`、`test_local_mode.ps1`、`本地模式测试.bat` |
+| Windows 端尚未在 CI 中自动验证 | 无 CI 流水线 |
+
+> 说明：上面这些是**审计时点（2026-10-05）**的真实状态，不是「待优化」的客套话。
+
+---
+
+## 九、致谢
+
+- [Flutter](https://flutter.dev/) —— 整个 UI 框架
+- [PocketBase](https://pocketbase.io/) —— 开源后端即服务
+- [Alist](https://alist.nn.ci/) —— 文件列表程序
+- [VNDB](https://vndb.org/)、[Bangumi](https://bangumi.tv/)、[KunGal](https://www.kungal.com/)、
+  [hikarinagi](https://www.hikarinagi.org/)、[NextMoe](https://nextmoe.org/) —— 元数据源
+- [Locale Emulator](https://xupefei.github.io/Locale-Emulator/) —— 区域模拟器
+- [Magpie](https://github.com/bluelovers/Magpie) —— AI 超分
+- [pointycastle](https://github.com/bcgit/pointycastle) —— 加解密
+- [ludusavi](https://github.com/mtkennerly/ludusavi) —— 存档备份思路参考
+
+## 十、许可证
+
+见 [LICENSE](./LICENSE)。

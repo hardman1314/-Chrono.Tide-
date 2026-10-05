@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
+import '../theme/animated_background_image.dart';
 import '../theme/background_image_config.dart';
 import '../theme/theme_storage.dart';
 import 'animated_overlay.dart';
@@ -144,9 +146,14 @@ class _EditorContentState extends State<_EditorContent> {
       }
       if (!mounted || path == null) return;
 
+      // v3.10 R5：编辑器是定位/构图用途 —— 动图只会持续重绘并干扰拖拽，
+      // 且此处与渲染分支共用同一 provider key，改静态首帧后不会多起解码器。
       final ImageProvider provider;
       if (widget.initialConfig.source == BackgroundImageSource.file) {
-        provider = FileImage(File(path));
+        provider = AnimatedBackgroundImage.providerFor(
+          File(path),
+          staticFrame: widget.initialConfig.isAnimated,
+        );
       } else {
         provider = AssetImage(path);
       }
@@ -336,7 +343,7 @@ class _EditorContentState extends State<_EditorContent> {
             decoration: BoxDecoration(
               color: AppColors.background,
               border: Border.all(color: AppColors.border, width: 1.6),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(AppRadius.xl),
               boxShadow: [
                 BoxShadow(
                   color: AppColors.border,
@@ -377,7 +384,6 @@ class _EditorContentState extends State<_EditorContent> {
           Text(
             '调整背景图位置',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 15,
               fontWeight: FontWeight.w700,
               color: AppColors.primaryText,
@@ -388,7 +394,6 @@ class _EditorContentState extends State<_EditorContent> {
             child: Text(
               '滚轮缩放（以光标为锚点） · 拖拽移动 · Esc 取消',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 11,
                 color: AppColors.secondaryText,
               ),
@@ -469,9 +474,13 @@ class _EditorContentState extends State<_EditorContent> {
       final imgLeft = (cropW - drawW) / 2 + pxOffsetX;
       final imgTop = (cropH - drawH) / 2 + pxOffsetY;
 
+      // v3.10 R5：同 _loadImageInfo —— 编辑器一律静态首帧
       final ImageProvider provider;
       if (widget.initialConfig.source == BackgroundImageSource.file) {
-        provider = FileImage(File(_filePath!));
+        provider = AnimatedBackgroundImage.providerFor(
+          File(_filePath!),
+          staticFrame: widget.initialConfig.isAnimated,
+        );
       } else {
         provider = AssetImage(_filePath!);
       }
@@ -520,7 +529,6 @@ class _EditorContentState extends State<_EditorContent> {
           Text(
             '${(_scale * 100).round()}%',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 12,
               fontWeight: FontWeight.w700,
               color: AppColors.primaryText,
@@ -569,7 +577,6 @@ class _EditorContentState extends State<_EditorContent> {
               child: Text(
                 '重置',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: AppColors.secondaryText,
@@ -592,7 +599,6 @@ class _EditorContentState extends State<_EditorContent> {
               child: Text(
                 '取消',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: AppColors.secondaryText,
@@ -615,7 +621,6 @@ class _EditorContentState extends State<_EditorContent> {
               child: Text(
                 '应用',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
                   color: AppColors.primaryText,

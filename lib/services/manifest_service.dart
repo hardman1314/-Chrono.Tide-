@@ -1,19 +1,25 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'save_manifest.dart';
 
 /// Ludusavi 存档清单服务（单例）
 ///
-/// 应用启动时从 assets/data/manifest.yaml 加载 Ludusavi 兼容清单，
+/// 应用启动时从 assets/data/manifest.yaml.gz 加载 Ludusavi 兼容清单，
 /// 为 [SaveScanner] 提供游戏存档路径查询能力。
 ///
 /// 清单覆盖 5 万+ 游戏，包含存档文件路径、注册表路径、Steam/GOG ID 等。
 /// 加载失败不阻塞应用启动，[isReady] 为 false 时扫描器回退到通用检测。
+///
+/// ★ 体积优化：清单原文 16.7MB，gzip 后仅 2.2MB（压缩率 87%）。
+/// YAML 是高度冗余的文本，压缩收益极大；代价是加载时多一次解压
+/// （数十毫秒，且本服务已在首帧后异步加载，不影响启动体验）。
 class ManifestService with ChangeNotifier {
   static final ManifestService instance = ManifestService._();
   ManifestService._();
 
-  static const _assetPath = 'assets/data/manifest.yaml';
+  static const _assetPath = 'assets/data/manifest.yaml.gz';
 
   SaveManifest? _manifest;
   bool _isReady = false;
@@ -38,7 +44,11 @@ class ManifestService with ChangeNotifier {
   Future<void> init() async {
     if (_isReady) return;
     try {
-      final yaml = await rootBundle.loadString(_assetPath);
+      // ★ 体积优化：asset 为 gzip 压缩后的清单，先解压再解析
+      final bytes = await rootBundle.load(_assetPath);
+      final decoded = GZipCodec().decode(bytes.buffer.asUint8List(
+          bytes.offsetInBytes, bytes.lengthInBytes));
+      final yaml = utf8.decode(decoded);
       _manifest = SaveManifest.fromYaml(yaml);
       _isReady = true;
       _loadError = null;

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/path_helper.dart';
+import '../utils/network_path.dart';
 
 /// 开机自启服务
 ///
@@ -41,8 +42,18 @@ class AutoStartService {
   Future<bool> enable() async {
     try {
       final exePath = Platform.resolvedExecutable;
+      // ★ 2026-09-26 NAS 适配：软件装在映射网络驱动器（Z:）上时，注册表 Run 里
+      // 记盘符路径会在开机时失败 —— 登录阶段盘符可能尚未映射、或服务器未就绪。
+      // 此时改写为该共享的 **UNC 等价路径**（不依赖盘符映射关系）；
+      // 解析不出来就沿用原盘符路径，本地磁盘行为完全不变。
+      final autostartExePath = NetworkPath.isMappedDrive(exePath)
+          ? NetworkPath.toUniversalPath(exePath)
+          : exePath;
+      if (autostartExePath != exePath) {
+        debugPrint('[AUTOSTART] 🌐 映射盘安装，自启改记 UNC 路径: $autostartExePath');
+      }
       // 附加 --silent 参数，开机自启时静默运行
-      final value = '"$exePath" --silent';
+      final value = '"$autostartExePath" --silent';
 
       final result = await Process.run('reg', [
         'add',

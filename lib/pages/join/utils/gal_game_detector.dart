@@ -412,12 +412,19 @@ class GalGameDetector {
       }
 
       final folderName = _basename(folderPath).toLowerCase();
-      final fullPathLower = folderPath.toLowerCase();
 
       // 负信号：系统目录
+      // ★ IMP-19（2026-09-12 导入审查）：按**路径分段精确匹配**。
+      // 旧实现用整条路径 contains（'origin'/'windows'/'microsoft'…），
+      // 会把 `D:\GAL\Original\…`、`D:\games\windows_no_naka\…` 这类合法游戏目录
+      // 误记负信号扣分甚至漏识别。
       final negative = <String>[];
+      final pathSegments = folderPath
+          .split(RegExp(r'[\\/]+'))
+          .map((s) => s.toLowerCase())
+          .toList();
       for (final pattern in _systemPatterns) {
-        if (fullPathLower.contains(pattern.toLowerCase())) {
+        if (pathSegments.contains(pattern.toLowerCase())) {
           negative.add('系统路径:$pattern');
         }
       }

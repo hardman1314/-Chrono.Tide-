@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../theme/app_colors.dart';
 import '../join_controller.dart';
 import '../../../widgets/interactive_wrapper.dart';
+import '../../../widgets/nsfw/nsfw_image.dart';
 
 /// 字段锁定按钮组件
 /// 显示在输入框右上角，点击切换锁定/解锁状态
@@ -21,28 +22,19 @@ class FieldLockButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InteractiveWrapper(
+    // v3.9 按钮体系：ghost 语义变体——锁定=选中态（强调色软底+强调图标，
+    // 修复 border@15% 底在浅色主题下几乎不可见）
+    return HoverButton(
+      variant: CtButtonVariant.ghost,
+      selected: isLocked,
       onTap: onToggle,
-      hoverScale: 1.15,
+      padding: EdgeInsets.all(size * 0.25),
       child: Tooltip(
         message: isLocked ? '已锁定：切换平台时保留此数据' : '未锁定：切换平台时会覆盖此数据',
         waitDuration: const Duration(milliseconds: 500),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: EdgeInsets.all(size * 0.25),
-          decoration: BoxDecoration(
-            color: isLocked
-                ? AppColors.border.withOpacity(0.15)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(size * 0.3),
-          ),
-          child: Icon(
-            isLocked ? Icons.lock : Icons.lock_open,
-            size: size,
-            color: isLocked
-                ? AppColors.border
-                : AppColors.placeholderText.withOpacity(0.5),
-          ),
+        child: Icon(
+          isLocked ? Icons.lock : Icons.lock_open,
+          size: size,
         ),
       ),
     );
@@ -64,15 +56,19 @@ class CoverSectionWithLock extends StatelessWidget {
       child: Transform.rotate(
         angle: -0.035,
         child: Container(
-          width: 120,
-          height: 180,
+          // 封面宽沿用设计稿 150；高度改为与四个输入框整体高度**精确对齐**：
+          // 名称 62 + 5 + 副标题 37 + 5 + 标签 47 + 5 + 会社 47 = 208
+          // ⇒ 左栏首行 Row 高度由「封面 224」收敛为「字段列 208」，省下 16px 给简介
+          width: 150,
+          height: 208,
           decoration: BoxDecoration(
             color: const Color(0xFFE9E0D1),
             border: Border.all(
               color: controller.coverLocked
                   ? AppColors.primaryText
                   : AppColors.border,
-              width: controller.coverLocked ? 3 : 2,
+              // 设计稿字段/封面边框统一 1.36~1.5，锁定态按 1.6 倍强调
+              width: controller.coverLocked ? 2.4 : 1.5,
             ),
             boxShadow: [
               BoxShadow(
@@ -87,17 +83,24 @@ class CoverSectionWithLock extends StatelessWidget {
             if (hasCover)
               Transform.rotate(
                   angle: 0.035,
-                  child: Image.file(File(controller.coverFilePath!),
+                  child: NsfwImage.file(
+                      controller.coverFilePath!,
+                      contentKind: NsfwContentKind.cover,
                       width: double.infinity,
                       height: double.infinity,
-                      fit: BoxFit.cover))
+                      fit: BoxFit.cover,
+                      child: Image.file(File(controller.coverFilePath!),
+                          width: double.infinity,
+                          height: double.infinity,
+                          fit: BoxFit.cover,
+                          // ★ 性能优化：小尺寸封面缩略图限宽解码
+                          cacheWidth: 240)))
             else
               Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                 Icon(Icons.add, size: 32, color: AppColors.border),
                 const SizedBox(height: 8),
                 Text('添加封面',
                     style: TextStyle(
-                        fontFamily: 'ZhiMangXing',
                         fontSize: 16,
                         letterSpacing: 2.0,
                         color: AppColors.border))
@@ -126,12 +129,13 @@ class CoverSectionWithLock extends StatelessWidget {
                         onTap: () => controller.removeCover(),
                         hoverScale: 1.1,
                         child: Container(
-                          padding: const EdgeInsets.all(4),
+                          // 设计稿「Button - 移除封面」27.8×27.8 全圆
+                          padding: const EdgeInsets.all(6),
                           decoration: BoxDecoration(
                               color: Colors.black54,
-                              borderRadius: BorderRadius.circular(10)),
+                              borderRadius: BorderRadius.circular(14)),
                           child: Icon(Icons.close_rounded,
-                              size: 14, color: Colors.white),
+                              size: 15, color: Colors.white),
                         )),
                   )),
           ]),

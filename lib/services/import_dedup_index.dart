@@ -61,11 +61,17 @@ class DedupVerdict {
 class _ImportedRef {
   final String title;
   final String directoryPath;
+
+  /// ★ P0-4（2026-09-16 稳定性审计）：构建索引时**预先规范化**路径。
+  /// 旧实现在 `check()` 的循环里对每个 ref 现场调 `PathNormalizer.forCompare`
+  /// （且 `_pathContains → isSubdirectory` 又各调 2 次），2000 候选 × 2000 库
+  /// 时约 1200 万次字符串规范化，全在 UI isolate —— 扫描阶段的主 CPU 热点。
+  final String normalizedPath;
   final String metadataSource;
   final String metadataSourceId;
 
-  _ImportedRef(this.title, this.directoryPath, this.metadataSource,
-      this.metadataSourceId);
+  _ImportedRef(this.title, this.directoryPath, this.normalizedPath,
+      this.metadataSource, this.metadataSourceId);
 }
 
 /// 多维排重索引
@@ -90,8 +96,13 @@ class ImportDedupIndex {
     final byName = <String, _ImportedRef>{};
 
     for (final g in games) {
-      final ref = _ImportedRef(g.title, g.directoryPath, g.metadataSource,
-          g.metadataSourceId);
+      final ref = _ImportedRef(
+        g.title,
+        g.directoryPath,
+        PathNormalizer.forCompare(g.directoryPath),
+        g.metadataSource,
+        g.metadataSourceId,
+      );
       refs.add(ref);
       final pathKey = PathNormalizer.forCompare(g.directoryPath);
       if (pathKey.isNotEmpty) byPathExact.putIfAbsent(pathKey, () => ref);
@@ -122,13 +133,16 @@ class ImportDedupIndex {
     return name.trim().toLowerCase();
   }
 
-  /// 路径包含冲突检测（双向，参考 LunaBox `findByPathConflict`）
-  /// A⊂B 或 B⊂A 都视为冲突（等价于 isSubdirectory 双向检查）
-  static bool _pathContains(String a, String b) {
+  /// 路径包含冲突检测（双向，A⊂B 或 B⊂A 都算冲突）
+  ///
+  /// ★ P0-4（2026-09-16 稳定性审计）：改为"已规范化路径的前缀比较"，零再规范化。
+  /// 入参必须是 [PathNormalizer.forCompare] 的输出（小写、`\` 分隔、无尾斜杠）。
+  static bool _coversNormalized(String a, String b) {
     if (a.isEmpty || b.isEmpty) return false;
     if (a == b) return true;
-    return PathNormalizer.isSubdirectory(a, b) ||
-        PathNormalizer.isSubdirectory(b, a);
+    if (b.startsWith('$a\\')) return true;
+    if (a.startsWith('$b\\')) return true;
+    return false;
   }
 
   /// 阶段 A 排重检查（扫描时调用，仅有路径和标题）
@@ -147,10 +161,9 @@ class ImportDedupIndex {
           '路径已存在: ${_byPathExact[pathKey]!.title}',
         );
       }
-      // 包含冲突：线性扫描已入库游戏
+      // 包含冲突：线性扫描已入库游戏（★ P0-4：用预规范化路径，零重算）
       for (final ref in _refs) {
-        final existingPath = PathNormalizer.forCompare(ref.directoryPath);
-        if (_pathContains(pathKey, existingPath)) {
+        if (_coversNormalized(pathKey, ref.normalizedPath)) {
           return DedupVerdict.hard(
             DedupConflictKind.pathConflict,
             ref.title,
@@ -201,7 +214,7 @@ class ImportDedupIndex {
     final newKey = PathNormalizer.forCompare(newPath);
     if (newKey.isEmpty) return false;
     for (final p in existingPaths) {
-      if (_pathContains(newKey, PathNormalizer.forCompare(p))) {
+      if (_coversNormalized(newKey, PathNormalizer.forCompare(p))) {
         return true;
       }
     }

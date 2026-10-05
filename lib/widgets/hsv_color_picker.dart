@@ -412,7 +412,6 @@ class _HsvColorPickerState extends State<HsvColorPicker> {
               labelStyle: const TextStyle(fontSize: 11),
             ),
             style: const TextStyle(
-              fontFamily: 'Inter',
               fontSize: 12,
             ),
             onTap: () => _isEditingHex = true,
@@ -440,7 +439,6 @@ class _HsvColorPickerState extends State<HsvColorPicker> {
             child: Text(
               '${(_alpha * 100).round()}%',
               style: const TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
               ),

@@ -110,7 +110,6 @@ class ColorChannelPanel extends StatelessWidget {
             Text(
               property.displayName,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
                 color: AppColors.primaryText,
@@ -121,7 +120,6 @@ class ColorChannelPanel extends StatelessWidget {
             Text(
               _colorToHex(currentColor),
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 10,
                 color: AppColors.secondaryText,
               ),

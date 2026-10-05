@@ -661,6 +661,73 @@ class MagpieService with ChangeNotifier {
     }
   }
 
+  /// 迁移游戏目录后同步 Magpie 相关路径引用（逐项 best-effort，失败仅告警）。
+  ///
+  /// 由 [LocalGameRegistry.finalizeGameMove] 在移动收尾阶段调用：
+  /// ① 类名缓存键迁移：`_classNameCache` 以游戏 exe 绝对路径为键，
+  ///    旧键随目录迁移失效 → 键改名保留缓存值（下次启动免 EnumWindows 重检测）；
+  /// ② DPI 兼容性注册表值改名：`HKCU\...\AppCompatFlags\Layers` 的**值名**
+  ///    就是游戏 exe 绝对路径（`_setDpiCompatibility` 写入），旧值名随迁移失效
+  ///    → 读出旧值 → 以新 exe 路径为值名重建 → 删除旧值名（PowerShell 范式
+  ///    与 `_setDpiCompatibility` 一致）。
+  Future<void> updateGamePaths({
+    required String oldExePath,
+    required String newExePath,
+  }) async {
+    if (oldExePath == newExePath) return;
+
+    // ① 类名缓存键迁移
+    try {
+      if (_classNameCache.containsKey(oldExePath)) {
+        final className = _classNameCache.remove(oldExePath)!;
+        _classNameCache[newExePath] = className;
+        await _saveClassNameCache();
+        _log('INFO', '已迁移窗口类名缓存键: $oldExePath → $newExePath');
+      }
+    } catch (e) {
+      _log('WARN', '类名缓存键迁移失败（不影响移动）: $e');
+    }
+
+    // ② DPI 兼容性注册表值改名
+    try {
+      final result = await Process.run(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          '''
+\$regPath = 'HKCU:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers'
+\$oldName = '$oldExePath'
+\$newName = '$newExePath'
+\$existing = \$null
+try {
+  \$existing = Get-ItemProperty -Path \$regPath -Name \$oldName -ErrorAction SilentlyContinue
+} catch {}
+if (\$existing -ne \$null) {
+  \$value = \$existing.\$oldName
+  Set-ItemProperty -Path \$regPath -Name \$newName -Value \$value -Type String -Force
+  Remove-ItemProperty -Path \$regPath -Name \$oldName -Force
+  Write-Output 'MIGRATED'
+} else {
+  Write-Output 'NOT_PRESENT'
+}
+'''
+        ],
+        runInShell: false,
+      ).timeout(const Duration(seconds: 10), onTimeout: () {
+        _log('WARN', 'DPI 注册表值迁移超时(10s)，跳过（下次超分启动会重新设置）');
+        throw TimeoutException('DPI registry migration timeout');
+      });
+      final output = result.stdout.toString().trim();
+      if (output == 'MIGRATED') {
+        _log('INFO', '已迁移 DPI 兼容性注册表值: $oldExePath → $newExePath');
+      }
+      // NOT_PRESENT = 旧游戏从未设置过 DPI 兼容性，无需处理
+    } catch (e) {
+      _log('WARN', 'DPI 注册表值迁移失败（不影响移动）: $e');
+    }
+  }
+
   // ========== 可用性检测 ==========
   /// 检测 Magpie 是否可用
   Future<bool> isAvailable() async {

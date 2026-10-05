@@ -4,6 +4,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../core/portable_image_cache_manager.dart';
 import '../theme/app_colors.dart';
 import '../services/screenshot_fetch_service.dart';
+import '../services/nsfw/nsfw_detection_store.dart';
+import 'nsfw/nsfw_image.dart';
 
 /// 通用截图轮播组件
 /// 支持网络图片（CachedNetworkImage）和本地文件图片（Image.file）
@@ -35,6 +37,26 @@ class ScreenshotCarousel extends StatefulWidget {
   /// - completed: 正常展示截图
   final String? gameTitle;
 
+  /// 双击图片回调（传回被双击图片的下标）
+  ///
+  /// 为 null 时（默认）不启用双击交互；
+  /// 详情窗口传入后可实现"双击看大图"。
+  final void Function(int index)? onImageDoubleTap;
+
+  /// 是否启用悬停放大镜交互
+  ///
+  /// 为 true 时：鼠标悬停在截图上 → 光标变为系统放大镜，
+  /// 同时截图轻微放大（1.03x），鼠标移开后复原。
+  /// 仅影响鼠标，触摸手势不受影响。
+  final bool enableHoverZoom;
+
+  /// 无截图/加载失败时的"重新加载"回调
+  ///
+  /// 传入后：截图区域中央显示可点击的刷新图标（圆圈箭头样式），
+  /// 点击触发重新加载；加载过程中图标变为旋转动画。
+  /// 为 null 时退化为静态"暂无截图"占位（无重试入口）。
+  final Future<void> Function()? onRefresh;
+
   const ScreenshotCarousel({
     super.key,
     required this.paths,
@@ -43,6 +65,9 @@ class ScreenshotCarousel extends StatefulWidget {
     this.showIndicator = true,
     this.showArrows = true,
     this.gameTitle,
+    this.onImageDoubleTap,
+    this.enableHoverZoom = false,
+    this.onRefresh,
   });
 
   @override
@@ -52,6 +77,20 @@ class ScreenshotCarousel extends StatefulWidget {
 class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
   late PageController _pageController;
   int _currentPage = 0;
+
+  /// 重新加载中（点击刷新图标后）
+  bool _refreshing = false;
+
+  /// 点击刷新图标：调用外部 onRefresh，期间显示旋转动画
+  Future<void> _handleRefresh() async {
+    if (_refreshing || widget.onRefresh == null) return;
+    setState(() => _refreshing = true);
+    try {
+      await widget.onRefresh!();
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
+  }
 
   @override
   void initState() {
@@ -95,6 +134,12 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
       if (!mounted) return;
       for (final path in widget.paths) {
         if (path.startsWith('http')) {
+          // §9.4：已判定含敏感区域的截图不预加载原图——
+          // 渲染层会用局部马赛克接管（原图仅作马赛克采样源按需解码），
+          // 提前 precache 会把敏感原图拉进内存缓存并造成"未打码闪现"窗口
+          final detection = NsfwDetectionStore.instance
+              .detectionForAny(<String>[NsfwDetectionStore.keyForUrl(path)]);
+          if (detection != null && detection.boxes.isNotEmpty) continue;
           precacheImage(
               CachedNetworkImageProvider(path,
                   cacheManager: PortableImageCacheManager()),
@@ -136,11 +181,11 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
           status == ScreenshotFetchStatus.downloading) {
         return _buildFetchingPlaceholder(status!);
       }
-      // 有关联游戏且状态为 failed → 显示失败+重试
+      // 有关联游戏且状态为 failed → 显示失败 + 重新加载图标
       if (status == ScreenshotFetchStatus.failed) {
         return _buildFailedPlaceholder();
       }
-      // 无状态或已完成 → 显示"暂无截图"
+      // 无状态或已完成 → 显示"暂无截图" + 重新加载图标（可重试抓取）
       return _buildEmptyPlaceholder();
     }
 
@@ -163,7 +208,18 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
                     setState(() => _currentPage = index);
                   },
                   itemBuilder: (context, index) {
-                    return _buildImage(widget.paths[index]);
+                    final image = _buildImage(widget.paths[index]);
+                    if (widget.onImageDoubleTap == null &&
+                        !widget.enableHoverZoom) {
+                      return image;
+                    }
+                    return _HoverZoomImage(
+                      onDoubleTap: widget.onImageDoubleTap != null
+                          ? () => widget.onImageDoubleTap!(index)
+                          : null,
+                      enableHoverZoom: widget.enableHoverZoom,
+                      child: image,
+                    );
                   },
                 ),
 
@@ -301,7 +357,7 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
     );
   }
 
-  /// 截图获取失败占位图（failed 状态，含重试按钮）
+  /// 截图获取失败占位图（failed 状态，中央刷新图标可重新加载）
   Widget _buildFailedPlaceholder() {
     return ClipRRect(
       borderRadius: BorderRadius.circular(6),
@@ -313,35 +369,27 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
             color: AppColors.placeholderCover,
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.cloud_off_outlined,
-                size: 28,
-                color: AppColors.border,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '截图获取失败',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.border,
-                ),
-              ),
-              const SizedBox(height: 8),
-              _RetryButton(
-                gameTitle: widget.gameTitle!,
-                onRetry: () => setState(() {}),
-              ),
-            ],
+          child: Center(
+            child: _RefreshIcon(
+              refreshing: _refreshing,
+              label: '截图获取失败，点击重新加载',
+              onTap: widget.onRefresh != null
+                  ? _handleRefresh
+                  : (widget.gameTitle != null
+                      ? () => ScreenshotFetchService.instance
+                          .triggerManualFetch(widget.gameTitle!)
+                          .then((_) {
+                          if (mounted) setState(() {});
+                        })
+                      : null),
+            ),
           ),
         ),
       ),
     );
   }
 
-  /// 无截图占位图（无状态或completed）
+  /// 无截图占位图（无状态或completed，中央刷新图标可重新加载）
   Widget _buildEmptyPlaceholder() {
     return ClipRRect(
       borderRadius: BorderRadius.circular(6),
@@ -353,22 +401,29 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
             color: AppColors.placeholderCover,
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.screenshot_outlined,
-                  size: 28, color: AppColors.border),
-              const SizedBox(height: 6),
-              Text(
-                '暂无截图',
-                style: TextStyle(
-                  fontFamily: 'ZhiMangXing',
-                  fontSize: 14,
-                  letterSpacing: 1.5,
-                  color: AppColors.border,
-                ),
-              ),
-            ],
+          child: Center(
+            child: widget.onRefresh != null
+                ? _RefreshIcon(
+                    refreshing: _refreshing,
+                    label: '暂无截图，点击重新加载',
+                    onTap: _handleRefresh,
+                  )
+                : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.screenshot_outlined,
+                          size: 28, color: AppColors.border),
+                      const SizedBox(height: 6),
+                      Text(
+                        '暂无截图',
+                        style: TextStyle(
+                          fontSize: 14,
+                          letterSpacing: 1.5,
+                          color: AppColors.border,
+                        ),
+                      ),
+                    ],
+                  ),
           ),
         ),
       ),
@@ -377,44 +432,74 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
 
   Widget _buildImage(String path) {
     if (widget.isNetwork) {
-      return CachedNetworkImage(
-        cacheManager: PortableImageCacheManager(),
-        imageUrl: path,
+      // NSFW 局部打码（v2）：原有渲染整块作为 child 传入，健康图/未判定图
+      // 走的就是原来那棵 widget 子树，渲染结果逐像素一致。
+      return NsfwImage.network(
+        path,
         fit: BoxFit.cover,
-        // 加载中：显示占位背景+转圈
-        placeholder: (context, url) => Container(
-          color: AppColors.placeholderCover,
-          child: const Center(
-            child: SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+        enableReveal: true,
+        // 网络截图（PB 回传 / VNDB 等三源抓取）从不落盘为本地文件，
+        // 全量扫描覆盖不到，必须开启按需检测：缓存落盘后即入队检测，
+        // 结果以「URL 主键 + 本地缓存路径别名」双键写入判定缓存。
+        detectOnDemand: true,
+        // 与 child 的 memCacheWidth 对齐，缓存键一致、单次解码
+        // （本地分支同用 1920，见下）。不设 diskCacheWidth：缩略图会被
+        // flutter_cache_manager 重编码为 PNG 反而增盘，磁盘尺寸交给
+        // CacheQuotaService 的字节配额淘汰兜底。
+        decodeWidth: 1920,
+        child: CachedNetworkImage(
+          cacheManager: PortableImageCacheManager(),
+          imageUrl: path,
+          fit: BoxFit.cover,
+          // ★ 性能优化：限制解码宽度。4K 原图全解码单张 ~33MB 内存尖峰，
+          // 1920 物理像素在 cover 拉伸下视觉无感知差异，解码内存降至 ~8MB。
+          memCacheWidth: 1920,
+          // 加载中：显示占位背景+转圈
+          placeholder: (context, url) => Container(
+            color: AppColors.placeholderCover,
+            child: const Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
             ),
           ),
-        ),
-        // 加载完成：直接显示图片（CachedNetworkImage自动处理）
-        // 加载失败：显示错误图标
-        errorWidget: (context, url, error) => Container(
-          color: AppColors.placeholderCover,
-          child: Icon(
-            Icons.broken_image_outlined,
-            color: AppColors.placeholderText,
-            size: 28,
+          // 加载完成：直接显示图片（CachedNetworkImage自动处理）
+          // 加载失败：显示错误图标
+          errorWidget: (context, url, error) => Container(
+            color: AppColors.placeholderCover,
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: AppColors.placeholderText,
+              size: 28,
+            ),
           ),
         ),
       );
     } else {
       final file = File(path);
       if (file.existsSync()) {
-        return Image.file(
-          file,
+        return NsfwImage.file(
+          path,
           fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) => Container(
-            color: AppColors.placeholderCover,
-            child: Icon(
-              Icons.broken_image_outlined,
-              color: AppColors.placeholderText,
-              size: 28,
+          // 与 child 的 cacheWidth 保持一致，让两边 ImageProvider 缓存键相同，
+          // 同一张图只解码一次（见 NsfwImage 文档）。
+          decodeWidth: 1920,
+          enableReveal: true,
+          child: Image.file(
+            file,
+            fit: BoxFit.cover,
+            // ★ 性能优化：限制解码宽度。4K 原图全解码单张 ~33MB 内存尖峰，
+            // 1920 物理像素在 cover 拉伸下视觉无感知差异，解码内存降至 ~8MB。
+            cacheWidth: 1920,
+            errorBuilder: (context, error, stackTrace) => Container(
+              color: AppColors.placeholderCover,
+              child: Icon(
+                Icons.broken_image_outlined,
+                color: AppColors.placeholderText,
+                size: 28,
+              ),
             ),
           ),
         );
@@ -440,75 +525,138 @@ class _ScreenshotCarouselState extends State<ScreenshotCarousel> {
   }
 }
 
-/// 截图重试按钮
-class _RetryButton extends StatefulWidget {
-  final String gameTitle;
-  final VoidCallback onRetry;
+/// 重新加载图标（截图区域中央）
+///
+/// 常见网站刷新按钮样式：圆圈 + 箭头，点击触发重新加载。
+/// - 加载中：图标旋转动画 + "加载中..."文案，忽略重复点击
+/// - 悬停：轻微放大 + 高亮，鼠标变为手型
+/// - 无回调（onTap=null）时仅静态展示，不可交互
+class _RefreshIcon extends StatefulWidget {
+  final bool refreshing;
+  final String label;
+  final VoidCallback? onTap;
 
-  const _RetryButton({required this.gameTitle, required this.onRetry});
+  const _RefreshIcon({
+    required this.refreshing,
+    required this.label,
+    this.onTap,
+  });
 
   @override
-  State<_RetryButton> createState() => _RetryButtonState();
+  State<_RefreshIcon> createState() => _RefreshIconState();
 }
 
-class _RetryButtonState extends State<_RetryButton> {
+class _RefreshIconState extends State<_RefreshIcon> {
   bool _hovered = false;
-  bool _retrying = false;
 
-  Future<void> _retry() async {
-    setState(() => _retrying = true);
-    try {
-      await ScreenshotFetchService.instance
-          .triggerManualFetch(widget.gameTitle);
-    } finally {
-      if (mounted) {
-        setState(() => _retrying = false);
-        widget.onRetry();
-      }
-    }
+  @override
+  Widget build(BuildContext context) {
+    final interactive = widget.onTap != null && !widget.refreshing;
+    return MouseRegion(
+      cursor: interactive ? SystemMouseCursors.click : MouseCursor.defer,
+      onEnter: (_) {
+        if (interactive) setState(() => _hovered = true);
+      },
+      onExit: (_) {
+        if (_hovered) setState(() => _hovered = false);
+      },
+      child: GestureDetector(
+        onTap: interactive ? widget.onTap : null,
+        child: AnimatedScale(
+          duration: const Duration(milliseconds: 120),
+          scale: _hovered ? 1.12 : 1.0,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 120),
+            opacity: _hovered || widget.refreshing ? 1.0 : 0.75,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 圆圈背景 + 旋转箭头（加载中旋转）
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: AppColors.placeholderCover,
+                    border: Border.all(
+                      color: _hovered || widget.refreshing
+                          ? AppColors.selectedAccent
+                          : AppColors.border,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Center(
+                    child: widget.refreshing
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            Icons.refresh_rounded,
+                            size: 24,
+                            color: _hovered
+                                ? AppColors.selectedAccent
+                                : AppColors.placeholderText,
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  widget.refreshing ? '加载中...' : widget.label,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: _hovered
+                        ? AppColors.selectedAccent
+                        : AppColors.placeholderText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
+}
+
+/// 截图悬停/双击交互包装：
+/// - 悬停：光标变系统放大镜 + 截图轻微放大（1.03x），移开复原（仅鼠标，触摸不受影响）
+/// - 双击：触发外部回调（如弹出大图查看）
+class _HoverZoomImage extends StatefulWidget {
+  final VoidCallback? onDoubleTap;
+  final bool enableHoverZoom;
+  final Widget child;
+
+  const _HoverZoomImage({
+    required this.child,
+    this.onDoubleTap,
+    this.enableHoverZoom = false,
+  });
+
+  @override
+  State<_HoverZoomImage> createState() => _HoverZoomImageState();
+}
+
+class _HoverZoomImageState extends State<_HoverZoomImage> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
-      cursor: SystemMouseCursors.click,
+      cursor: widget.enableHoverZoom
+          ? SystemMouseCursors.zoomIn
+          : MouseCursor.defer,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
-        onTap: _retrying ? null : _retry,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: _hovered
-                ? AppColors.selectedAccent.withOpacity(0.2)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(
-              color: _hovered ? AppColors.selectedAccent : AppColors.border,
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_retrying)
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(strokeWidth: 1.5),
-                )
-              else
-                Icon(Icons.refresh, size: 12, color: AppColors.border),
-              const SizedBox(width: 4),
-              Text(
-                _retrying ? '重试中' : '重新获取',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: _hovered ? AppColors.selectedAccent : AppColors.border,
-                ),
-              ),
-            ],
+        onDoubleTap: widget.onDoubleTap,
+        child: ClipRect(
+          child: AnimatedScale(
+            scale: widget.enableHoverZoom && _hovered ? 1.03 : 1.0,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            child: widget.child,
           ),
         ),
       ),

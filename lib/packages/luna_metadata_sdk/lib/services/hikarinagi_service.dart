@@ -286,6 +286,37 @@ class HikarinagiService implements MetadataSourceService {
       }
     }
 
+    // ★ 2026-10-05 横幅封面：covers[] 里可能含横版大图（开发者实测该平台
+    //   横幅数据最完整）。挑选规则与 NextMoe 同口径：
+    //   ① 有尺寸且宽>高的项里取面积最大；② 无果时取无尺寸候选，
+    //   真伪交下载侧宽高比校验（≥1.15）裁决；③ 与竖封面同 URL 跳过。
+    String? bannerUrl;
+    if (covers != null && covers.isNotEmpty) {
+      String? bestBannerUrl;
+      int bestArea = 0;
+      String? unknownSizeUrl;
+      for (final c in covers) {
+        if (c is! Map) continue;
+        final cMap = Map<String, dynamic>.from(c);
+        final url = safeString(cMap, 'url') ?? '';
+        if (url.isEmpty) continue;
+        if (url == coverUrl) continue; // 与竖封面同图 → 假横幅
+        final width = safeInt(cMap, 'width') ?? 0;
+        final height = safeInt(cMap, 'height') ?? 0;
+        if (width <= 0 || height <= 0) {
+          unknownSizeUrl ??= url;
+          continue;
+        }
+        if (width <= height) continue; // 只收横版
+        final area = width * height;
+        if (area > bestArea) {
+          bestArea = area;
+          bestBannerUrl = url;
+        }
+      }
+      bannerUrl = bestBannerUrl ?? unknownSizeUrl;
+    }
+
     // 简介：优先中文 trans_intro，兜底 origin_intro
     String summary = safeString(json, 'trans_intro') ?? '';
     if (summary.isEmpty) summary = safeString(json, 'origin_intro') ?? '';
@@ -324,14 +355,43 @@ class HikarinagiService implements MetadataSourceService {
         id: id.toString(),
         name: name,
         coverUrl: coverUrl.isNotEmpty ? coverUrl : null,
+        bannerUrl: bannerUrl,
         summary: summary,
         rating: 0.0, // Hikarinagi 无评分字段
         releaseDate: safeString(json, 'release_date')?.trim(),
         sourceType: SourceType.hikarinagi,
         sourceId: id.toString(),
+        screenshotUrls: _extractScreenshots(json),
       ),
       tags: tags,
     );
+  }
+
+  /// 从详情响应中提取截图 URL 列表，最多6张
+  ///
+  /// 尝试常见字段名（screenshots / images / gallery），兼容字符串
+  /// 与 {url|path|src} 对象两种元素格式；字段不存在时返回 null 安全降级。
+  List<String>? _extractScreenshots(Map<String, dynamic> json) {
+    for (final field in ['screenshots', 'images', 'gallery']) {
+      final list = safeList(json, field);
+      if (list == null || list.isEmpty) continue;
+
+      final urls = <String>[];
+      for (final item in list.take(6)) {
+        if (item is String && item.isNotEmpty) {
+          urls.add(item);
+        } else if (item is Map) {
+          final m = Map<String, dynamic>.from(item);
+          final url = safeString(m, 'url') ??
+              safeString(m, 'path') ??
+              safeString(m, 'src') ??
+              '';
+          if (url.isNotEmpty) urls.add(url);
+        }
+      }
+      if (urls.isNotEmpty) return urls;
+    }
+    return null;
   }
 
   MetadataResult _emptyResult() {

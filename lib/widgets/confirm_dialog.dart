@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import '../theme/app_styles.dart';
 import 'interactive_wrapper.dart';
 
@@ -61,11 +62,18 @@ class _ConfirmDialog extends StatelessWidget {
     final accentColor = isDanger ? AppColors.dangerRed : AppColors.infoBlue;
 
     return AlertDialog(
-      backgroundColor: AppColors.sidebarBackground,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppColors.border, width: 1.5),
-      ),
+      // v3.9 Aurora：极光档白卡面 + 大圆角无勾边（阴影走 M3 elevation）；
+      // 经典档保持历史样式（sidebarBackground + 1.5px 勾边）
+      backgroundColor: AppStyle.isModern
+          ? AppColors.buttonBackground
+          : AppColors.sidebarBackground,
+      shape: AppStyle.isModern
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppStyle.rXl))
+          : RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: AppColors.border, width: 1.5),
+            ),
       title: Text(
         title,
         style: AppStyles.headlineSmall.copyWith(letterSpacing: 1.5),

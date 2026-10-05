@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_styles.dart';
 import '../../services/local_game_registry.dart';
+import '../nsfw/nsfw_image.dart';
+import 'collection_badges.dart';
 
 /// UX-13: 从 library_page.dart 抽取的拖拽跟随浮层。
 ///
@@ -13,7 +15,6 @@ class LibraryDragOverlay extends StatefulWidget {
   final Offset dragPosition;
   final Offset dragAnchor;
   final Animation<double> liftAnimation;
-  final bool isMarked;
   final Size? cardSize;
 
   /// UX-34: 预缓存的封面路径，避免 build 中的同步 I/O
@@ -25,7 +26,6 @@ class LibraryDragOverlay extends StatefulWidget {
     required this.dragPosition,
     required this.dragAnchor,
     required this.liftAnimation,
-    required this.isMarked,
     this.cardSize,
     this.coverPath,
   });
@@ -80,7 +80,7 @@ class _LibraryDragOverlayState extends State<LibraryDragOverlay> {
                   decoration: BoxDecoration(
                     border:
                         Border.all(color: AppColors.selectedAccent, width: 2.5),
-                    borderRadius: BorderRadius.circular(4),
+                    borderRadius: BorderRadius.circular(AppRadius.md),
                     boxShadow: [
                       BoxShadow(
                         color: const Color(0x668B7355),
@@ -111,12 +111,18 @@ class _LibraryDragOverlayState extends State<LibraryDragOverlay> {
     final path = widget.coverPath;
     Widget content;
     if (path != null && path.isNotEmpty) {
-      content = Image.file(
-        File(path),
+      content = NsfwImage.file(
+        path,
+        contentKind: NsfwContentKind.cover,
         width: double.infinity,
         height: double.infinity,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _buildPlaceholder(),
+        child: Image.file(
+          File(path),
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _buildPlaceholder(),
+        ),
       );
     } else {
       content = _buildPlaceholder();
@@ -131,18 +137,12 @@ class _LibraryDragOverlayState extends State<LibraryDragOverlay> {
             fit: StackFit.expand,
             children: [
               Positioned.fill(child: content),
-              if (widget.isMarked)
+              if (widget.game.collectionIds.isNotEmpty)
                 Positioned(
                   top: 6,
                   right: 6,
-                  child: Icon(
-                    Icons.star_rounded,
-                    size: 20,
-                    color: AppColors.starGold,
-                    shadows: [
-                      Shadow(
-                          color: Colors.white.withOpacity(0.8), blurRadius: 2),
-                    ],
+                  child: CollectionBadges(
+                    collectionIds: widget.game.collectionIds,
                   ),
                 ),
             ],
@@ -168,7 +168,6 @@ class _LibraryDragOverlayState extends State<LibraryDragOverlay> {
             child: Text(
               widget.game.developer,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 color: AppColors.secondaryText.withOpacity(0.8),
                 fontStyle: FontStyle.italic,

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_styles.dart';
 import '../../services/local_game_registry.dart';
+import '../nsfw/nsfw_image.dart';
+import 'collection_badges.dart';
 
 /// UX-13: 从 library_page.dart 抽取的拖拽占位卡片。
 ///
@@ -55,20 +57,13 @@ class LibraryGhostCard extends StatelessWidget {
                   left: 6,
                   child: _buildPlayStatusBadge(game.playStatus),
                 ),
-                // 星标
-                if (game.mark != GameMark.none)
+                // 收藏夹书签角标（替代原星标）
+                if (game.collectionIds.isNotEmpty)
                   Positioned(
                     top: 6,
                     right: 6,
-                    child: Icon(
-                      Icons.star_rounded,
-                      size: 20,
-                      color: AppColors.starGold,
-                      shadows: [
-                        Shadow(
-                            color: Colors.white.withOpacity(0.8),
-                            blurRadius: 2),
-                      ],
+                    child: CollectionBadges(
+                      collectionIds: game.collectionIds,
                     ),
                   ),
               ],
@@ -95,7 +90,6 @@ class LibraryGhostCard extends StatelessWidget {
             child: Text(
               game.developer,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 12,
                 color: AppColors.secondaryText.withOpacity(0.8),
                 fontStyle: FontStyle.italic,
@@ -160,14 +154,20 @@ class LibraryGhostCard extends StatelessWidget {
   Widget _buildCoverImage() {
     final path = coverPath;
     if (path != null && path.isNotEmpty) {
-      return Image.file(
-        File(path),
+      return NsfwImage.file(
+        path,
+        contentKind: NsfwContentKind.cover,
         width: double.infinity,
         height: double.infinity,
-        fit: BoxFit.cover,
-        cacheWidth: 480, // 物理像素: 240px卡片 × 2x DPR
-        cacheHeight: 720,
-        errorBuilder: (_, __, ___) => _buildPlaceholder(),
+        child: Image.file(
+          File(path),
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          cacheWidth: 480, // 物理像素: 240px卡片 × 2x DPR
+          cacheHeight: 720,
+          errorBuilder: (_, __, ___) => _buildPlaceholder(),
+        ),
       );
     }
     return _buildPlaceholder();

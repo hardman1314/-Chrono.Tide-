@@ -2,11 +2,14 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
+import '../widgets/interactive_wrapper.dart';
 import '../theme/app_styles.dart';
 import '../services/local_game_registry.dart';
 import '../services/game_data_format.dart';
 import '../widgets/game_detail_dialog.dart';
 import '../widgets/play_stats_panel.dart';
+import '../widgets/nsfw/nsfw_image.dart';
 
 class HomePage extends StatefulWidget {
   final ValueChanged<String>? onLaunchGame;
@@ -41,6 +44,9 @@ class _HomePageState extends State<HomePage> {
   // 封面路径缓存，避免每次 build 同步 I/O
   final Map<String, String?> _coverPathCache = {};
 
+  // ★ 2026-10-04 横幅封面路径缓存（与封面缓存同套路；null = 已探测、无横幅）
+  final Map<String, String?> _bannerPathCache = {};
+
   // 平滑滚动控制器
   final ScrollController _scrollController = ScrollController();
 
@@ -63,6 +69,7 @@ class _HomePageState extends State<HomePage> {
     final reason = LocalGameRegistry.instance.lastChangeReason;
     if (reason == RegistryChangeReason.structural) {
       _coverPathCache.clear();
+      _bannerPathCache.clear();
       if (mounted) _loadGames();
     } else {
       // playTimeUpdate:游戏对象引用已被原地修改,仅 setState 让 UI 反映新值
@@ -119,6 +126,19 @@ class _HomePageState extends State<HomePage> {
         } catch (_) {}
       }
       _coverPathCache[game.title] = resolved;
+
+      // ★ 2026-10-04 横幅封面：与封面同套路解析并缓存（无横幅 = null）
+      if (_bannerPathCache.containsKey(game.title)) continue;
+      String? bannerResolved;
+      if (game.bannerUrl.isNotEmpty && File(game.bannerUrl).existsSync()) {
+        bannerResolved = game.bannerUrl;
+      } else {
+        try {
+          bannerResolved =
+              GameDataFormat.findBannerFile(game.pathForCover)?.path;
+        } catch (_) {}
+      }
+      _bannerPathCache[game.title] = bannerResolved;
     }
     if (mounted) setState(() {});
   }
@@ -273,7 +293,6 @@ class _HomePageState extends State<HomePage> {
           Text(
             '正在扫描游戏库...',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 14,
               color: AppColors.secondaryText.withOpacity(0.7),
             ),
@@ -297,7 +316,6 @@ class _HomePageState extends State<HomePage> {
           Text(
             '库中没有游戏哦',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 20,
               color: AppColors.secondaryText,
             ),
@@ -306,7 +324,6 @@ class _HomePageState extends State<HomePage> {
           Text(
             '快去添加或探索游戏吧！',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 14,
               color: AppColors.secondaryText.withOpacity(0.7),
             ),
@@ -359,55 +376,109 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// UX-41: 详情区设计画布尺寸——可用空间小于该尺寸时整体等比缩小
+  /// （830 = 封面180 + 间距16 + 按钮组~290 + 间隙 + 统计表320 + 边距，恰好无重叠）
+  static const double _kDetailDesignWidth = 830;
+  static const double _kDetailDesignHeight = 640;
+
   /// 构建左侧详情内容（背景 + 主内容），带 key 供 AnimatedSwitcher 识别切换
+  ///
+  /// UX-41: 自适应等比缩放（8.21 原始布局结构 + 宽高同步自适应）：
+  ///   - 宽高均 ≥ 设计最小值(830×640)：按老版本原始布局渲染，外观完全一致
+  ///   - 任一侧不足：按更紧张一侧的比率整体等比缩小，画布尺寸随可用空间
+  ///     反推（可用尺寸/scale，恒 ≥ 830×640）——封面、按钮、统计表、文字
+  ///     同比例收缩；缩放后内容恰好铺满面板，宽度收缩时高度同步自适应，
+  ///     标题贴顶、底部组件贴底，结构与原始布局一致，不居中悬浮、不留空档。
+  ///     FittedBox 自带命中测试逆变换，缩小后交互功能不受影响。
+  ///   - 毛玻璃背景不参与缩放，始终铺满整个面板。
   Widget _buildDetailContent(LibraryGame game) {
+    // 前景内容：老版本原始结构（两种渲染分支共用）
+    final foregroundChildren = <Widget>[
+      // 主内容
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 标签行
+          _buildTagRow(game),
+          const SizedBox(height: 12),
+          // 游戏标题
+          _buildGameTitle(game),
+          // #4: 开发商信息
+          if (game.developer.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            _buildDeveloper(game),
+          ],
+          const SizedBox(height: 8),
+          // 游戏简介
+          _buildGameDescription(game),
+          const Spacer(),
+          // 底部区域：封面 + 信息 + 按钮
+          _buildBottomSection(game),
+          // 页面指示器（放在按钮下方，不再重叠）
+          // UX-14: 指示器可见性基于筛选列表
+          if (_filteredGames.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 4),
+              child: _buildPageIndicator(),
+            ),
+        ],
+      ),
+      // 游玩状态标签 - 右上角轻量化显示
+      Positioned(
+        top: 4,
+        right: 4,
+        child: _buildPlayStatusBadge(game),
+      ),
+      // 游玩统计面板 - 右下角，与启动按钮保持间距
+      Positioned(
+        right: 4,
+        bottom: 8,
+        child: PlayStatsPanel(currentGame: game),
+      ),
+    ];
+
     return Stack(
       key: ValueKey(game.title),
       children: [
-        // #7: 模糊背景 - 改用 BackdropFilter 毛玻璃效果
+        // #7: 模糊背景 - 改用 BackdropFilter 毛玻璃效果（不参与缩放，铺满面板）
         Positioned.fill(
           child: _buildBlurredBackground(game),
         ),
-        // 主内容
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 标签行
-            _buildTagRow(game),
-            const SizedBox(height: 12),
-            // 游戏标题
-            _buildGameTitle(game),
-            // #4: 开发商信息
-            if (game.developer.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              _buildDeveloper(game),
-            ],
-            const SizedBox(height: 8),
-            // 游戏简介
-            _buildGameDescription(game),
-            const Spacer(),
-            // 底部区域：封面 + 信息 + 按钮
-            _buildBottomSection(game),
-            // 页面指示器（放在按钮下方，不再重叠）
-            // UX-14: 指示器可见性基于筛选列表
-            if (_filteredGames.length > 1)
-              Padding(
-                padding: const EdgeInsets.only(top: 12, bottom: 4),
-                child: _buildPageIndicator(),
-              ),
-          ],
-        ),
-        // 游玩状态标签 - 右上角轻量化显示
-        Positioned(
-          top: 4,
-          right: 4,
-          child: _buildPlayStatusBadge(game),
-        ),
-        // 游玩统计面板 - 右下角，与启动按钮保持间距
-        Positioned(
-          right: 4,
-          bottom: 8,
-          child: PlayStatsPanel(currentGame: game),
+        // 前景内容：按可用尺寸选择 原始布局 / 整体等比缩小
+        Positioned.fill(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final availableW = constraints.maxWidth;
+              final availableH = constraints.maxHeight;
+              // 约束异常（无限尺寸）时按原始布局兜底
+              if (!availableW.isFinite || !availableH.isFinite) {
+                return Stack(children: foregroundChildren);
+              }
+              // 等比缩放系数：宽/高两侧比率中更紧张的一侧
+              final widthRatio = availableW / _kDetailDesignWidth;
+              final heightRatio = availableH / _kDetailDesignHeight;
+              final scale = widthRatio < heightRatio ? widthRatio : heightRatio;
+              if (scale >= 1) {
+                // 空间充足：老版本原始布局，内容自然铺满面板
+                return Stack(children: foregroundChildren);
+              }
+              // 空间不足：整体等比缩小，画布尺寸 = 可用尺寸 / scale
+              // → 缩放后内容恰好铺满整个面板，宽高同步自适应：
+              //   宽度收缩时高度同步跟随（画布高度随可用高度反推），
+              //   标题仍贴顶、封面/按钮/统计表仍贴底贴右，Spacer 正常
+              //   撑开，结构与原始布局完全一致，不居中悬浮、不留空档。
+              // 画布内尺寸恒 ≥ 设计最小值(830×640)，保证组件间不重叠。
+              return FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: availableW / scale,
+                  height: availableH / scale,
+                  child: Stack(children: foregroundChildren),
+                ),
+              );
+            },
+          ),
         ),
       ],
     );
@@ -416,13 +487,18 @@ class _HomePageState extends State<HomePage> {
   // #7: BackdropFilter 毛玻璃背景
   Widget _buildBlurredBackground(LibraryGame game) {
     final isDark = AppColors.isDark;
+    // ★ 2026-10-04 横幅优先：横版大图铺横向面板只需轻微适配，
+    //   竖封面在此处是破坏性放大裁切（无横幅时回退竖封面，行为不变）
+    final Widget baseImage = _hasBanner(game)
+        ? _buildBannerImage(game, fit: BoxFit.cover)
+        : _buildCoverImage(game, fit: BoxFit.cover);
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(
         fit: StackFit.expand,
         children: [
           // 放大的封面图（最底层）
-          _buildCoverImage(game, fit: BoxFit.cover),
+          baseImage,
           // BackdropFilter: 模糊下层的封面图，并叠加半透明背景色
           BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 4, sigmaY: 4),
@@ -452,15 +528,60 @@ class _HomePageState extends State<HomePage> {
   Widget _buildCoverImage(LibraryGame game, {BoxFit fit = BoxFit.cover}) {
     final cachedPath = _coverPathCache[game.title];
     if (cachedPath != null && cachedPath.isNotEmpty) {
-      return Image.file(
-        File(cachedPath),
-        width: double.infinity,
-        height: double.infinity,
+      return NsfwImage.file(
+        cachedPath,
+        contentKind: NsfwContentKind.cover,
         fit: fit,
-        errorBuilder: (_, __, ___) => _buildPlaceholderCover(),
+        // v2.5：揭示入口为右下角角标按钮，不与卡片自身点击冲突
+        enableReveal: true,
+        // 与 child 的 cacheWidth/cacheHeight 一致，避免同一张图二次解码
+        decodeWidth: 480,
+        decodeHeight: 720,
+        child: Image.file(
+          File(cachedPath),
+          width: double.infinity,
+          height: double.infinity,
+          fit: fit,
+          // ★ 性能优化：卡片封面限宽解码（与 library_page 卡片 480/720 规格一致）
+          cacheWidth: 480,
+          cacheHeight: 720,
+          errorBuilder: (_, __, ___) => _buildPlaceholderCover(),
+        ),
       );
     }
     return _buildPlaceholderCover();
+  }
+
+  /// ★ 2026-10-04 横幅封面：使用缓存的横幅路径构建图片（结构与封面同构）。
+  ///
+  /// 横幅是横向大图，解码限宽 960（比竖封面 480 宽一档，横向像素更多）；
+  /// 不传 decodeHeight（横图高度不定，按宽高比自然解码）。
+  Widget _buildBannerImage(LibraryGame game, {BoxFit fit = BoxFit.cover}) {
+    final cachedPath = _bannerPathCache[game.title];
+    if (cachedPath != null && cachedPath.isNotEmpty) {
+      return NsfwImage.file(
+        cachedPath,
+        contentKind: NsfwContentKind.cover,
+        fit: fit,
+        enableReveal: true,
+        decodeWidth: 960,
+        child: Image.file(
+          File(cachedPath),
+          width: double.infinity,
+          height: double.infinity,
+          fit: fit,
+          cacheWidth: 960,
+          errorBuilder: (_, __, ___) => _buildPlaceholderCover(),
+        ),
+      );
+    }
+    return _buildPlaceholderCover();
+  }
+
+  /// 横幅是否存在（缓存已探测且非空）
+  bool _hasBanner(LibraryGame game) {
+    final p = _bannerPathCache[game.title];
+    return p != null && p.isNotEmpty;
   }
 
   Widget _buildPlaceholderCover() {
@@ -500,7 +621,6 @@ class _HomePageState extends State<HomePage> {
           child: Text(
             tag,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 10,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.5,
@@ -536,7 +656,6 @@ class _HomePageState extends State<HomePage> {
           Text(
             status.label,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 11,
               fontWeight: FontWeight.w600,
               color: status.color,
@@ -570,7 +689,6 @@ class _HomePageState extends State<HomePage> {
     return Text(
       game.developer,
       style: TextStyle(
-        fontFamily: 'Inter',
         fontSize: 11,
         fontWeight: FontWeight.w500,
         letterSpacing: 0.5,
@@ -589,13 +707,13 @@ class _HomePageState extends State<HomePage> {
       child: Text(
         game.description,
         style: TextStyle(
-          fontFamily: AppStyles.enFontFamily,
-          fontSize: 12,
-          height: 20 / 12,
-          letterSpacing: 0,
-          color: AppColors.secondaryText,
-        ),
-        maxLines: 2,
+        fontFamily: AppStyles.uiFontFamily,
+        fontSize: 12,
+        height: 20 / 12,
+        letterSpacing: 0,
+        color: AppColors.secondaryText,
+      ),
+      maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
     );
@@ -629,30 +747,45 @@ class _HomePageState extends State<HomePage> {
   }
 
   // #8: 封面卡片放大并优化比例
+  ///
+  /// ★ 2026-10-04 横幅封面：有横幅时卡片自适应为横版 3:2（宽 180 × 高 120），
+  ///   横幅图近乎完整呈现（仅轻微裁切）；无横幅维持竖版 3:4（180 × 240）
+  ///   显示竖向封面，行为与旧版一致。
   Widget _buildCoverCard(LibraryGame game) {
+    final useBanner = _hasBanner(game);
     return Container(
       width: 180,
-      height: 180 * 4 / 3, // 240px，4:3 比例
+      height: useBanner ? 120 : 180 * 4 / 3, // 横幅 3:2 / 竖封面 4:3（240px）
       constraints: const BoxConstraints(maxHeight: 260),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.border, width: 2),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.border.withOpacity(0.15),
-            offset: const Offset(2, 3),
-            blurRadius: 6,
-          ),
-        ],
+        borderRadius:
+            BorderRadius.circular(AppStyle.isModern ? AppStyle.rLg : 10),
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 2),
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.border.withOpacity(0.15),
+                  offset: const Offset(2, 3),
+                  blurRadius: 6,
+                ),
+              ],
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: game.isBlurred
             ? ImageFiltered(
                 imageFilter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                child: _buildCoverImage(game),
+                child: useBanner
+                    ? _buildBannerImage(game)
+                    : _buildCoverImage(game),
               )
-            : _buildCoverImage(game),
+            : useBanner
+                ? _buildBannerImage(game)
+                : _buildCoverImage(game),
       ),
     );
   }
@@ -685,17 +818,23 @@ class _HomePageState extends State<HomePage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        border: Border.all(color: AppColors.border, width: 2),
-        borderRadius: BorderRadius.circular(4),
+        border: AppStyle.isModern
+            ? Border.all(
+                color: AppColors.borderLight, width: AppStyle.wHairline)
+            : Border.all(color: AppColors.border, width: 2),
+        borderRadius:
+            BorderRadius.circular(AppStyle.isModern ? AppStyle.rSm : 4),
         color: isDark
             ? AppColors.buttonBackground.withOpacity(0.95)
             : AppColors.background.withOpacity(0.9),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.border.withOpacity(0.15),
-            offset: const Offset(2, 2),
-          ),
-        ],
+        boxShadow: AppStyle.isModern
+            ? AppStyle.e1
+            : [
+                BoxShadow(
+                  color: AppColors.border.withOpacity(0.15),
+                  offset: const Offset(2, 2),
+                ),
+              ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -710,7 +849,6 @@ class _HomePageState extends State<HomePage> {
               Text(
                 value,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.38,
@@ -724,7 +862,6 @@ class _HomePageState extends State<HomePage> {
           Text(
             label,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 10,
               fontWeight: FontWeight.w700,
               letterSpacing: 1,
@@ -743,25 +880,26 @@ class _HomePageState extends State<HomePage> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _HoverButton(
+        // v3.9 按钮体系：primary 语义变体（原硬编码暖阳时代浅蓝三色，
+        // 在浅/深主题下不融洽）；文字/图标色经 DefaultTextStyle/IconTheme 继承
+        HoverButton(
+          variant: CtButtonVariant.primary,
+          size: CtButtonSize.md,
           onTap: _handleLaunch,
-          borderColor: const Color(0xFF5A8FD4),
-          shadowColor: const Color(0xFF1A3560),
-          backgroundColor: const Color(0xFFB4D4FF),
           padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 8),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.play_arrow, size: 14, color: Color(0xFF1A3560)),
-              SizedBox(width: 10),
+              Icon(Icons.play_arrow, size: 14,
+                  color: AppStyle.primaryButtonInk),
+              const SizedBox(width: 10),
               Text(
                 '立即启动',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 1.6,
-                  color: Color(0xFF1A3560),
+                  color: AppStyle.primaryButtonInk,
                   height: 24 / 16,
                 ),
               ),
@@ -769,11 +907,11 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         const SizedBox(width: 12),
-        _HoverButton(
+        // v3.9 按钮体系：secondary 语义变体（原 border 描边 + titleBrown 系）
+        HoverButton(
+          variant: CtButtonVariant.secondary,
+          size: CtButtonSize.md,
           onTap: _handleDetails,
-          borderColor: AppColors.border,
-          shadowColor: AppColors.titleBrown,
-          backgroundColor: AppColors.buttonBackground,
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -781,16 +919,15 @@ class _HomePageState extends State<HomePage> {
               Text(
                 '详情',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.8,
-                  color: AppColors.titleBrown,
+                  color: AppColors.primaryText,
                   height: 24 / 16,
                 ),
               ),
               const SizedBox(width: 6),
-              Icon(Icons.chevron_right, size: 16, color: AppColors.titleBrown),
+              Icon(Icons.chevron_right, size: 16, color: AppColors.primaryText),
             ],
           ),
         ),
@@ -902,7 +1039,6 @@ class _HomePageState extends State<HomePage> {
               Text(
                 '游戏库',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 1,
@@ -923,7 +1059,6 @@ class _HomePageState extends State<HomePage> {
                 child: Text(
                   '${_allGames.length} 款',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     fontWeight: FontWeight.w700,
                     color: isDark ? AppColors.primaryText : AppColors.border,
@@ -945,7 +1080,6 @@ class _HomePageState extends State<HomePage> {
                 child: Text(
                   _formatPlayTime(_totalPlayTime),
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     fontWeight: FontWeight.w700,
                     color: isDark ? AppColors.primaryText : AppColors.border,
@@ -1042,7 +1176,6 @@ class _HomePageState extends State<HomePage> {
         child: Text(
           '没有符合条件的游戏',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontSize: 13,
             color: AppColors.secondaryText,
           ),
@@ -1249,7 +1382,6 @@ class _HomeGameRowInnerState extends State<_HomeGameRowInner> {
                                 ? widget.game.title
                                 : '未命名游戏',
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                               color: AppColors.primaryText,
@@ -1267,7 +1399,6 @@ class _HomeGameRowInnerState extends State<_HomeGameRowInner> {
                         Text(
                           widget.game.playStatus.label,
                           style: TextStyle(
-                            fontFamily: 'Inter',
                             fontSize: 11,
                             color: widget.game.playStatus.color,
                             height: 1.2,
@@ -1288,7 +1419,6 @@ class _HomeGameRowInnerState extends State<_HomeGameRowInner> {
                           Text(
                             _formatPlayTimeShort(widget.game.playTime),
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontSize: 11,
                               color: AppColors.secondaryText,
                               height: 1.2,
@@ -1303,7 +1433,6 @@ class _HomeGameRowInnerState extends State<_HomeGameRowInner> {
               Text(
                 _formatRelativeTime(widget.game.lastOpenedAt),
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 10,
                   color: AppColors.secondaryText.withOpacity(0.6),
                 ),
@@ -1320,14 +1449,20 @@ class _HomeGameRowInnerState extends State<_HomeGameRowInner> {
   Widget _buildCoverThumb() {
     final path = widget.coverPath;
     if (path != null && path.isNotEmpty) {
-      return Image.file(
-        File(path),
+      return NsfwImage.file(
+        path,
+        contentKind: NsfwContentKind.cover,
         width: double.infinity,
         height: double.infinity,
-        fit: BoxFit.cover,
-        cacheWidth: 100, // 缩略图物理像素: ~50px × 2x DPR
-        cacheHeight: 140,
-        errorBuilder: (_, __, ___) => _buildPlaceholderThumb(),
+        child: Image.file(
+          File(path),
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          cacheWidth: 100, // 缩略图物理像素: ~50px × 2x DPR
+          cacheHeight: 140,
+          errorBuilder: (_, __, ___) => _buildPlaceholderThumb(),
+        ),
       );
     }
     return _buildPlaceholderThumb();
@@ -1420,76 +1555,6 @@ class _HomeGameRowInnerState extends State<_HomeGameRowInner> {
 }
 
 // ==================== 悬浮按钮组件 ====================
-class _HoverButton extends StatefulWidget {
-  final VoidCallback onTap;
-  final Color borderColor;
-  final Color shadowColor;
-  final Color backgroundColor;
-  final EdgeInsets padding;
-  final Widget child;
-
-  const _HoverButton({
-    required this.onTap,
-    required this.borderColor,
-    required this.shadowColor,
-    required this.backgroundColor,
-    required this.padding,
-    required this.child,
-  });
-
-  @override
-  State<_HoverButton> createState() => _HoverButtonState();
-}
-
-class _HoverButtonState extends State<_HoverButton> {
-  bool _hovered = false;
-  bool _pressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final offset = _pressed
-        ? Offset.zero
-        : _hovered
-            ? const Offset(1, 1)
-            : const Offset(2, 3);
-    final blur = _hovered ? 4.0 : 0.0;
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() {
-        _hovered = false;
-        _pressed = false;
-      }),
-      child: GestureDetector(
-        onTapDown: (_) => setState(() => _pressed = true),
-        onTapUp: (_) {
-          setState(() => _pressed = false);
-          widget.onTap();
-        },
-        onTapCancel: () => setState(() => _pressed = false),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: widget.padding,
-          decoration: BoxDecoration(
-            border: Border.all(color: widget.borderColor, width: 2),
-            borderRadius: BorderRadius.circular(6),
-            color: widget.backgroundColor,
-            boxShadow: [
-              BoxShadow(
-                color: widget.shadowColor.withOpacity(0.5),
-                offset: offset,
-                blurRadius: blur,
-              ),
-            ],
-          ),
-          child: widget.child,
-        ),
-      ),
-    );
-  }
-}
-
 // ==================== 筛选标签组件 ====================
 class _HoverChip extends StatefulWidget {
   final String label;
@@ -1538,7 +1603,6 @@ class _HoverChipState extends State<_HoverChip> {
           child: Text(
             widget.label,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 11,
               fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
               color: widget.isActive

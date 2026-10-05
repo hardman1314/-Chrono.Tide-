@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'modules/auth/auth_service.dart';
+import 'modules/auth/local_account_service.dart';
 import 'pages/login/login_page.dart';
 import 'pages/register/register_page.dart';
 import 'main_container.dart';
@@ -12,7 +13,9 @@ import 'services/openlist_service.dart';
 import 'services/interrupt_cleanup.dart';
 import 'services/process_cleanup_service.dart';
 import 'services/local_game_registry.dart';
+import 'services/quick_window_service.dart';
 import 'services/game_launch_service.dart';
+import 'services/running_tasks_service.dart';
 import 'services/game_data_format.dart';
 import 'services/metadata_fetcher.dart';
 import 'services/discover_metadata_service.dart';
@@ -27,28 +30,50 @@ import 'services/update/update_models.dart';
 import 'services/tray_service.dart';
 import 'services/app_state.dart';
 import 'services/watch_folder_service.dart';
+import 'services/motion_preference.dart';
+import 'services/auto_shortcut_preference.dart';
+import 'services/bpm_guide_preference.dart';
+import 'services/bpm_op_video_preference.dart';
+import 'package:video_player_win/video_player_win.dart';
 import 'widgets/custom_title_bar.dart';
 import 'widgets/update_dialog.dart';
+import 'widgets/system_notice_bubble.dart';
 import 'theme/app_theme_manager.dart';
 import 'theme/app_colors.dart';
+import 'theme/app_styles.dart';
+import 'big_picture/big_picture_manager.dart';
+import 'big_picture/bpm_theme_controller.dart';
 
 import 'app_log_helper.dart';
 import 'core/path_helper.dart';
 import 'core/portable_shared_preferences_store.dart';
+import 'utils/network_path.dart';
 import 'services/storage/migration_orchestrator.dart';
 import 'services/storage/log_rotation_service.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
-/// 单实例锁文件路径
+/// 基础设施路径（单实例锁 / 启动请求目录）是否使用便携位置。
+///
 /// 优先存放在安装目录 data/lock/（便携化，不占系统盘）；
 /// 安装目录只读（如 Program Files）时回退系统临时目录。
-final String _lockFilePath = PathHelper.isPortableWritableSync
+///
+/// ★ 2026-09-26 NAS 适配：网络安装位置（UNC / 映射网络驱动器）**一律**回退
+/// 系统临时目录，且**先判网络再判可写**（`&&` 短路，网络位置不会触发
+/// `PathHelper.isPortableWritableSync` 的同步写探针）。理由：
+/// 这两个目录是**本机**的单实例仲裁基础设施，放在网络位置没有收益
+/// （真正共享的是数据目录 `data/`），却会让这里（`runApp` 之前的顶层求值）
+/// 在盘离线时阻塞在 SMB 超时上数十秒 —— 表现为「双击图标后长时间无响应」。
+final bool _usePortableInfraPaths = !NetworkPath.isNetwork(PathHelper.dataDir) &&
+    PathHelper.isPortableWritableSync;
+
+/// 单实例锁文件路径
+final String _lockFilePath = _usePortableInfraPaths
     ? PathHelper.lockFilePath
     : '${Directory.systemTemp.path}/chrono_tide_instance.lock';
 
 /// 启动请求文件目录（用于快捷方式启动时与已运行实例通信）
 /// 与锁文件同目录策略，保证多实例间通信路径一致。
-final String _launchRequestDir = PathHelper.isPortableWritableSync
+final String _launchRequestDir = _usePortableInfraPaths
     ? PathHelper.launchRequestDir
     : '${Directory.systemTemp.path}/chrono_tide_launch_requests';
 
@@ -120,6 +145,13 @@ bool _acquireSingleInstanceLock() {
   }
 
   // 步骤2：尝试打开文件并获取独占锁
+  // 先确保锁目录存在：全新安装/全新解压时 data/lock 不存在，
+  // openSync 不会自动建父目录，会抛 "Cannot open file"，
+  // 该异常曾被下方 catch 误判为"已有实例运行中"导致全新安装首次启动必失败
+  try {
+    // 用实际锁文件路径的父目录（可能是安装目录 data/lock/，也可能是系统临时目录）
+    Directory(lockFile.parent.path).createSync(recursive: true);
+  } catch (_) {/* 目录创建失败时下一步 openSync 会给出真实错误 */}
   try {
     _instanceLockHandle = lockFile.openSync(mode: FileMode.write);
     _instanceLockHandle!.lockSync(FileLock.exclusive);
@@ -318,6 +350,14 @@ Future<void> _initializePortableStorage() async {
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // ★ 2026-09-27：注册 Windows 视频播放后端（video_player_win / Media Foundation）。
+  // 必须在任何 VideoPlayerController 创建之前完成 —— 官方 video_player 无
+  // Windows 实现，BPM 背景 OP 视频依赖此插件补齐 Windows 侧。
+  // （本项目为 Windows 桌面应用，无需 kIsWeb 分支）
+  if (Platform.isWindows) {
+    WindowsVideoPlayer.registerWith();
+  }
+
   // 解析命令行参数
   final launchGameTitle = _parseLaunchGameArg(args);
   final isSilent = _parseSilentArg(args);
@@ -360,7 +400,12 @@ void main(List<String> args) async {
   await AppLogHelper.initLog();
   setupGlobalCatchError();
 
+  // ★ P3：合并全局错误处理。此处原先直接覆盖了 setupGlobalCatchError()
+  // 设置的 onError（其内部会把框架错误写入应用日志文件），导致框架渲染
+  // 错误只出现在控制台、不再落盘。改为"先落日志、再走框架默认展示"。
+  final frameworkOnError = FlutterError.onError;
   FlutterError.onError = (details) {
+    frameworkOnError?.call(details);
     FlutterError.presentError(details);
   };
   try {
@@ -368,12 +413,7 @@ void main(List<String> args) async {
   } catch (e) {
     debugPrint('[INIT] 启动扫描异常: $e');
   }
-  // 启动时执行日志轮转,清理旧日志避免无限增长
-  try {
-    await LogRotationService.instance.rotateAll();
-  } catch (e) {
-    debugPrint('[INIT] 日志轮转异常: $e');
-  }
+  // ★ 性能优化：日志轮转移至首帧后执行（纯清理任务，不阻塞启动）
   try {
     await GameDataMigration.migrateAll();
   } catch (e) {
@@ -390,21 +430,50 @@ void main(List<String> args) async {
   } catch (e) {
     debugPrint('[INIT] 加载追踪模式失败: $e');
   }
-  // 扫描恢复未完成的截图下载任务（应用崩溃或异常退出后自动恢复）
-  try {
-    await ScreenshotFetchService.instance.scanPendingGames();
-  } catch (e) {
-    debugPrint('[INIT] 截图任务恢复异常: $e');
-  }
+  // ★ 性能优化：截图任务恢复移至首帧后（内部本就有延迟 backfill 机制）
+  // 自动补全缺失截图的游戏（早期入库流程不完善导致截图留空）
+  // 延迟启动避免与启动期磁盘/网络任务竞争；串行队列限速不影响使用
+  Future.delayed(const Duration(seconds: 15), () {
+    ScreenshotFetchService.instance.backfillAllMissingScreenshots();
+  });
   // ★ v2: 恢复未正常结束的游戏会话（应用崩溃后游戏仍在运行时）
   try {
     await LocalGameRegistry.instance.recoverPendingSessions();
   } catch (e) {
     debugPrint('[INIT] 会话恢复异常: $e');
   }
+  // ★ 运行任务横幅：必须在 recoverPendingSessions 之后初始化，
+  // 这样崩溃恢复出来的会话（以及软件未运行时手动启动的游戏）会被纳入横幅管理
+  try {
+    RunningTasksService.instance.initialize();
+  } catch (e) {
+    debugPrint('[INIT] 运行任务服务初始化异常: $e');
+  }
+  // ★ 快捷自定义窗口服务（AltSnap 式游戏窗口控制）：按用户设置恢复启用
+  try {
+    await QuickWindowService.instance.init();
+  } catch (e) {
+    debugPrint('[INIT] 快捷窗口服务初始化异常: $e');
+  }
   await windowManager.ensureInitialized();
   await ProcessCleanupService.initialize();
   await AppThemeManager.instance.loadSavedTheme();
+  // ★ v3.10 R4：首帧前读出「减少动效」偏好。
+  // 必须在这里（而非 resolver 内部懒加载）：动态背景在首帧就会渲染，
+  // 若此时还没读到偏好，开启该开关的用户会先看到 GIF 播几帧再静止。
+  await MotionPreference.instance.load();
+
+  // ★ 2026-09-27：BPM 背景 OP 视频偏好（是否出声 / 重播规则）。
+  // 与 MotionPreference 同层 —— 首帧前读出，避免背景先按默认值渲染再跳变。
+  await BpmOpVideoPreference.instance.load();
+
+  // ★ v3.21：BPM 操作引导开关（设置页「大屏模式」栏）。首帧前读出，
+  // 避免关闭引导的用户看到引导 UI 先渲染再消失。
+  await BpmGuidePreference.instance.load();
+
+  // ★ 2026-09-27：首帧前读出「首次启动自动生成桌面快捷方式」全局偏好。
+  // 默认关闭；与 MotionPreference 同层，保证设置页开关不会先按默认值再跳变。
+  await AutoShortcutPreference.instance.load();
 
   // ★ 先初始化托盘，再设置窗口
   // 确保托盘在窗口隐藏前就已就绪，用户能立即看到托盘图标
@@ -445,16 +514,23 @@ void main(List<String> args) async {
   // 防止窗口关闭时直接退出（改为最小化到托盘）
   await windowManager.setPreventClose(true);
 
+  // ★ v3.5: 恢复 BPM 自有主题 (深色 Cinema / 浅色地海蔚蓝)
+  await BpmThemeController.instance.load();
+  // ★ 恢复上次的大屏模式已移至首帧之后 (_initPostFirstFrame 开头)。
+  // 🔴 不能在 runApp 之前恢复 —— 那时 FlutterView 尚未建立,window_manager
+  // 对 frameless 窗口的最大化修正链路还没挂上,setFullScreen 触发的
+  // SC_MAXIMIZE 打在"空窗口"上会导致客户区异常 (实测: 强制变窗口 + 界面
+  // 冻结)。挪到首帧后: ① MainContainer 已挂载并监听 BigPictureManager,
+  // 恢复即切壳;② 全屏切换的任何异常都不再阻塞启动流程。
+
   await UserCacheService.init();
+  // ★ 本地账户服务（本地状态身份中枢，与 UserCacheService/AuthService 的 key 隔离）
+  // 必须在 _checkAuthState 之前完成 —— 该方法要同步读取本地账户是否存在。
+  await LocalAccountService.init();
   // ★ 网络状态服务初始化（非阻塞：乐观默认在线，后台异步探测 /api/health）
   // 必须在 checkAutoLogin 之前完成，供其判断是否跳过后台 token 验证。
   await NetworkStatusService.instance.init();
   await MagpieService.instance.init();
-
-  // ★ 存档清单服务初始化：加载 Ludusavi manifest（5万+ 游戏存档路径数据）
-  // 本地 asset 加载，不依赖网络。失败时 ManifestService 内部降级为未就绪状态，
-  // 存档扫描器会回退到通用检测，不影响应用启动。
-  await ManifestService.instance.init();
 
   // ★ 同步注入侧边栏初始收起状态，避免首帧展开→异步收起的启动抽搐
   // （SharedPreferences 实例已由 UserCacheService.init 缓存，此处 await 即时返回）
@@ -462,10 +538,58 @@ void main(List<String> args) async {
   MainContainer.initialSidebarCollapsed =
       _sidebarPrefs.getBool('sidebar_collapsed') ?? false;
 
-  // ★ 修复：初始化元数据抓取器
-  // 必须在应用启动时调用，否则 VNDB 大字典（~3000 条中文翻译）不会加载，
-  // 导致 VNDB 英文标签只能用 ~200 条兜底表翻译，大量英文标签漏译。
-  // 同时加载数据源配置、代理设置、磁盘缓存。
+  runApp(ChronoTideApp(pendingLaunchGame: launchGameTitle));
+
+  // ★ 性能优化：以下初始化不阻塞首帧，延迟到首帧渲染完成后再执行。
+  // 原先全部串行 await 在 runApp 之前，其中 ManifestService 要解析 16.7MB
+  // 的 Ludusavi 清单 YAML（估 0.3~1.5s），是首帧前最大的单项开销。
+  // 注意：runApp() 之后直接写代码仍会先于首帧执行（warm-up frame 排在
+  // 后续 Timer 中），因此必须经 Future.delayed 让出首帧。
+  Future<void>.delayed(const Duration(milliseconds: 200), _initPostFirstFrame);
+}
+
+/// 首帧渲染后的后台初始化（全部带异常保护，单项失败不影响其余）
+Future<void> _initPostFirstFrame() async {
+  // ★ 恢复上次的大屏模式 (用户要求退出软件后重进回到上次模式)。
+  // 放在本函数最前 —— 尽早切壳减少桌面模式的闪现。
+  // 🔴 2026-10-04 修复「恢复路径入场动画闪现/缺失」：restoreFromPrefs 现在
+  // 内部等两道门闩（① MainContainer 挂载并监听后才 enter，notifyListeners
+  // 必有人接收；② 入场动画完整播完才返回）—— 因此后面这串重活
+  // （ManifestService 16.7MB YAML 解析等）全部被推迟到动画收尾之后，
+  // 不再与描出动画竞争 UI 线程。两道闩各带 8s 超时兜底，失灵不悬置初始化。
+  // 详见 big_picture_manager.dart restoreFromPrefs 注释。
+  try {
+    await BigPictureManager.instance.restoreFromPrefs();
+    debugPrint('[INIT] ✅ 大屏模式恢复检查完成');
+  } catch (e) {
+    debugPrint('[INIT] ⚠️ 大屏模式恢复异常(按桌面模式运行): $e');
+  }
+
+  // 存档清单：16.7MB YAML 解析。加载完成前 SaveScanner 自动降级为
+  // 通用检测（ManifestService.isReady=false 有回退设计），不影响启动。
+  try {
+    await ManifestService.instance.init();
+    debugPrint('[INIT] ✅ 存档清单后台加载完成');
+  } catch (e) {
+    debugPrint('[INIT] ⚠️ 存档清单后台加载异常: $e');
+  }
+
+  // 日志轮转：纯清理任务
+  try {
+    await LogRotationService.instance.rotateAll();
+  } catch (e) {
+    debugPrint('[INIT] 日志轮转异常: $e');
+  }
+
+  // 截图任务恢复（应用崩溃或异常退出后自动恢复）
+  try {
+    await ScreenshotFetchService.instance.scanPendingGames();
+  } catch (e) {
+    debugPrint('[INIT] 截图任务恢复异常: $e');
+  }
+
+  // 元数据抓取器：加载 VNDB 大字典（~3000 条中文翻译）+ 数据源配置 + 磁盘缓存。
+  // 必须先于 DiscoverMetadataService（其依赖代理配置与数据源）。
   try {
     await MetadataFetcher.init();
     debugPrint('[INIT] ✅ 元数据抓取器初始化完成（VNDB 字典 + 数据源 + 缓存）');
@@ -473,9 +597,7 @@ void main(List<String> args) async {
     debugPrint('[INIT] ⚠️ 元数据抓取器初始化异常: $e');
   }
 
-  // ★ 阶段3.4：初始化探索页元数据服务（7 天磁盘缓存）
-  // 必须在 MetadataFetcher 之后调用：依赖其已加载的代理配置与数据源
-  // 加载失败不阻塞启动，最坏情况是探索页/详情页不显示评分角标
+  // 探索页元数据服务（7 天磁盘缓存）：失败仅导致评分角标缺失
   try {
     await DiscoverMetadataService.instance.init();
     debugPrint('[INIT] ✅ 探索页元数据服务初始化完成');
@@ -483,10 +605,12 @@ void main(List<String> args) async {
     debugPrint('[INIT] ⚠️ 探索页元数据服务初始化异常: $e');
   }
 
-  // 启动文件夹监控服务（智能自动导入）
-  await WatchFolderService.instance.startAll();
-
-  runApp(ChronoTideApp(pendingLaunchGame: launchGameTitle));
+  // 文件夹监控服务（智能自动导入）
+  try {
+    await WatchFolderService.instance.startAll();
+  } catch (e) {
+    debugPrint('[INIT] ⚠️ 文件夹监控服务启动异常: $e');
+  }
 }
 
 Future<void> _showUpdateDialogIfNeeded() async {
@@ -518,10 +642,18 @@ class ChronoTideApp extends StatefulWidget {
   State<ChronoTideApp> createState() => _ChronoTideAppState();
 }
 
-class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
+class _ChronoTideAppState extends State<ChronoTideApp>
+    with WindowListener, WidgetsBindingObserver {
   bool _isCheckingAuth = true;
   bool _isLoggedIn = false;
   AuthPage _authPage = AuthPage.login;
+
+  /// ★ 本地账号体系（docs/DEV/features/local_account_mode.md）：
+  /// - [_isLocalMode]：以本地账户使用软件（云端视角 = 匿名只读）。
+  /// - [_pendingLocalSetup]：从登录窗口【以本地游客进入】而来，
+  ///   进入软件后首帧需弹出基础信息填写窗口（需求 2）。
+  bool _isLocalMode = false;
+  bool _pendingLocalSetup = false;
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
   Timer? _launchRequestTimer;
 
@@ -536,6 +668,8 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
   void initState() {
     super.initState();
     windowManager.addListener(this);
+    // v3.9：跟随系统主题——监听设备深浅色变化
+    WidgetsBinding.instance.addObserver(this);
     _checkAuthState();
     _startLaunchRequestChecker();
     WidgetsBinding.instance.endOfFrame.then((_) async {
@@ -553,6 +687,13 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
     });
   }
 
+  /// v3.9：设备深浅色变化 → 跟随系统开启时自动切换浅色/深色主题
+  @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    AppThemeManager.instance.onSystemBrightnessChanged();
+  }
+
   /// 显示快捷启动失败的错误对话框
   ///
   /// 用户偏好详细的错误信息，因此对话框承载完整错误类型 + 技术细节 +
@@ -567,6 +708,9 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
     await showDialog<void>(
       context: ctx,
       builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+        ),
         title: Row(
           children: [
             const Icon(Icons.error_outline_rounded,
@@ -699,6 +843,7 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
   void dispose() {
     _launchRequestTimer?.cancel();
     windowManager.removeListener(this);
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
@@ -771,14 +916,28 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
   Future<void> _checkAuthState() async {
     final isValid = await AuthService.checkAutoLogin();
     if (!mounted) return;
+    // ★ 本地账号体系：自动登录失败时，若存在本地账户则直接以本地状态进入
+    // （不再强制停留登录窗口）—— 回归管理器本地化的核心分支。
+    final hasLocalAccount = LocalAccountService.exists;
     setState(() {
       _isCheckingAuth = false;
       _isLoggedIn = isValid;
+      _isLocalMode = !isValid && hasLocalAccount;
     });
     if (_isLoggedIn) {
       // OpenList 改为按需启动，不再登录后自动启动
       // 当用户需要下载游戏时，OpenListService.ensureRunning() 会自动启动
     }
+  }
+
+  /// ★ 需求 2：登录窗口【以本地游客进入】→ 直接进入软件（本地状态），
+  /// 进入后由 MainContainer 首帧弹出基础信息填写窗口。
+  void _onLocalGuest() {
+    debugPrint('[ACTION] 以本地游客进入（本地状态）');
+    setState(() {
+      _isLocalMode = true;
+      _pendingLocalSetup = true;
+    });
   }
 
   void _onLoginSuccess() {
@@ -795,8 +954,10 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
 
   Future<void> _handleLogout() async {
     await AuthService.logout();
+    if (!mounted) return;
     setState(() {
       _isLoggedIn = false;
+      _isLocalMode = false;
       _authPage = AuthPage.login;
     });
   }
@@ -823,7 +984,6 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
     );
     return ThemeData(
       useMaterial3: true,
-      fontFamily: 'Inter',
       brightness: brightness,
       scaffoldBackgroundColor: AppColors.pageBackground,
       colorScheme: colorScheme,
@@ -876,7 +1036,14 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
               data: mediaQuery.copyWith(
                 textScaler: TextScaler.linear(clampedScale),
               ),
-              child: child!,
+              // 系统提示气泡层：挂在 Navigator 之上，因此弹窗 / 覆盖层 /
+              // BPM 大屏模式都盖不住它（替代原先的底部 SnackBar）。
+              child: Stack(
+                children: [
+                  child!,
+                  const Positioned.fill(child: SystemNoticeLayer()),
+                ],
+              ),
             );
           },
           home: Builder(
@@ -908,7 +1075,6 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
               Text(
                 '正在加载...',
                 style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 14,
                     color: AppColors.secondaryText),
               ),
@@ -917,14 +1083,23 @@ class _ChronoTideAppState extends State<ChronoTideApp> with WindowListener {
         ),
       );
     }
-    if (_isLoggedIn) {
-      return MainContainer(onLogout: _handleLogout);
+    if (_isLoggedIn || _isLocalMode) {
+      return MainContainer(
+        onLogout: _handleLogout,
+        startInLocalMode: _isLocalMode,
+        showLocalSetupOnFirstFrame: _pendingLocalSetup,
+        onLocalSetupCompleted: () {
+          if (mounted) setState(() => _pendingLocalSetup = false);
+        },
+      );
     }
     switch (_authPage) {
       case AuthPage.login:
         return CustomTitleBar(
           child: LoginPage(
-              onLoginSuccess: _onLoginSuccess, onGoRegister: _goToRegister),
+              onLoginSuccess: _onLoginSuccess,
+              onGoRegister: _goToRegister,
+              onLocalGuest: _onLocalGuest),
         );
       case AuthPage.register:
         return CustomTitleBar(

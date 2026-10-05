@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import '../core/portable_image_cache_manager.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
+import '../services/file_size_service.dart';
 import '../services/install_path_preference.dart';
 import '../services/local_game_registry.dart';
 import '../services/path_validator.dart';
 import 'package:file_picker/file_picker.dart';
 import 'interactive_wrapper.dart';
+import 'nsfw/nsfw_image.dart';
 
 enum InstallConfirmationResult { confirmed, cancelled }
 
@@ -16,6 +21,11 @@ class InstallConfirmationDialog extends StatefulWidget {
   final List<String>? gameTags;
   final ValueChanged<String?> onPathChanged;
 
+  /// ★ 2026-09-26 P1-2：云端记录主键（体积缓存键）与网盘路径（体积预取）。
+  /// 任一为空则不显示体积行（兼容旧调用形态）。
+  final String? gameId;
+  final String? downloadPath;
+
   const InstallConfirmationDialog({
     super.key,
     required this.gameTitle,
@@ -23,6 +33,8 @@ class InstallConfirmationDialog extends StatefulWidget {
     this.gameDescription,
     this.gameTags,
     required this.onPathChanged,
+    this.gameId,
+    this.downloadPath,
   });
 
   static Future<InstallConfirmationResult?> show({
@@ -31,6 +43,8 @@ class InstallConfirmationDialog extends StatefulWidget {
     String? gameCoverUrl,
     String? gameDescription,
     List<String>? gameTags,
+    String? gameId,
+    String? downloadPath,
   }) async {
     String? selectedPath;
 
@@ -45,6 +59,8 @@ class InstallConfirmationDialog extends StatefulWidget {
         onPathChanged: (path) {
           selectedPath = path;
         },
+        gameId: gameId,
+        downloadPath: downloadPath,
       ),
     );
 
@@ -70,10 +86,63 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
   String? _pathValidationError;
   ValidationResult? _pathValidationResult;
 
+  // ★ 2026-09-26 P1-2：体积 / 剩余空间预览状态
+  int? _expectedSize;
+  bool _isLoadingSize = false;
+  int? _spaceFreeBytes;
+
   @override
   void initState() {
     super.initState();
     _loadDefaultPath();
+    _loadSizeInfo();
+  }
+
+  /// ★ 2026-09-26 P1-2：先读缓存立即显示，miss 时后台预取（解析直链 + HEAD）。
+  /// FileSizePrefetchService 早已具备该能力（探索库按大小排序已在用），
+  /// 此前安装侧从未接线。
+  Future<void> _loadSizeInfo() async {
+    final gameId = widget.gameId;
+    final path = widget.downloadPath;
+    if (gameId == null || gameId.isEmpty || path == null || path.isEmpty) {
+      return;
+    }
+    setState(() => _isLoadingSize = true);
+    try {
+      final cached =
+          await FileSizePrefetchService.instance.getCachedSizeOnly(gameId);
+      if (mounted && cached != null) {
+        setState(() => _expectedSize = cached);
+      }
+      final info =
+          await FileSizePrefetchService.instance.prefetchSize(gameId, path);
+      if (mounted) {
+        setState(() {
+          _expectedSize = info?.sizeBytes;
+          _isLoadingSize = false;
+        });
+      }
+      await _refreshSpace();
+    } catch (_) {
+      if (mounted) setState(() => _isLoadingSize = false);
+    }
+  }
+
+  /// 目标盘剩余空间随「安装位置」联动刷新
+  /// （真实查询见 path_validator P1-1 修复；此前恒为 -1 / 未知）。
+  Future<void> _refreshSpace() async {
+    final target = (_selectedLocation != null && _selectedLocation!.isNotEmpty)
+        ? _selectedLocation!
+        : LocalGameRegistry.gamesBaseDir;
+    try {
+      final disk = await PathValidator.getDiskSpaceInfo(target);
+      if (mounted) {
+        setState(() {
+          _spaceFreeBytes =
+              disk.freeSpaceBytes >= 0 ? disk.freeSpaceBytes : null;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadDefaultPath() async {
@@ -85,6 +154,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
     setState(() {
       _selectedLocation = defaultPath;
     });
+    _refreshSpace();
   }
 
   Future<void> _browseLocation() async {
@@ -112,6 +182,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
             _pathValidationError = null;
           });
           widget.onPathChanged?.call(result);
+          _refreshSpace();
         } else {
           setState(() {
             _selectedLocation = result;
@@ -136,6 +207,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
       _selectedLocation = null;
     });
     widget.onPathChanged?.call(null);
+    _refreshSpace();
   }
 
   String _getFullPath() {
@@ -156,6 +228,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
           decoration: BoxDecoration(
             color: AppColors.sidebarBackground,
             border: Border.all(color: AppColors.border, width: 1.6),
+            borderRadius: BorderRadius.circular(AppRadius.xl),
             boxShadow: [
               BoxShadow(
                 color: AppColors.border,
@@ -164,7 +237,7 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
               ),
             ],
           ),
-          clipBehavior: Clip.hardEdge,
+          clipBehavior: Clip.antiAlias,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -181,6 +254,8 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                       _buildLocationSelector(),
                       const SizedBox(height: 16),
                       _buildPathPreview(),
+                      const SizedBox(height: 12),
+                      _buildSizeAndSpace(),
                     ],
                   ),
                 ),
@@ -212,7 +287,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
           Text(
             '确认安装',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w700,
               fontSize: 18,
               height: 26 / 18,
@@ -246,13 +320,26 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
             child: widget.gameCoverUrl != null
                 ? ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
+                    child: NsfwImage.network(
                       widget.gameCoverUrl!,
+                      contentKind: NsfwContentKind.cover,
                       width: 64,
                       height: 64,
                       fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) =>
-                          _buildDefaultIcon(),
+                      showBadge: false,
+                      // 安装确认预览只走服务器 URL，须开按需检测
+                      //（child 走便携缓存，检测靠它查落盘文件）。
+                      detectOnDemand: true,
+                      child: CachedNetworkImage(
+                        cacheManager: PortableImageCacheManager(),
+                        imageUrl: widget.gameCoverUrl!,
+                        width: 64,
+                        height: 64,
+                        fit: BoxFit.cover,
+                        fadeInDuration: Duration.zero,
+                        placeholder: (_, __) => const SizedBox.shrink(),
+                        errorWidget: (_, __, ___) => _buildDefaultIcon(),
+                      ),
                     ),
                   )
                 : _buildDefaultIcon(),
@@ -266,7 +353,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                 Text(
                   widget.gameTitle,
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w700,
                     fontSize: 17,
                     height: 24 / 17,
@@ -293,7 +379,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                               child: Text(
                                 tag,
                                 style: TextStyle(
-                                  fontFamily: 'Inter',
                                   fontWeight: FontWeight.w600,
                                   fontSize: 12,
                                   color: AppColors.selectedAccent,
@@ -337,7 +422,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
               Text(
                 '游戏本体位置',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 14,
                   height: 20 / 14,
@@ -348,7 +432,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
               Text(
                 '可自定义',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w400,
                   fontSize: 12,
                   color: AppColors.secondaryText.withOpacity(0.6),
@@ -390,7 +473,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                           child: Text(
                             _selectedLocation ?? LocalGameRegistry.gamesBaseDir,
                             style: TextStyle(
-                              fontFamily: 'Inter',
                               fontWeight: FontWeight.w500,
                               fontSize: 13,
                               height: 18 / 13,
@@ -421,7 +503,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                   child: Text(
                     '默认',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontWeight: FontWeight.w500,
                       fontSize: 12,
                       color: AppColors.secondaryText,
@@ -453,7 +534,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                     child: Text(
                       _pathValidationError!,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontWeight: FontWeight.w500,
                         fontSize: 12,
                         color: AppColors.dangerRed,
@@ -498,7 +578,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
           Text(
             '完整安装路径预览',
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w600,
               fontSize: 12,
               color: AppColors.secondaryText.withOpacity(0.7),
@@ -515,6 +594,95 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
               letterSpacing: 0.3,
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// ★ 2026-09-26 安装审计 P1-2：确认弹窗此前只显示路径，不显示「要下多大、
+  /// 盘还剩多少」——用户无法在下载前做空间决策。空间不足给出红色警告
+  /// 但**不禁用**确认：压缩包体积 ≠ 解压后体积，禁用会误伤。
+  Widget _buildSizeAndSpace() {
+    final sizeText = _isLoadingSize
+        ? '获取中...'
+        : (_expectedSize != null
+            ? PathValidator.formatFileSize(_expectedSize!)
+            : '未知（不影响安装）');
+    final spaceText = _spaceFreeBytes != null
+        ? PathValidator.formatFileSize(_spaceFreeBytes!)
+        : '未知';
+
+    final insufficient = _expectedSize != null &&
+        _spaceFreeBytes != null &&
+        _spaceFreeBytes! >= 0 &&
+        _spaceFreeBytes! < (_expectedSize! * 1.05).round();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: insufficient
+              ? AppColors.dangerRed.withOpacity(0.5)
+              : AppColors.border.withOpacity(0.4),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.cloud_download_outlined,
+                  size: 15, color: AppColors.secondaryText.withOpacity(0.7)),
+              const SizedBox(width: 6),
+              Text('下载包体积: ',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 12,
+                      color: AppColors.secondaryText)),
+              Text(sizeText,
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                      color: AppColors.primaryText)),
+              const SizedBox(width: 16),
+              Icon(Icons.storage_outlined,
+                  size: 15, color: AppColors.secondaryText.withOpacity(0.7)),
+              const SizedBox(width: 6),
+              Text('目标盘可用: ',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 12,
+                      color: AppColors.secondaryText)),
+              Text(spaceText,
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                      color: AppColors.primaryText)),
+            ],
+          ),
+          if (insufficient) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    size: 15, color: AppColors.dangerRed),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '目标盘剩余空间可能不足（解压后还需额外空间），请更换安装位置或清理磁盘',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w500,
+                        fontSize: 12,
+                        color: AppColors.dangerRed),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -545,7 +713,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
               child: Text(
                 '取消',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
                   color: AppColors.secondaryText,
@@ -592,7 +759,6 @@ class _InstallConfirmationDialogState extends State<InstallConfirmationDialog> {
                   Text(
                     '开始安装',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontWeight: FontWeight.w700,
                       fontSize: 14,
                       color: Colors.white,

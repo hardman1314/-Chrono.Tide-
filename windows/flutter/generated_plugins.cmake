@@ -5,10 +5,13 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   desktop_drop
   screen_retriever_windows
+  system_tray
+  video_player_win
   window_manager
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
+  onnxruntime
 )
 
 set(PLUGIN_BUNDLED_LIBRARIES)

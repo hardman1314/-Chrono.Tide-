@@ -2,8 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
 import '../theme/app_theme_manager.dart';
 import '../theme/background_image_config.dart';
+import '../theme/background_media.dart';
 import '../theme/theme_element_registry.dart';
 import '../theme/theme_storage.dart';
 import 'animated_overlay.dart';
@@ -219,21 +221,33 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
   Future<void> _onUploadBackground() async {
     try {
       final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
+        // v3.10：改用 custom + 显式扩展名（Windows 端 FileType.image 的过滤器
+        // 不含 webp，见 settings_modal._onPickCustomBackground 注释）
+        type: FileType.custom,
+        allowedExtensions: BackgroundMediaInspector.allowedExtensions,
         allowMultiple: false,
       );
       if (result == null || result.files.isEmpty) return;
       final sourcePath = result.files.single.path;
       if (sourcePath == null) return;
 
-      final bgConfig =
-          await ThemeStorage.uploadBackgroundImage(sourcePath);
+      final bgConfig = await ThemeStorage.uploadBackgroundImage(
+        sourcePath,
+        onWarnings: (warnings) {
+          if (mounted) AppSnackBar.warning(context, warnings.join('；'));
+        },
+      );
       final newData = _preview.withBackgroundImage(bgConfig);
       _previewNotifier.value = newData;
       _undoRedo.push(newData);
 
       if (mounted) {
         AppSnackBar.success(context, '已添加背景图（点击"应用"生效）');
+      }
+    } on BackgroundMediaRejectedException catch (e) {
+      // v3.10：门槛拒绝，文案已精确到维度
+      if (mounted) {
+        AppSnackBar.error(context, e.message);
       }
     } catch (e) {
       if (mounted) {
@@ -345,7 +359,7 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
       backgroundColor: AppColors.background,
       insetPadding: const EdgeInsets.all(24),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(AppRadius.xl),
       ),
       child: UndoRedoKeyboardHandler(
         controller: _undoRedo,
@@ -395,7 +409,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
         Text(
           '主题设计器 / 调色板',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontSize: 15,
             fontWeight: FontWeight.w700,
             color: AppColors.primaryText,
@@ -441,7 +454,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 Text(
                   _isEditing ? '编辑：${_initialTheme.name}' : '新建主题',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     fontWeight: FontWeight.w700,
                     color: _isEditing
@@ -472,7 +484,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
             child: Text(
               'Ctrl+Z / Y',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 9,
                 color: AppColors.placeholderText,
                 fontWeight: FontWeight.w500,
@@ -525,7 +536,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
               Text(
                 label,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryText,
@@ -555,7 +565,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
               Text(
                 'UI 预览',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: AppColors.secondaryText,
@@ -569,7 +578,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 child: Text(
                   '双击元素进入编辑（点击选择）',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     color: AppColors.placeholderText,
                   ),
@@ -595,7 +603,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 Text(
                   '当前选中：${_selectedElement?.displayName ?? "未选择"}',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     color: AppColors.primaryText,
                     fontWeight: FontWeight.w600,
@@ -689,7 +696,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                   Text(
                     p.$2,
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 10,
                       fontWeight: isActive
                           ? FontWeight.w700
@@ -780,7 +786,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
             child: Text(
               hasUserBg ? '已设置背景图' : '应用背景图',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 11,
                 color: AppColors.secondaryText,
               ),
@@ -800,7 +805,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
               child: Text(
                 '上传',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryText,
@@ -830,7 +834,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                     Text(
                       '调整位置',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                         color: AppColors.primaryText,
@@ -855,7 +858,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 child: Text(
                   '移除',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                     color: AppColors.dangerRed,
@@ -908,7 +910,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 Text(
                   '有未保存的修改',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
                     color: AppColors.infoBlue,
@@ -936,7 +937,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 Text(
                   '无修改',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 10,
                     color: AppColors.secondaryText,
                   ),
@@ -1017,7 +1017,6 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
               Text(
                 label,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   fontWeight:
                       isPrimary ? FontWeight.w700 : FontWeight.w600,

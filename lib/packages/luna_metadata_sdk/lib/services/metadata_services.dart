@@ -8,8 +8,10 @@ import '../models/tags.dart';
 import 'metadata_base.dart';
 import 'tag_translator.dart';
 import 'bangumi_service.dart';
+import 'ct_service.dart';
 import 'hikarinagi_service.dart';
 import 'kun_service.dart';
+import 'nextmoe_service.dart';
 import 'touchgal_service.dart';
 
 class VNDBService implements MetadataSourceService {
@@ -65,8 +67,9 @@ class VNDBService implements MetadataSourceService {
                   'filters': ['search', '=', name],
                   // P1.1：增加 image_flagging 用于 NSFW 判定，tags 增加 level 字段
                   // 阶段3.1：增加 votecount 用于热度代理
+                  // 2026-10-04：增加 length_minutes/length_votes（多用户平均游玩时长）
                   'fields':
-                      'id, title, titles{lang, title, latin, official, main}, image{url}, screenshots{url}, description, rating, votecount, released, developers{name}, tags{name, rating, spoiler, lie}',
+                      'id, title, titles{lang, title, latin, official, main}, image{url}, screenshots{url}, description, rating, votecount, released, length_minutes, length_votes, developers{name}, tags{name, rating, spoiler, lie}',
                   'sort': 'searchrank',
                 },
               ));
@@ -114,15 +117,15 @@ class VNDBService implements MetadataSourceService {
       final batch = ids.sublist(i, (i + 100).clamp(0, ids.length));
       try {
         final response = await executeRateLimited(
-              SourceType.vndb,
-              () => _dio.post(
-                    'https://api.vndb.org/kana/vn',
-                    data: {
-                      'filters': ['id', '=', batch],
-                      'fields':
-                          'id, title, titles{lang, title, latin, official, main}, image{url}, screenshots{url}, description, rating, votecount, released, developers{name}, tags{name, rating, spoiler, lie}',
-                    },
-                  ));
+            SourceType.vndb,
+            () => _dio.post(
+                  'https://api.vndb.org/kana/vn',
+                  data: {
+                    'filters': ['id', '=', batch],
+                    'fields':
+                        'id, title, titles{lang, title, latin, official, main}, image{url}, screenshots{url}, description, rating, votecount, released, length_minutes, length_votes, developers{name}, tags{name, rating, spoiler, lie}',
+                  },
+                ));
         if (response.statusCode != 200) continue;
         final json =
             response.data is String ? jsonDecode(response.data) : response.data;
@@ -221,6 +224,8 @@ class VNDBService implements MetadataSourceService {
     // P1.1：多语言标题偏好链 zh-hans → zh-hant → zh → ja → en
     // 比原 main/zh/ja 逻辑更精准，优先返回简体中文译名
     String name = safeString(json, 'title') ?? '';
+    // 原版标题（日文）：供上游作为副标题使用
+    String? originalTitle;
     final titles = safeList(json, 'titles');
     if (titles != null && titles.isNotEmpty) {
       const langPriority = ['zh-hans', 'zh-hant', 'zh', 'ja', 'en'];
@@ -235,6 +240,11 @@ class VNDBService implements MetadataSourceService {
         if (lang.isNotEmpty && value.isNotEmpty && !byLang.containsKey(lang)) {
           byLang[lang] = value;
         }
+      }
+      // 日文原标题（不取英文）
+      final jaTitle = byLang['ja'];
+      if (jaTitle != null && jaTitle.isNotEmpty) {
+        originalTitle = jaTitle;
       }
       String? picked;
       for (final lang in langPriority) {
@@ -280,6 +290,11 @@ class VNDBService implements MetadataSourceService {
     // 阶段3.1：提取投票数（VNDB 的 votecount 字段，作为热度代理）
     final voteCount = safeInt(json, 'votecount');
 
+    // 2026-10-04：提取多用户平均游玩时长（VNDB length_minutes，
+    // length_votes 为参与统计的人数；均可能为 null）
+    final lengthMinutes = safeInt(json, 'length_minutes');
+    final lengthVotes = safeInt(json, 'length_votes');
+
     List<TagItem> tags = [];
     final tagsData = safeList(json, 'tags');
     if (tagsData != null) {
@@ -324,12 +339,15 @@ class VNDBService implements MetadataSourceService {
       game: Game(
         id: safeString(json, 'id') ?? '',
         name: name,
+        originalTitle: originalTitle,
         coverUrl: coverUrl,
         company: company,
         summary: safeString(json, 'description') ?? '',
         rating: rating,
         voteCount: voteCount,
         releaseDate: safeString(json, 'released') ?? '',
+        lengthMinutes: lengthMinutes,
+        lengthVotes: lengthVotes,
         sourceType: SourceType.vndb,
         sourceId: safeString(json, 'id') ?? '',
         screenshotUrls: _extractScreenshots(json),
@@ -1578,6 +1596,10 @@ class MetadataServiceFactory {
       return HikarinagiService(dio: dio);
     } else if (sourceType == SourceType.kun) {
       return KunService(dio: dio);
+    } else if (sourceType == SourceType.nextmoe) {
+      return NextMoeService(dio: dio);
+    } else if (sourceType == SourceType.ct) {
+      return CTService(dio: dio);
     } else {
       throw ArgumentError('Unsupported source type: $sourceType');
     }

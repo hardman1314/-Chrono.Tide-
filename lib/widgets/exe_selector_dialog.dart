@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_styles.dart';
 import '../services/locale_service.dart';
 import '../services/magpie_service.dart';
-import '../services/shortcut_service.dart';
 import '../services/exe_scanner.dart';
 import 'interactive_wrapper.dart';
 
@@ -15,8 +15,6 @@ class ExeSelectorDialog extends StatefulWidget {
   final ValueChanged<String> onSelected;
   final ValueChanged<String>? onLocaleModeChanged;
   final ValueChanged<String>? onUpscalingModeChanged;
-  final String? gameTitle;
-  final String? metaDataDir;
 
   const ExeSelectorDialog({
     super.key,
@@ -27,8 +25,6 @@ class ExeSelectorDialog extends StatefulWidget {
     required this.onSelected,
     this.onLocaleModeChanged,
     this.onUpscalingModeChanged,
-    this.gameTitle,
-    this.metaDataDir,
   });
 
   static Future<void> show({
@@ -40,8 +36,6 @@ class ExeSelectorDialog extends StatefulWidget {
     required ValueChanged<String> onSelected,
     ValueChanged<String>? onLocaleModeChanged,
     ValueChanged<String>? onUpscalingModeChanged,
-    String? gameTitle,
-    String? metaDataDir,
   }) async {
     await showDialog(
       context: context,
@@ -54,8 +48,6 @@ class ExeSelectorDialog extends StatefulWidget {
         onSelected: onSelected,
         onLocaleModeChanged: onLocaleModeChanged,
         onUpscalingModeChanged: onUpscalingModeChanged,
-        gameTitle: gameTitle,
-        metaDataDir: metaDataDir,
       ),
     );
   }
@@ -73,7 +65,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
   bool _upscalingEnabled = false;
   bool _localeAvailable = false;
   bool _magpieAvailable = false;
-  bool _generateShortcut = false;
 
   @override
   void initState() {
@@ -143,7 +134,7 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
         height: 540,
         decoration: BoxDecoration(
           color: AppColors.background,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(AppRadius.xl),
           border: Border.all(color: AppColors.border, width: 1.5),
           boxShadow: [
             BoxShadow(
@@ -164,9 +155,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
             Divider(height: 1, color: AppColors.border.withOpacity(0.3)),
             _buildUpscalingToggle(),
             Divider(height: 1, color: AppColors.border.withOpacity(0.3)),
-            if (widget.gameTitle != null) _buildShortcutToggle(),
-            if (widget.gameTitle != null)
-              Divider(height: 1, color: AppColors.border.withOpacity(0.3)),
             _buildFooter(),
           ],
         ),
@@ -188,14 +176,12 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
           SizedBox(width: 10),
           Text('选择启动程序',
               style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryText)),
           Spacer(),
           Text('${_filteredExes.length} 个程序',
               style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 12,
                   color: AppColors.secondaryText)),
         ],
@@ -208,11 +194,10 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
       padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: TextField(
         onChanged: (v) => setState(() => _searchQuery = v),
-        style: TextStyle(fontFamily: 'Inter', fontSize: 13),
+        style: TextStyle(fontSize: 13),
         decoration: InputDecoration(
           hintText: '搜索程序名...',
           hintStyle: TextStyle(
-              fontFamily: 'Inter',
               fontSize: 13,
               color: AppColors.placeholderText),
           prefixIcon:
@@ -295,7 +280,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
                 children: [
                   Text(fileName,
                       style: TextStyle(
-                          fontFamily: 'Mali',
                           fontSize: 13.5,
                           fontWeight:
                               isSelected ? FontWeight.w600 : FontWeight.w600,
@@ -303,7 +287,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
                   SizedBox(height: 2),
                   Text(relativePath,
                       style: TextStyle(
-                          fontFamily: 'Mali',
                           fontSize: 12,
                           color: AppColors.secondaryText)),
                 ],
@@ -336,7 +319,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
               children: [
                 Text('日语转区启动',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: AppColors.primaryText,
@@ -344,7 +326,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
                 if (!_localeAvailable && _localeEnabled)
                   Text('⚠ 未检测到转区引擎，请先安装 Locale Emulator',
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 12,
                           color: const Color(0xFFE65100))),
               ],
@@ -381,7 +362,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
               children: [
                 Text('超分启动',
                     style: TextStyle(
-                      fontFamily: 'Inter',
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: AppColors.primaryText,
@@ -389,7 +369,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
                 if (!_magpieAvailable && _upscalingEnabled)
                   Text('⚠ 未检测到 Magpie，请在偏好设置中配置',
                       style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 12,
                           color: const Color(0xFFEF6C00))),
               ],
@@ -408,49 +387,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
     );
   }
 
-  Widget _buildShortcutToggle() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
-      child: Row(
-        children: [
-          Icon(Icons.desktop_windows_rounded,
-              size: 18,
-              color: _generateShortcut
-                  ? AppColors.successGreen
-                  : AppColors.secondaryText),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('生成桌面快捷方式',
-                    style: TextStyle(
-                      fontFamily: 'Inter',
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.primaryText,
-                    )),
-                Text('双击桌面图标即可直接启动游戏',
-                    style: TextStyle(
-                        fontFamily: 'Inter',
-                        fontSize: 11.5,
-                        color: AppColors.secondaryText)),
-              ],
-            ),
-          ),
-          Switch.adaptive(
-            value: _generateShortcut,
-            activeColor: AppColors.successGreen,
-            onChanged: (value) {
-              setState(() => _generateShortcut = value);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildEmpty() {
     return Center(
       child: Column(
@@ -461,14 +397,12 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
           SizedBox(height: 12),
           Text('未找到可执行文件',
               style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: AppColors.secondaryText)),
           SizedBox(height: 6),
           Text('请确认游戏目录是否正确',
               style: TextStyle(
-                  fontFamily: 'Mali',
                   fontSize: 12.5,
                   color: AppColors.secondaryText.withOpacity(0.7))),
         ],
@@ -508,7 +442,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
         ),
         child: Text(label,
             style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: isPrimary ? Colors.white : AppColors.primaryText)),
@@ -519,19 +452,6 @@ class _ExeSelectorDialogState extends State<ExeSelectorDialog> {
   void _handleConfirm() async {
     if (_selectedFile != null) {
       widget.onSelected(_selectedFile!.path);
-
-      // 如果勾选了生成快捷方式，且有游戏标题信息
-      if (_generateShortcut &&
-          widget.gameTitle != null &&
-          widget.gameTitle!.isNotEmpty) {
-        await ShortcutService.instance.createShortcut(
-          gameTitle: widget.gameTitle!,
-          exePath: _selectedFile!.path,
-          gameDirectory: widget.gameDirectory,
-          localeMode: _localeEnabled ? 'japanese' : 'none',
-          upscalingMode: _upscalingEnabled ? 'magpie' : 'none',
-        );
-      }
     }
     Navigator.of(context).pop();
   }

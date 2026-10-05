@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'game_data_format.dart';
 import 'local_game_registry.dart';
+import 'metadata_fetcher.dart';
+import 'nsfw/nsfw_detection_service.dart';
 
 /// 截图下载状态
 ///
@@ -110,6 +112,10 @@ class ScreenshotFetchService extends ChangeNotifier {
   /// 每个游戏最多下载的截图张数
   static const int maxScreenshotsPerGame = 6;
 
+  /// 待处理截图任务上限（★ P1-4 背压）：超过则跳过入队，避免大规模导入时
+  /// 一次性堆积数千个下载任务长期占用网络与磁盘。
+  static const int maxPendingTasks = 200;
+
   /// 任务间最小间隔（毫秒），避免请求过快
   static const int _taskIntervalMs = 500;
 
@@ -162,6 +168,16 @@ class ScreenshotFetchService extends ChangeNotifier {
     if (_enqueuedTitles.contains(gameTitle)) {
       debugPrint(
           '[SCREENSHOT-FETCH] 已在队列中，跳过: $gameTitle');
+      return;
+    }
+
+    // ★ P1-4（2026-09-16 稳定性审计）：待处理队列**背压上限**。
+    // 截图是可选的后台增强：2000 条规模导入会一次性入队 2000 个任务，
+    // 长时间占满网络与写盘（并让"下载中"状态长期存在）。超过上限时跳过，
+    // 由启动后的 `backfillAllMissingScreenshots` 在闲时分批补齐。
+    if (_queue.length >= maxPendingTasks) {
+      debugPrint('[SCREENSHOT-FETCH] ⏸️ 队列已达上限($maxPendingTasks)，'
+          '跳过入队（稍后由后台回填批次处理）: $gameTitle');
       return;
     }
 
@@ -252,6 +268,13 @@ class ScreenshotFetchService extends ChangeNotifier {
       // 调用 GameDataFormat 的截图下载方法（复用缓存优先逻辑）
       final downloadedFiles = await GameDataFormat.downloadAndSaveScreenshots(
           task.metaDataDir, task.screenshotUrls);
+
+      // NSFW：新落盘截图逐张入检测队列（总开关裁决在服务内部，
+      // relativePath 形如 'screenshots/screenshot_1.jpg'）
+      for (final String rel in downloadedFiles) {
+        NsfwDetectionService.instance
+            .enqueueFile('${task.metaDataDir}/$rel');
+      }
 
       // 更新 game.json：写入 screenshot_files + 标记 completed
       await GameDataFormat.updateGameJson(task.metaDataDir, {
@@ -470,6 +493,140 @@ class ScreenshotFetchService extends ChangeNotifier {
       return ScreenshotFetchStatusExt.fromJson(game.screenshotStatus);
     }
     return null;
+  }
+
+  // ==================== 截图数据补全（backfill）====================
+
+  /// 是否正在执行全库截图补全（供UI展示进度）
+  bool _backfillRunning = false;
+  bool get isBackfillRunning => _backfillRunning;
+
+  /// 全库补全进度：已完成/总数
+  int _backfillDone = 0;
+  int _backfillTotal = 0;
+  int get backfillDone => _backfillDone;
+  int get backfillTotal => _backfillTotal;
+
+  /// 补全单个游戏的截图数据
+  ///
+  /// 适用场景：早期入库流程不完善导致截图留空的游戏。
+  /// 流程：
+  /// 1. 已有本地截图文件 → 无需补全，返回 false
+  /// 2. game.json 已有截图URL（早期抓到URL但未下载）→ 重置状态入队下载
+  /// 3. 无URL → 调用 MetadataFetcher.fetchScreenshots 按 MIX 截图优先级
+  ///    （KunGal → Hikarinagi → VNDB）重新抓取URL，写入 game.json 后入队
+  ///
+  /// 返回 true 表示已触发补全（入队下载）。
+  Future<bool> backfillGameScreenshots(String gameTitle) async {
+    try {
+      final game = LocalGameRegistry.instance.getGameByTitle(gameTitle);
+      if (game == null) {
+        debugPrint('[SCREENSHOT-BACKFILL] 未找到游戏: $gameTitle');
+        return false;
+      }
+
+      // 1. 已有本地截图 → 无需补全
+      if (GameDataFormat.findScreenshotFiles(game.metaDataDir).isNotEmpty) {
+        debugPrint('[SCREENSHOT-BACKFILL] 已有本地截图，跳过: $gameTitle');
+        return false;
+      }
+
+      final gameData = await GameDataFormat.readGameJson(game.metaDataDir);
+
+      // 2. 已有URL但未下载完成 → 直接入队（复用手动触发逻辑）
+      if (gameData != null && gameData.screenshotUrls.isNotEmpty) {
+        debugPrint(
+            '[SCREENSHOT-BACKFILL] 已有URL未下载，重新入队: $gameTitle (${gameData.screenshotUrls.length}张)');
+        await triggerManualFetch(gameTitle);
+        return true;
+      }
+
+      // 3. 无URL → 按 MIX 截图优先级重新抓取
+      // 主标题（常为中文译名）无截图时自动回退副标题（原版标题）抓取
+      debugPrint('[SCREENSHOT-BACKFILL] 无截图数据，开始抓取URL: $gameTitle');
+      final urls = await MetadataFetcher.fetchScreenshots(
+        gameTitle,
+        altNames: [game.subtitle],
+      );
+      if (urls.isEmpty) {
+        debugPrint('[SCREENSHOT-BACKFILL] 各平台均无截图: $gameTitle');
+        return false;
+      }
+
+      // 写入URL并标记pending，随后入队下载
+      await GameDataFormat.updateGameJson(game.metaDataDir, {
+        'screenshot_urls': urls,
+        'screenshot_status': ScreenshotFetchStatus.pending.jsonValue,
+        'screenshot_retry_count': 0,
+      });
+      _enqueuedTitles.remove(gameTitle);
+      enqueue(gameTitle, game.metaDataDir, urls);
+      debugPrint(
+          '[SCREENSHOT-BACKFILL] ✅ 已入队补全: $gameTitle (${urls.length}张)');
+      return true;
+    } catch (e) {
+      debugPrint('[SCREENSHOT-BACKFILL] 单游戏补全异常: $gameTitle, $e');
+      return false;
+    }
+  }
+
+  /// 扫描游戏库并补全所有缺失截图的游戏（库页批量补全/启动自动补全）
+  ///
+  /// 判定"缺失"：无本地截图文件 且（无截图URL 或 状态为 failed）。
+  /// 逐个游戏串行抓取URL后统一入队既有下载队列（队列本身串行+限速，
+  /// 不会对元数据平台造成请求压力）。已在队列中/处理中的游戏自动跳过。
+  ///
+  /// 返回触发补全的游戏数量。
+  Future<int> backfillAllMissingScreenshots() async {
+    if (_backfillRunning) {
+      debugPrint('[SCREENSHOT-BACKFILL] 补全已在进行中，跳过');
+      return 0;
+    }
+    _backfillRunning = true;
+    _backfillDone = 0;
+    _backfillTotal = 0;
+    notifyListeners();
+    try {
+      final allGames = LocalGameRegistry.instance.allGames;
+      // 候选：无本地截图文件的游戏（URL/状态在单游戏补全里细分判断）
+      final candidates = <String>[];
+      for (final game in allGames) {
+        if (_enqueuedTitles.contains(game.title)) continue;
+        if (GameDataFormat.findScreenshotFiles(game.metaDataDir).isNotEmpty) {
+          continue;
+        }
+        candidates.add(game.title);
+      }
+
+      _backfillTotal = candidates.length;
+      debugPrint('[SCREENSHOT-BACKFILL] 🔍 开始全库补全: '
+          '${allGames.length} 款游戏中 ${candidates.length} 款缺失截图');
+      if (candidates.isEmpty) return 0;
+
+      var triggered = 0;
+      for (final title in candidates) {
+        // 扫描过程中用户可能删除了游戏，跳过已不存在的
+        if (LocalGameRegistry.instance.getGameByTitle(title) == null) {
+          _backfillDone++;
+          continue;
+        }
+        final ok = await backfillGameScreenshots(title);
+        if (ok) triggered++;
+        _backfillDone++;
+        notifyListeners();
+        // 间隔节流，避免连续抓取URL请求过快
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+      debugPrint(
+          '[SCREENSHOT-BACKFILL] ✅ 全库补全完成: 触发 $triggered 款游戏下载');
+      return triggered;
+    } catch (e) {
+      debugPrint('[SCREENSHOT-BACKFILL] 全库补全异常: $e');
+      return 0;
+    } finally {
+      _backfillRunning = false;
+      notifyListeners();
+    }
   }
 
   /// 清理指定游戏的进度记录（游戏被删除时调用）

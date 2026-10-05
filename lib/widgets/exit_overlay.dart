@@ -75,7 +75,6 @@ class _ExitWaitingWidgetState extends State<_ExitWaitingWidget> {
               Text(
                 '正在退出',
                 style: TextStyle(
-                  fontFamily: 'ZhiMangXing',
                   fontSize: 22,
                   letterSpacing: 2,
                   color: AppColors.border,
@@ -85,7 +84,6 @@ class _ExitWaitingWidgetState extends State<_ExitWaitingWidget> {
               Text(
                 '请稍候…',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 15,
                   fontWeight: FontWeight.w500,
                   color: AppColors.primaryText,
@@ -95,7 +93,6 @@ class _ExitWaitingWidgetState extends State<_ExitWaitingWidget> {
               Text(
                 '程序正在清理资源并安全关闭',
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 13,
                   color: AppColors.border.withOpacity(0.5),
                 ),

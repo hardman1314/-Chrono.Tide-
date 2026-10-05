@@ -33,9 +33,13 @@ class ExeScanner {
         await for (final entity in dir.list(followLinks: false)) {
           if (result.length >= maxCount) return;
           if (entity is File) {
-            final name = entity.path.toLowerCase();
-            if (name.endsWith('.exe') &&
-                !excludeKeywords.any((kw) => name.contains(kw))) {
+            // 🔴 排除关键字只对文件名匹配，禁止用完整路径——
+            // 目录名含 "Install Patch"/"Setup" 等字样时（galgame 收藏极常见），
+            // 全路径匹配会把目录下所有 exe 误杀成 0 个程序（2026-09-13 用户实锤）
+            final fileName =
+                entity.path.replaceAll('\\', '/').split('/').last.toLowerCase();
+            if (fileName.endsWith('.exe') &&
+                !excludeKeywords.any((kw) => fileName.contains(kw))) {
               result.add(entity);
             }
           } else if (entity is Directory) {

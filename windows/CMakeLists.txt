@@ -130,6 +130,19 @@ if(EXISTS "${LE_SOURCE_DIR}/LEProc.exe")
   )
 endif()
 
+# Install SDL3 for cross-vendor gamepad input (XInput/DInput/hidapi).
+# License: zlib (closed-source redistribution permitted; keep copyright notice,
+# see runner/sdl3/LICENSE.txt which is installed alongside the DLL).
+set(SDL3_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runner/sdl3")
+if(EXISTS "${SDL3_SOURCE_DIR}/SDL3.dll")
+  install(FILES
+      "${SDL3_SOURCE_DIR}/SDL3.dll"
+      "${SDL3_SOURCE_DIR}/LICENSE.txt"
+      DESTINATION "${RUNTIME_DIR}/sdl3"
+      COMPONENT Runtime
+    )
+endif()
+
 # Install built-in 7-Zip for archive extraction.
 set(TOOLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runner/tools")
 if(EXISTS "${TOOLS_SOURCE_DIR}/7z.exe")
@@ -158,6 +171,70 @@ if(EXISTS "${SCRAPER_SOURCE_DIR}/scraper_service.exe")
   install(FILES
       "${SCRAPER_SOURCE_DIR}/scraper_service.exe"
       DESTINATION "${RUNTIME_DIR}"
+      COMPONENT Runtime
+    )
+endif()
+
+# Install built-in Magpie for upscaling support.
+# Always install config/effects if they exist, even without Magpie.exe.
+# The config template will be generated at runtime from Flutter assets if missing.
+set(MAGPIE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runner/magpie")
+
+# Install Magpie.exe if present
+if(EXISTS "${MAGPIE_SOURCE_DIR}/Magpie.exe")
+  install(FILES
+      "${MAGPIE_SOURCE_DIR}/Magpie.exe"
+      DESTINATION "${RUNTIME_DIR}/magpie"
+      COMPONENT Runtime
+    )
+endif()
+
+# Install Magpie config directory if present
+if(EXISTS "${MAGPIE_SOURCE_DIR}/config")
+  install(DIRECTORY "${MAGPIE_SOURCE_DIR}/config"
+    DESTINATION "${RUNTIME_DIR}/magpie"
+    COMPONENT Runtime
+  )
+endif()
+
+# Install Magpie effects directory if present
+if(EXISTS "${MAGPIE_SOURCE_DIR}/effects")
+  install(DIRECTORY "${MAGPIE_SOURCE_DIR}/effects"
+    DESTINATION "${RUNTIME_DIR}/magpie"
+    COMPONENT Runtime
+  )
+endif()
+
+# Install Magpie TouchHelper if present
+if(EXISTS "${MAGPIE_SOURCE_DIR}/TouchHelper.exe")
+  install(FILES
+      "${MAGPIE_SOURCE_DIR}/TouchHelper.exe"
+      DESTINATION "${RUNTIME_DIR}/magpie"
+      COMPONENT Runtime
+    )
+endif()
+
+# Install Magpie runtime dependencies if present
+if(EXISTS "${MAGPIE_SOURCE_DIR}/Microsoft.UI.Xaml.dll")
+  install(FILES
+      "${MAGPIE_SOURCE_DIR}/Microsoft.UI.Xaml.dll"
+      DESTINATION "${RUNTIME_DIR}/magpie"
+      COMPONENT Runtime
+    )
+endif()
+
+if(EXISTS "${MAGPIE_SOURCE_DIR}/Updater.exe")
+  install(FILES
+      "${MAGPIE_SOURCE_DIR}/Updater.exe"
+      DESTINATION "${RUNTIME_DIR}/magpie"
+      COMPONENT Runtime
+    )
+endif()
+
+if(EXISTS "${MAGPIE_SOURCE_DIR}/resources.pri")
+  install(FILES
+      "${MAGPIE_SOURCE_DIR}/resources.pri"
+      DESTINATION "${RUNTIME_DIR}/magpie"
       COMPONENT Runtime
     )
 endif()

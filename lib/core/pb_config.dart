@@ -1,17 +1,17 @@
 import 'package:pocketbase/pocketbase.dart';
 import 'package:flutter/material.dart';
-import 'backend_config.dart';
 
 class PBConfig {
   PBConfig._();
 
-  /// PocketBase 服务器地址
-  /// 开源版本从 BackendConfig 读取，未配置则为空字符串
-  static final String _baseUrl = BackendConfig.pbBaseUrl;
+  static const String _baseUrl = 'http://117.72.115.30:8090';
 
   static final PocketBase instance = PocketBase(_baseUrl);
 
   static PocketBase get pb => instance;
+
+  /// PocketBase 服务器基础 URL（公开访问，用于拼接文件URL等）
+  static String get baseUrl => _baseUrl;
 
   static String get token => pb.authStore.token;
 

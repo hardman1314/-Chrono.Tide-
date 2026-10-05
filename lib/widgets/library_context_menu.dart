@@ -1,14 +1,14 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_style.dart';
 import 'interactive_wrapper.dart';
 
 class LibraryContextMenu extends StatelessWidget {
   final Offset position;
   final VoidCallback onDetails;
-  final VoidCallback onMark;
   final VoidCallback onLaunchManager;
-  final VoidCallback onBackup;
+  final VoidCallback onCollection;
   final VoidCallback onDelete;
   final VoidCallback onClose;
 
@@ -16,9 +16,8 @@ class LibraryContextMenu extends StatelessWidget {
     super.key,
     required this.position,
     required this.onDetails,
-    required this.onMark,
     required this.onLaunchManager,
-    required this.onBackup,
+    required this.onCollection,
     required this.onDelete,
     required this.onClose,
   });
@@ -28,7 +27,7 @@ class LibraryContextMenu extends StatelessWidget {
     // UX-19: 边界检测，菜单不溢出屏幕右侧或底部
     final screenSize = MediaQuery.sizeOf(context);
     const menuWidth = 160.0;
-    const menuHeight = 248.0; // 5 项 × ~48px + 边框/分割线
+    const menuHeight = 200.0; // 4 项 × ~48px + 边框/分割线
     const margin = 8.0;
 
     final maxLeft = math.max(margin, screenSize.width - menuWidth - margin);
@@ -58,15 +57,26 @@ class LibraryContextMenu extends StatelessWidget {
             child: Container(
               width: 160,
               decoration: BoxDecoration(
-                border: Border.all(color: AppColors.border, width: 2),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.border.withOpacity(0.13),
-                    offset: const Offset(4, 5),
-                    blurRadius: 0,
-                  ),
-                ],
-                color: AppColors.background,
+                // v3.9 Aurora：白卡面 + e3 浮层阴影 + 发丝边 + 大圆角
+                border: AppStyle.isModern
+                    ? Border.all(
+                        color: AppColors.borderLight, width: AppStyle.wHairline)
+                    : Border.all(color: AppColors.border, width: 2),
+                boxShadow: AppStyle.isModern
+                    ? AppStyle.e3
+                    : [
+                        BoxShadow(
+                          color: AppColors.border.withOpacity(0.13),
+                          offset: const Offset(4, 5),
+                          blurRadius: 0,
+                        ),
+                      ],
+                color: AppStyle.isModern
+                    ? AppColors.buttonBackground
+                    : AppColors.background,
+                borderRadius: AppStyle.isModern
+                    ? BorderRadius.circular(AppStyle.rMd)
+                    : null,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -86,17 +96,10 @@ class LibraryContextMenu extends StatelessWidget {
                     showDivider: true,
                   ),
                   _buildMenuItem(
-                    icon: Icons.bookmark_border_rounded,
-                    label: '标 记',
+                    icon: Icons.collections_bookmark_outlined,
+                    label: '加入收藏夹',
                     labelColor: AppColors.titleBrown,
-                    onTap: onMark,
-                    showDivider: true,
-                  ),
-                  _buildMenuItem(
-                    icon: Icons.save_outlined,
-                    label: '存档备份',
-                    labelColor: AppColors.titleBrown,
-                    onTap: onBackup,
+                    onTap: onCollection,
                     showDivider: true,
                   ),
                   _buildMenuItem(
@@ -145,7 +148,6 @@ class LibraryContextMenu extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontSize: 16,
                 fontWeight: FontWeight.w500,
                 height: 24 / 16,

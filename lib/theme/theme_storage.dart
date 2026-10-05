@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../core/path_helper.dart';
 import 'app_theme_manager.dart';
 import 'background_image_config.dart';
+import 'background_media.dart';
 
 /// v3.0 P0：主题存储层
 ///
@@ -33,6 +34,8 @@ class ThemeStorage {
   ThemeStorage._();
 
   static const _kPrefActiveThemeId = 'app_theme';
+  static const _kPrefFollowSystemTheme = 'theme_follow_system';
+  static const _kPrefDefaultUserThemeCreated = 'theme_default_user_created';
   static const _kPrefSchemaVersion = 'theme_schema_version';
   static const _kThemesSubdir = 'user_themes';
   static const _kBackgroundsSubdir = 'user_backgrounds';
@@ -79,7 +82,7 @@ class ThemeStorage {
   // ============ 激活主题 id 读写（SharedPreferences） ============
 
   /// 读取激活主题 id
-  /// 兼容老版本：值可能是 CTTheme 枚举 name（warmSun/darkNight/...）
+  /// 兼容老版本：值可能是 CTTheme 枚举 name（warmSun/frost/...，已移除的 darkNight/twilight 会回退 warmSun）
   static Future<String?> loadActiveThemeId() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_kPrefActiveThemeId);
@@ -89,6 +92,33 @@ class ThemeStorage {
   static Future<void> saveActiveThemeId(String id) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kPrefActiveThemeId, id);
+  }
+
+  /// 读取「跟随系统主题」开关（默认 false——软件默认暖白主题，用户自行开启）
+  /// v3.9：跟随系统开启时按设备深浅色自动加载 frost/obsidian
+  static Future<bool> loadFollowSystemTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kPrefFollowSystemTheme) ?? false;
+  }
+
+  /// 保存「跟随系统主题」开关
+  static Future<void> saveFollowSystemTheme(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kPrefFollowSystemTheme, value);
+  }
+
+  /// 读取「默认我的主题已创建」标记（一次性：即使用户后来删光自定义主题，
+  /// 也不会再次自动创建——避免"删了又回来"）
+  /// v3.9：首次运行自动创建一个「我的主题」，让自定义设计面板开箱非空
+  static Future<bool> loadDefaultUserThemeCreated() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kPrefDefaultUserThemeCreated) ?? false;
+  }
+
+  /// 保存「默认我的主题已创建」标记
+  static Future<void> saveDefaultUserThemeCreated(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kPrefDefaultUserThemeCreated, value);
   }
 
   /// 读取 schema 版本
@@ -239,26 +269,41 @@ class ThemeStorage {
   /// 上传背景图：复制源文件到 user_backgrounds 目录
   /// 返回 BackgroundImageConfig（source=file, filename=bgUuid.ext）
   ///
-  /// 文件大小限制：10 MB
-  /// 支持格式：jpg/jpeg/png/gif
+  /// 门槛（v3.10 起统一由 [BackgroundMediaInspector] 按**文件内容**裁决，
+  /// 越限一律拒绝而不是静默降级）：
+  /// - 体积 ≤ 10 MB
+  /// - 静态图 ≤ 4096×4096；动图（GIF）单帧 ≤ 1920×1080（动图无法降采样解码）
+  /// - GIF 帧数 ≤ 600
+  /// 支持格式：jpg/jpeg/png/webp/bmp + 动图 gif。
+  ///
+  /// [onWarnings] 用于回传「不拒绝但需提示」的项（总时长 >60s / 平均帧率 >30fps），
+  /// 调用方自行决定怎么告诉用户（如 AppSnackBar.warning）。
   static Future<BackgroundImageConfig> uploadBackgroundImage(
     String sourcePath, {
     double overlayOpacity = 0.30,
     double blurSigma = 0.0,
+    void Function(List<String> warnings)? onWarnings,
   }) async {
     final sourceFile = File(sourcePath);
     if (!sourceFile.existsSync()) {
       throw FileSystemException('源文件不存在', sourcePath);
     }
 
-    final stat = await sourceFile.length();
-    const maxSize = 10 * 1024 * 1024; // 10 MB
-    if (stat > maxSize) {
-      throw ArgumentError('背景图大小不可超过 10MB, 当前: ${stat ~/ 1024}KB');
-    }
-
+    // 扩展名白名单先拦一道（快速拒绝 + 沿用既有文案），
+    // 再按文件内容校验：魔数、尺寸、帧数、伪装扩展名。
     final ext = _extractExtension(sourcePath);
     _validateImageExtension(ext);
+
+    final verdict = await BackgroundMediaInspector.inspectFile(
+      sourcePath,
+      extension: ext,
+    );
+    if (!verdict.ok) {
+      throw BackgroundMediaRejectedException(verdict);
+    }
+    if (onWarnings != null && verdict.warnings.isNotEmpty) {
+      onWarnings(verdict.warnings);
+    }
 
     final bgUuid = newBackgroundId();
     final filename = '$bgUuid.$ext';
@@ -339,10 +384,18 @@ class ThemeStorage {
   }
 
   /// v3.0.1 安全修复：扩展名白名单校验（用于导入流程，限制可写入磁盘的格式）
+  ///
+  /// v3.10 起以 [BackgroundMediaInspector.allowedExtensions] 为**唯一来源**，
+  /// 新增 webp / bmp。注意这会**连带放开 `.cttheme` 主题包导入**
+  /// （`ct_theme_package.dart:177` 复用本方法）—— 已与用户确认可接受；
+  /// 主题包通道只做扩展名与大小校验，不做魔数校验，
+  /// 伪造扩展名的背景在渲染时由 errorBuilder 兜底为空白。
   static void validateImageExtension(String ext) {
-    const allowed = ['jpg', 'jpeg', 'png', 'gif'];
-    if (!allowed.contains(ext)) {
-      throw ArgumentError('不支持的图片格式: $ext (仅支持 jpg/jpeg/png/gif)');
+    if (!BackgroundMediaInspector.allowedExtensions.contains(ext)) {
+      throw ArgumentError(
+        '不支持的图片格式: $ext '
+        '(仅支持 ${BackgroundMediaInspector.allowedExtensions.join('/')})',
+      );
     }
   }
 

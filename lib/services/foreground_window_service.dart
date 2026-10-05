@@ -104,6 +104,16 @@ class ForegroundWindowService {
     }
   }
 
+  /// PowerShell 回退节流：最近一次回退触发时间
+  ///
+  /// ★ P2-6：Process.runSync 会在 UI isolate 上同步阻塞（冷启 1-3s，杀软扫描 10s+），
+  /// 而本方法由 500ms 定时器高频调用。FFI 对提权进程恒返回 null 时，
+  /// 原逻辑每个 tick 都会拉起一次 PowerShell → UI 周期性冻结。
+  /// 节流为 60s 最多一次：其余 tick 直接返回 null（仅表现为逃逸进程
+  /// 检测短暂收窄，FFI 正常的用户完全不受影响）。
+  static DateTime? _lastPsFallbackAt;
+  static const Duration _psFallbackInterval = Duration(seconds: 60);
+
   /// 通过 PID 查询进程的 exe 完整路径
   ///
   /// 用于逃逸进程检测——前台进程不在候选集中时，
@@ -112,7 +122,7 @@ class ForegroundWindowService {
   /// ★ 重构：原实现使用 Process.runSync('powershell', ...) 同步阻塞事件循环
   /// （冷启动 1-3 秒，杀软扫描下 10 秒+）。现改为调用 Win32ProcessService
   /// 的 FFI 实现（OpenProcess + QueryFullProcessImageNameW），耗时 < 1ms。
-  /// FFI 不可用时回退到 PowerShell。
+  /// FFI 不可用时回退到 PowerShell（带 60s 节流，见 [_lastPsFallbackAt]）。
   static String? getProcessExePath(int pid) {
     if (pid <= 0) return null;
 
@@ -123,7 +133,15 @@ class ForegroundWindowService {
       // FFI 返回 null 可能是权限不足或进程不存在，尝试 PowerShell 回退
     }
 
-    // ★ 回退：PowerShell（仅 FFI 不可用时使用）
+    // ★ P2-6 节流：节流窗口内直接放弃回退，避免同步 PowerShell 冻结 UI
+    final now = DateTime.now();
+    final last = _lastPsFallbackAt;
+    if (last != null && now.difference(last) < _psFallbackInterval) {
+      return null;
+    }
+    _lastPsFallbackAt = now;
+
+    // ★ 回退：PowerShell（仅 FFI 不可用/无权限时，60s 一次）
     try {
       final result = Process.runSync(
         'powershell',

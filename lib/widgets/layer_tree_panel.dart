@@ -118,7 +118,6 @@ class _LayerTreePanelState extends State<LayerTreePanel> {
                 Text(
                   '图层',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     color: AppColors.secondaryText,
@@ -173,7 +172,6 @@ class _LayerTreePanelState extends State<LayerTreePanel> {
                   Expanded(
                     child: TextField(
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 11,
                         color: AppColors.primaryText,
                       ),
@@ -184,7 +182,6 @@ class _LayerTreePanelState extends State<LayerTreePanel> {
                         border: InputBorder.none,
                         hintText: '搜索图层...',
                         hintStyle: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 11,
                           color: AppColors.placeholderText,
                         ),
@@ -364,7 +361,6 @@ class _LayerNodeTileState extends State<_LayerNodeTile> {
                 child: Text(
                   widget.node.displayName,
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontSize: 11,
                     fontWeight: widget.isSelected
                         ? FontWeight.w700

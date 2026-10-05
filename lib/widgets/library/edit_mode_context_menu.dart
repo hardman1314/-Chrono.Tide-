@@ -3,14 +3,14 @@ import '../../theme/app_colors.dart';
 
 /// UX-13: 从 library_page.dart 抽取的编辑模式右键菜单。
 ///
-/// 用于库页编辑模式下的批量操作菜单（标记/模糊/游玩状态/删除）。
+/// 用于库页编辑模式下的批量操作菜单（模糊/游玩状态/收藏夹/删除）。
 /// 当未选中任何游戏时显示提示文本。
 class EditModeContextMenu extends StatelessWidget {
   final Offset position;
   final bool hasSelection;
-  final VoidCallback? onMark;
   final VoidCallback? onBlur;
   final VoidCallback? onPlayStatus;
+  final VoidCallback? onCollection;
   final VoidCallback? onDelete;
   final VoidCallback onClose;
 
@@ -18,9 +18,9 @@ class EditModeContextMenu extends StatelessWidget {
     super.key,
     required this.position,
     required this.hasSelection,
-    this.onMark,
     this.onBlur,
     this.onPlayStatus,
+    this.onCollection,
     this.onDelete,
     required this.onClose,
   });
@@ -56,14 +56,6 @@ class EditModeContextMenu extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (onMark != null)
-                    _buildMenuItem(
-                      icon: Icons.bookmark_border_rounded,
-                      label: '标 记',
-                      labelColor: AppColors.titleBrown,
-                      onTap: onMark!,
-                      showDivider: true,
-                    ),
                   if (onBlur != null)
                     _buildMenuItem(
                       icon: Icons.blur_on,
@@ -80,6 +72,14 @@ class EditModeContextMenu extends StatelessWidget {
                       onTap: onPlayStatus!,
                       showDivider: true,
                     ),
+                  if (onCollection != null)
+                    _buildMenuItem(
+                      icon: Icons.collections_bookmark_outlined,
+                      label: '加入收藏夹',
+                      labelColor: AppColors.titleBrown,
+                      onTap: onCollection!,
+                      showDivider: true,
+                    ),
                   if (onDelete != null)
                     _buildMenuItem(
                       icon: Icons.delete_outline_rounded,
@@ -94,7 +94,6 @@ class EditModeContextMenu extends StatelessWidget {
                       child: Text(
                         '请先选中游戏',
                         style: TextStyle(
-                          fontFamily: 'Inter',
                           fontSize: 13,
                           color: AppColors.secondaryText,
                         ),
@@ -141,7 +140,6 @@ class EditModeContextMenu extends StatelessWidget {
               Text(
                 label,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontSize: 16,
                   fontWeight: FontWeight.w500,
                   height: 24 / 16,

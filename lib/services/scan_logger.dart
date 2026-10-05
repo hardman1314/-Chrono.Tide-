@@ -33,6 +33,9 @@ enum ScanSkipReason {
 
   /// 同名可能重复（软警告，实际不跳过但记录）
   possibleDuplicate,
+
+  /// 同名副本（清洗后同名且引擎兼容的另一份拷贝，保留识别度最高者）
+  duplicateTitle,
 }
 
 /// 扫描摘要
@@ -101,6 +104,8 @@ class ScanSummary {
         return '路径冲突';
       case ScanSkipReason.possibleDuplicate:
         return '可能重复';
+      case ScanSkipReason.duplicateTitle:
+        return '同名副本';
     }
   }
 }

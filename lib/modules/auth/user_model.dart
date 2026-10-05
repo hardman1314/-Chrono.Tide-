@@ -73,6 +73,10 @@ class UserModel {
 
   bool get hasAvatarBytes => avatarBytes != null && avatarBytes!.isNotEmpty;
 
+  /// 本地账户（「本地状态」身份）：非云端登录、id 以 `local_` 开头。
+  /// 设计文档：docs/DEV/features/local_account_mode.md §2.2。
+  bool get isLocalAccount => !isLoggedIn && id.startsWith('local_');
+
   /// 用带认证头的 HTTP 请求下载头像字节
   static Future<Uint8List?> downloadAvatarBytes(
       String url, String token) async {
@@ -177,13 +181,50 @@ class LookupResult {
   });
 }
 
-/// 找回密码 - 请求重置结果
-class RequestResetResult {
-  /// 是否请求成功（邮箱存在并已生成令牌）
+/// 找回密码 - 请求验证码结果（第 1 步，2026-10-02 改邮箱 OTP 流程）
+class ResetOtpRequestResult {
+  /// 是否请求成功（验证码已发出）
   final bool success;
 
-  /// 临时重置令牌（success=true 时有效，10 分钟内有效）
-  final String token;
+  /// 验证码记录 ID（success=true 时有效，供第 2 步校验使用）
+  final String otpId;
+
+  /// 验证码有效秒数（success=true 时有效）
+  final int expiresInSeconds;
+
+  /// 该邮箱未注册（服务端 404 明确提示，帮助用户发现填错邮箱）
+  final bool emailNotFound;
+
+  /// 触发频率限制时的剩余等待秒数（>0 表示需等待）
+  final int retryAfterSeconds;
+
+  /// 提示/错误信息
+  final String? message;
+
+  /// 服务端接口未部署（404 且无业务 code / 网络不可达）时为 true
+  final bool isUnavailable;
+
+  const ResetOtpRequestResult({
+    required this.success,
+    this.otpId = '',
+    this.expiresInSeconds = 0,
+    this.emailNotFound = false,
+    this.retryAfterSeconds = 0,
+    this.message,
+    this.isUnavailable = false,
+  });
+}
+
+/// 找回密码 - 校验验证码结果（第 2 步）
+class ResetOtpVerifyResult {
+  /// 是否校验通过
+  final bool success;
+
+  /// 重置令牌（success=true 时有效，第 3 步重置密码时回传）
+  final String resetToken;
+
+  /// 令牌归属邮箱（success=true 时有效）
+  final String email;
 
   /// 提示/错误信息
   final String? message;
@@ -191,16 +232,17 @@ class RequestResetResult {
   /// 服务端接口未部署（404/网络不可达）时为 true
   final bool isUnavailable;
 
-  const RequestResetResult({
+  const ResetOtpVerifyResult({
     required this.success,
-    this.token = '',
+    this.resetToken = '',
+    this.email = '',
     this.message,
     this.isUnavailable = false,
   });
 }
 
-/// 找回密码 - 重置密码结果
-class ResetResult {
+/// 找回密码 - 重置密码结果（第 3 步）
+class ResetPasswordResult {
   /// 是否重置成功
   final bool success;
 
@@ -210,8 +252,68 @@ class ResetResult {
   /// 服务端接口未部署（404/网络不可达）时为 true
   final bool isUnavailable;
 
-  const ResetResult({
+  const ResetPasswordResult({
     required this.success,
+    this.message,
+    this.isUnavailable = false,
+  });
+}
+
+/// 注册验证码 - 请求验证码结果（第 1 步）
+class RegisterOtpRequestResult {
+  /// 是否请求成功（验证码已发出）
+  final bool success;
+
+  /// 验证码记录 ID（success=true 时有效，供第 2 步校验使用）
+  final String otpId;
+
+  /// 验证码有效秒数（success=true 时有效）
+  final int expiresInSeconds;
+
+  /// 该邮箱已被注册（决策 A：明确提示用户直接登录）
+  final bool emailAlreadyExists;
+
+  /// 触发频率限制时的剩余等待秒数（>0 表示需等待）
+  final int retryAfterSeconds;
+
+  /// 提示/错误信息
+  final String? message;
+
+  /// 服务端接口未部署（404/网络不可达）时为 true
+  final bool isUnavailable;
+
+  const RegisterOtpRequestResult({
+    required this.success,
+    this.otpId = '',
+    this.expiresInSeconds = 0,
+    this.emailAlreadyExists = false,
+    this.retryAfterSeconds = 0,
+    this.message,
+    this.isUnavailable = false,
+  });
+}
+
+/// 注册验证码 - 校验结果（第 2 步）
+class RegisterOtpVerifyResult {
+  /// 是否校验通过
+  final bool success;
+
+  /// 注册令牌（success=true 时有效，提交注册时回传）
+  final String regToken;
+
+  /// 令牌归属邮箱（success=true 时有效）
+  final String email;
+
+  /// 提示/错误信息
+  final String? message;
+
+  /// 服务端接口未部署（404/网络不可达）时为 true
+  final bool isUnavailable;
+
+  const RegisterOtpVerifyResult({
+    required this.success,
+    this.regToken = '',
+    this.email = '',
     this.message,
     this.isUnavailable = false,
   });

@@ -280,8 +280,8 @@ class ThemeElementRegistry {
         properties: [ThemeProperty(ThemeChannel.textColor, 'primaryText')],
         impactLocations: [
           '库页/探索页游戏卡片标题（22 高标题栏）',
-          '主页详情面板游戏大标题（ZhiMangXing 32 高）',
-          '游戏详情页标题（ZhiMangXing 36 高）',
+          '主页详情面板游戏大标题（得意黑 32 高）',
+          '游戏详情页标题（得意黑 36 高）',
           '标题栏文字',
           '侧栏激活按钮文字',
           '通用按钮文字（取消/确定/应用等）',

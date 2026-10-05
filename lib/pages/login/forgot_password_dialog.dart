@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_styles.dart';
 import '../../modules/auth/auth_service.dart';
 import '../../modules/auth/user_model.dart';
 import '../../widgets/app_dialog.dart';
+import '../../widgets/app_snack_bar.dart';
 import '../../widgets/interactive_wrapper.dart';
 import '../../widgets/focus_border.dart';
 
@@ -41,9 +45,19 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
   final _emailController = TextEditingController();
   bool _isLoadingRequest = false;
   String? _requestError;
-  String _resetToken = '';
 
-  // ---- 找回密码：步骤2 - 设置新密码 ----
+  // ---- 找回密码：步骤2 - 输入邮箱验证码（2026-10-02 改 OTP 流程） ----
+  // _otpId: 第1步「发送验证码」成功后服务端返回的记录 ID，第2步校验时回传
+  final _otpController = TextEditingController();
+  String _otpId = '';
+  bool _sendingOtp = false;
+  int _resendCountdown = 0;
+  Timer? _resendTimer;
+  String? _otpError;
+  bool _isLoadingVerify = false;
+
+  // ---- 找回密码：步骤3 - 设置新密码 ----
+  String _resetToken = '';
   final _newPwdController = TextEditingController();
   final _confirmPwdController = TextEditingController();
   bool _newPwdVisible = false;
@@ -51,7 +65,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
   bool _isLoadingReset = false;
   String? _resetError;
 
-  // 当前步骤：1=输入邮箱, 2=设新密码, 3=成功
+  // 当前步骤：1=输入邮箱, 2=输入验证码, 3=设新密码, 4=成功
   int _step = 1;
 
   // ---- 找回账号 ----
@@ -79,9 +93,11 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
   @override
   void dispose() {
     _emailController.dispose();
+    _otpController.dispose();
     _newPwdController.dispose();
     _confirmPwdController.dispose();
     _lookupNameController.dispose();
+    _resendTimer?.cancel();
     _successAnimController.dispose();
     super.dispose();
   }
@@ -125,21 +141,131 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
       _requestError = null;
     });
 
-    final result = await AuthService.requestReset(email);
+    // 预期管理：服务端同步发信，偶发 SMTP 抖动可达 50s+（同 auth_modal 注释）
+    AppSnackBar.info(
+        context, '验证邮件发送中，网络较慢时可能需要约 1 分钟，请耐心等待…');
+
+    final result = await AuthService.requestResetOtp(email);
 
     if (!mounted) return;
 
     setState(() {
       _isLoadingRequest = false;
       if (result.success) {
-        _resetToken = result.token;
+        _otpId = result.otpId;
         _step = 2;
+        _startResendCountdown(60);
       } else if (result.isUnavailable) {
         _requestError = result.message ?? '找回密码服务暂不可用，请稍后重试';
       } else {
         _requestError = result.message ?? '验证失败，请稍后重试';
       }
     });
+  }
+
+  // ---- 步骤2：验证码 ----
+
+  Future<void> _handleVerifyOtp() async {
+    final code = _otpController.text.trim();
+    if (code.isEmpty) {
+      setState(() => _otpError = '请输入验证码');
+      return;
+    }
+    if (code.length != 6 || int.tryParse(code) == null) {
+      setState(() => _otpError = '验证码为 6 位数字');
+      return;
+    }
+
+    setState(() {
+      _isLoadingVerify = true;
+      _otpError = null;
+    });
+
+    final result = await AuthService.verifyResetOtp(_otpId, code);
+
+    if (!mounted) return;
+
+    setState(() {
+      _isLoadingVerify = false;
+      if (result.success) {
+        _resetToken = result.resetToken;
+        _step = 3;
+      } else if (result.isUnavailable) {
+        _otpError = result.message ?? '找回密码服务暂不可用，请稍后重试';
+      } else {
+        _otpError = result.message ?? '验证码不正确，请重新输入';
+        // 已过期 / 错误次数过多 / 记录失效 → 作废本次验证码，回到第1步重走。
+        // 单纯输错（attempts 未耗尽）留在本步，用户可直接重试。
+        final msg = _otpError ?? '';
+        if (msg.contains('已过期') || msg.contains('次数过多')) {
+          _invalidateOtp();
+          _step = 1;
+        }
+      }
+    });
+  }
+
+  Future<void> _handleResendOtp() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty || !_isValidEmail(email)) {
+      setState(() => _otpError = '邮箱格式不正确，请返回上一步检查');
+      return;
+    }
+
+    setState(() {
+      _sendingOtp = true;
+      _otpError = null;
+    });
+
+    // 预期管理：服务端同步发信，偶发 SMTP 抖动可达 50s+（同 auth_modal 注释）
+    AppSnackBar.info(
+        context, '验证邮件发送中，网络较慢时可能需要约 1 分钟，请耐心等待…');
+
+    final result = await AuthService.requestResetOtp(email);
+
+    if (!mounted) return;
+
+    setState(() {
+      _sendingOtp = false;
+      if (result.success) {
+        _otpId = result.otpId;
+        _otpController.clear();
+        _startResendCountdown(60);
+      } else if (result.retryAfterSeconds > 0) {
+        _startResendCountdown(result.retryAfterSeconds);
+        _otpError = result.message;
+      } else {
+        _otpError = result.message ?? '验证码发送失败，请稍后重试';
+      }
+    });
+  }
+
+  void _startResendCountdown(int seconds) {
+    _resendTimer?.cancel();
+    setState(() => _resendCountdown = seconds);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _resendCountdown--;
+        if (_resendCountdown <= 0) {
+          _resendCountdown = 0;
+          _resendTimer?.cancel();
+          _resendTimer = null;
+        }
+      });
+    });
+  }
+
+  /// 作废当前验证码会话（过期/次数过多/返回上一步/切换 Tab 时）
+  void _invalidateOtp() {
+    _otpId = '';
+    _otpController.clear();
+    _resendTimer?.cancel();
+    _resendCountdown = 0;
+    _otpError = null;
   }
 
   Future<void> _handleReset() async {
@@ -169,14 +295,14 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
       _resetError = null;
     });
 
-    final result = await AuthService.resetPassword(_resetToken, newPwd);
+    final result = await AuthService.resetPasswordWithToken(_resetToken, newPwd);
 
     if (!mounted) return;
 
     setState(() {
       _isLoadingReset = false;
       if (result.success) {
-        _step = 3;
+        _step = 4;
         _successAnimController.forward();
       } else if (result.isUnavailable) {
         _resetError = result.message ?? '找回密码服务暂不可用，请稍后重试';
@@ -186,13 +312,21 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     });
   }
 
-  void _goBackToStep1() {
+  /// 返回到指定步骤（顺带清理后续步骤的临时状态）
+  void _goBackToStep(int target) {
     setState(() {
-      _step = 1;
+      _step = target;
       _requestError = null;
+      _otpError = null;
       _resetError = null;
-      _newPwdController.clear();
-      _confirmPwdController.clear();
+      if (target <= 1) {
+        _invalidateOtp();
+      }
+      if (target <= 2) {
+        _resetToken = '';
+        _newPwdController.clear();
+        _confirmPwdController.clear();
+      }
     });
   }
 
@@ -238,7 +372,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
           decoration: BoxDecoration(
             color: AppColors.sidebarBackground,
             border: Border.all(color: AppColors.border, width: 1.6),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
             boxShadow: [
               BoxShadow(
                 color: AppColors.border,
@@ -256,10 +390,10 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
                 _buildHeader(),
                 const SizedBox(height: 18),
                 // 成功步骤不显示 Tab 和步骤指示器
-                if (_tab == 0 && _step != 3) ...[
+                if (_tab == 0 && _step != 4) ...[
                   _buildStepIndicator(),
                   const SizedBox(height: 18),
-                ] else if (_step != 3) ...[
+                ] else if (_step != 4) ...[
                   _buildTabs(),
                   const SizedBox(height: 18),
                 ],
@@ -276,9 +410,8 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     return Row(
       children: [
         Text(
-          _step == 3 ? '重置成功' : '找回账号 / 密码',
+          _step == 4 ? '重置成功' : '找回账号 / 密码',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w700,
             fontSize: 18,
             color: AppColors.primaryText,
@@ -317,6 +450,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
         _requestError = null;
         _resetError = null;
         _lookupResult = null;
+        _invalidateOtp();
       }),
       hoverScale: 1.0,
       hoverOffset: const Offset(0, -1),
@@ -327,7 +461,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
           Text(
             label,
             style: TextStyle(
-              fontFamily: 'Inter',
               fontWeight: FontWeight.w700,
               fontSize: 15,
               color: active ? AppColors.selectedAccent : AppColors.secondaryText,
@@ -354,7 +487,9 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
       children: [
         _buildStepDot(1, '验证邮箱'),
         _buildStepLine(),
-        _buildStepDot(2, '设新密码'),
+        _buildStepDot(2, '输入验证码'),
+        _buildStepLine(),
+        _buildStepDot(3, '设新密码'),
       ],
     );
   }
@@ -380,7 +515,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
               : Text(
                   '$step',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w700,
                     fontSize: 12,
                     color: isActive
@@ -393,7 +527,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
         Text(
           label,
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w600,
             fontSize: 13,
             color: isActive ? AppColors.primaryText : AppColors.secondaryText,
@@ -419,9 +552,11 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
       case 1:
         return _buildStep1Email();
       case 2:
-        return _buildStep2NewPassword();
+        return _buildStep2Otp();
       case 3:
-        return _buildStep3Success();
+        return _buildStep3NewPassword();
+      case 4:
+        return _buildStep4Success();
       default:
         return _buildStep1Email();
     }
@@ -433,7 +568,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildHint('输入注册时使用的邮箱地址，验证通过后即可设置新密码。'),
+        _buildHint('输入注册时使用的邮箱地址，我们会向该邮箱发送验证码。'),
         const SizedBox(height: 14),
         _buildField(
           controller: _emailController,
@@ -448,7 +583,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
         ],
         const SizedBox(height: 18),
         _buildActionButton(
-          label: '验证邮箱',
+          label: '发送验证码',
           loading: _isLoadingRequest,
           onTap: _isLoadingRequest ? null : _handleRequestReset,
         ),
@@ -458,9 +593,116 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     );
   }
 
-  // ---- 步骤2：设置新密码 ----
+  // ---- 步骤2：输入邮箱验证码 ----
 
-  Widget _buildStep2NewPassword() {
+  Widget _buildStep2Otp() {
+    final maskedEmail = _maskEmailLocal(_emailController.text.trim());
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHint('验证码已发送至 $maskedEmail，请查收邮件（不在收件箱时'
+            '请检查垃圾邮件），3 分钟内有效。'),
+        const SizedBox(height: 14),
+        _buildField(
+          controller: _otpController,
+          hint: '6 位邮箱验证码',
+          iconPath: 'assets/images/lock_icon.svg',
+          keyboardType: TextInputType.number,
+          maxLength: 6,
+          onSubmitted: (_) => _handleVerifyOtp(),
+          suffix: _buildResendButton(),
+        ),
+        if (_otpError != null) ...[
+          const SizedBox(height: 12),
+          _buildMessage(_otpError!, isError: true),
+        ],
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            Expanded(
+              child: _buildActionButton(
+                label: '返回上一步',
+                loading: false,
+                secondary: true,
+                onTap: () => _goBackToStep(1),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildActionButton(
+                label: '下一步',
+                loading: _isLoadingVerify,
+                onTap: _isLoadingVerify ? null : _handleVerifyOtp,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// 「重新获取」按钮（60s 倒计时 / loading 态，交互同注册页获取验证码）
+  Widget _buildResendButton() {
+    final counting = _resendCountdown > 0;
+    final disabled = _sendingOtp || counting;
+    final String label;
+    if (_sendingOtp) {
+      label = '发送中…';
+    } else if (counting) {
+      label = '$_resendCountdown s';
+    } else {
+      label = '重新获取';
+    }
+    return InteractiveWrapper(
+      onTap: disabled ? null : _handleResendOtp,
+      cursor: disabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
+      hoverScale: 1.0,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: disabled
+              ? AppColors.border.withOpacity(0.18)
+              : AppColors.selectedAccent.withOpacity(0.22),
+          border: Border.all(
+            color: disabled ? AppColors.border : AppColors.selectedAccent,
+            width: 1.2,
+          ),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: _sendingOtp
+            ? SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor:
+                      AlwaysStoppedAnimation<Color>(AppColors.selectedAccent),
+                ),
+              )
+            : Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                  color:
+                      disabled ? AppColors.secondaryText : AppColors.selectedAccent,
+                ),
+              ),
+      ),
+    );
+  }
+
+  /// 本地邮箱脱敏显示（服务端/日志脱敏另有实现，此处仅 UI 展示用）
+  String _maskEmailLocal(String email) {
+    final at = email.indexOf('@');
+    if (at <= 0) return '***';
+    return '${email.substring(0, 1)}***${email.substring(at)}';
+  }
+
+  // ---- 步骤3：设置新密码 ----
+
+  Widget _buildStep3NewPassword() {
     final newPwd = _newPwdController.text;
     final strength = _evaluatePasswordStrength(newPwd);
 
@@ -508,7 +750,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
                 label: '返回上一步',
                 loading: false,
                 secondary: true,
-                onTap: _goBackToStep1,
+                onTap: () => _goBackToStep(2),
               ),
             ),
             const SizedBox(width: 12),
@@ -540,7 +782,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
         Text(
           '强度：',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w500,
             fontSize: 12,
             color: AppColors.secondaryText,
@@ -564,7 +805,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
         Text(
           strength > 0 ? labels[strength] : '太短',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w600,
             fontSize: 12,
             color: strength > 0 ? colors[strength] : AppColors.secondaryText,
@@ -574,9 +814,9 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     );
   }
 
-  // ---- 步骤3：重置成功 ----
+  // ---- 步骤4：重置成功 ----
 
-  Widget _buildStep3Success() {
+  Widget _buildStep4Success() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -603,7 +843,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
         Text(
           '密码重置成功',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w700,
             fontSize: 17,
             color: AppColors.primaryText,
@@ -681,7 +920,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
                 child: Text(
                   '该昵称绑定的邮箱：${result.email}',
                   style: TextStyle(
-                    fontFamily: 'Inter',
                     fontWeight: FontWeight.w600,
                     fontSize: 14,
                     color: AppColors.primaryText,
@@ -696,7 +934,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
               '⚠ 匹配到多个相似昵称，当前显示「${result.matchedName}」的邮箱。'
               '如非你的账号，请尝试输入更精确的昵称。',
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 12,
                 height: 1.5,
@@ -719,13 +956,13 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
           _requestError = null;
           _resetError = null;
           _lookupResult = null;
+          _invalidateOtp();
         }),
         hoverScale: 1.0,
         hoverOffset: const Offset(0, -1),
         child: Text(
           _tab == 0 ? '忘记邮箱？试试找回账号 →' : '忘记密码？试试找回密码 →',
           style: TextStyle(
-            fontFamily: 'Inter',
             fontWeight: FontWeight.w500,
             fontSize: 12,
             color: AppColors.secondaryText,
@@ -743,7 +980,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     return Text(
       text,
       style: TextStyle(
-        fontFamily: 'Inter',
         fontWeight: FontWeight.w500,
         fontSize: 13,
         height: 1.6,
@@ -758,6 +994,8 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
     required String iconPath,
     TextInputType keyboardType = TextInputType.text,
     ValueChanged<String>? onSubmitted,
+    Widget? suffix,
+    int maxLength = 254,
   }) {
     return FocusBorder(
       width: double.infinity,
@@ -773,13 +1011,12 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
       child: Stack(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(38, 10, 10, 10),
+            padding: EdgeInsets.fromLTRB(38, 10, suffix != null ? 116 : 10, 10),
             child: TextField(
               controller: controller,
               keyboardType: keyboardType,
-              maxLength: 254,
+              maxLength: maxLength,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 16,
                 color: AppColors.primaryText,
@@ -787,7 +1024,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
               decoration: InputDecoration(
                 hintText: hint,
                 hintStyle: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w500,
                   fontSize: 16,
                   color: AppColors.inputHint,
@@ -805,6 +1041,14 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
             top: 15,
             child: SvgPicture.asset(iconPath, width: 18, height: 18),
           ),
+          // 右侧附加组件（如「重新获取」倒计时按钮）
+          if (suffix != null)
+            Positioned(
+              right: 6,
+              top: 8,
+              bottom: 8,
+              child: suffix,
+            ),
         ],
       ),
     );
@@ -839,7 +1083,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
               maxLength: 72,
               onChanged: onChanged,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 16,
                 color: AppColors.primaryText,
@@ -847,7 +1090,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
               decoration: InputDecoration(
                 hintText: hint,
                 hintStyle: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w500,
                   fontSize: 16,
                   color: AppColors.inputHint,
@@ -939,7 +1181,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
             : Text(
                 label,
                 style: TextStyle(
-                  fontFamily: 'Inter',
                   fontWeight: FontWeight.w700,
                   fontSize: 16,
                   color: AppColors.primaryText,
@@ -974,7 +1215,6 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog>
             child: Text(
               text,
               style: TextStyle(
-                fontFamily: 'Inter',
                 fontWeight: FontWeight.w500,
                 fontSize: 13,
                 height: 1.5,

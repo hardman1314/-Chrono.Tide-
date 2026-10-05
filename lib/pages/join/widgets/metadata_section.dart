@@ -3,7 +3,10 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../../../core/portable_image_cache_manager.dart';
 import '../join_controller.dart';
 import '../../../widgets/interactive_wrapper.dart';
+import '../../../widgets/cover_preview_overlay.dart';
+import '../../../widgets/nsfw/nsfw_image.dart';
 import '../../../theme/app_colors.dart';
+import 'ct_library_picker_dialog.dart';
 import 'metadata_source_settings_dialog.dart';
 import 'platform_badge.dart';
 
@@ -16,10 +19,11 @@ class MetadataSection extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      height: 203,
+      // 设计稿「Section - 元数据匹配」664×206，边框 1.48
+      height: 206,
       decoration: BoxDecoration(
         color: AppColors.background,
-        border: Border.all(color: AppColors.border, width: 2),
+        border: Border.all(color: AppColors.border, width: 1.5),
         boxShadow: [
           BoxShadow(
             color: AppColors.border,
@@ -53,7 +57,6 @@ class MetadataSection extends StatelessWidget {
                     Text(
                       '元数据匹配',
                       style: TextStyle(
-                        fontFamily: 'ZhiMangXing',
                         fontSize: 16,
                         letterSpacing: 2.0,
                         color: AppColors.border,
@@ -61,10 +64,14 @@ class MetadataSection extends StatelessWidget {
                     ),
                   ],
                 ),
-                // 按钮组：齿轮设定 + 一键抓取
+                // 按钮组：相册（数量徽章）+ 齿轮设定 + 一键抓取
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // ★ 2026-10-05 相册入口：预览选中结果的竖版+横幅封面，
+                    //   左侧数字 = 已抓取到的封面图数量（0 张禁用）
+                    _buildGalleryEntry(context),
+                    const SizedBox(width: 6),
                     // 齿轮设定按钮（左侧）：弹出数据源选择弹窗
                     Tooltip(
                       message: '抓取数据源设定',
@@ -73,16 +80,57 @@ class MetadataSection extends StatelessWidget {
                         onTap: () => showMetadataSourceSettingsDialog(context),
                         cursor: SystemMouseCursors.click,
                         child: Container(
-                          padding: const EdgeInsets.all(4),
+                          // 设计稿「Button - 元数据设置」25×25，边框 0.74
+                          padding: const EdgeInsets.all(4.5),
                           decoration: BoxDecoration(
                             color: AppColors.background,
                             border:
-                                Border.all(color: AppColors.border, width: 1.2),
+                                Border.all(color: AppColors.border, width: 0.8),
                           ),
                           child: Icon(
                             Icons.settings,
                             size: 14,
                             color: AppColors.secondaryText,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // CT 探索库入口（2026-10-05）：浏览自有云端元数据平台的
+                    // 全部作品（支持搜索），选中后直接导入左侧数据板块
+                    Tooltip(
+                      message: 'CT 探索库：浏览社区共建的中文元数据作品',
+                      waitDuration: const Duration(milliseconds: 500),
+                      child: InteractiveWrapper(
+                        onTap: () =>
+                            showCtLibraryPickerDialog(context, controller),
+                        cursor: SystemMouseCursors.click,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4.5),
+                          decoration: BoxDecoration(
+                            color: AppColors.background,
+                            border: Border.all(
+                                color: AppColors.border, width: 0.8),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.travel_explore,
+                                size: 14,
+                                color: AppColors.secondaryText,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'CT 探索库',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.secondaryText,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -97,11 +145,13 @@ class MetadataSection extends StatelessWidget {
                           ? SystemMouseCursors.basic
                           : SystemMouseCursors.click,
                       child: Container(
+                        // 设计稿「一键抓取」按钮 77×30（文字 4 字×12px + ls1
+                        // ≈51px，左右各 13 → 77；行高 ≈17 + 上下各 6 → 29）
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 3),
+                            horizontal: 13, vertical: 6),
                         decoration: BoxDecoration(
                           color: AppColors.border,
-                          border: Border.all(color: AppColors.border, width: 2),
+                          border: Border.all(color: AppColors.border, width: 1.5),
                           boxShadow: [
                             BoxShadow(
                               color: AppColors.border.withOpacity(0.4),
@@ -127,7 +177,6 @@ class MetadataSection extends StatelessWidget {
                                   Text(
                                     '抓取中...',
                                     style: TextStyle(
-                                      fontFamily: 'Inter',
                                       fontSize: 12,
                                       fontWeight: FontWeight.w600,
                                       letterSpacing: 1.0,
@@ -139,7 +188,6 @@ class MetadataSection extends StatelessWidget {
                             : Text(
                                 '一键抓取',
                                 style: TextStyle(
-                                  fontFamily: 'Inter',
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                   letterSpacing: 1.0,
@@ -194,6 +242,75 @@ class MetadataSection extends StatelessWidget {
                 : const SizedBox.shrink(),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 相册入口（2026-10-05）：左侧数字 = 选中结果已抓取到的封面图数量
+  /// （竖版 cover_url + 横幅 banner_url），点击打开竖/横双类型预览浮层。
+  /// 未选中结果或 0 张时禁用。
+  Widget _buildGalleryEntry(BuildContext context) {
+    final sel = controller.selectedResult;
+    final items = <CoverPreviewItem>[];
+    if (sel != null) {
+      final cover = sel['cover_url']?.toString() ?? '';
+      if (cover.startsWith('http')) {
+        items.add(CoverPreviewItem(url: cover, label: '竖屏封面'));
+      }
+      final banner = sel['banner_url']?.toString() ?? '';
+      if (banner.startsWith('http')) {
+        items.add(CoverPreviewItem(url: banner, label: '横幅封面'));
+      }
+    }
+    final count = items.length;
+    final enabled = count > 0;
+
+    return Tooltip(
+      message: enabled
+          ? '相册：查看已抓取的 $count 张封面（竖版/横幅）'
+          : '相册：先选择一个抓取结果',
+      waitDuration: const Duration(milliseconds: 500),
+      child: InteractiveWrapper(
+        onTap: enabled
+            ? () => showGeneralDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  barrierColor: Colors.transparent,
+                  barrierLabel: '封面预览',
+                  pageBuilder: (_, __, ___) => CoverPreviewOverlay(
+                    gameTitle: sel?['game_name']?.toString() ?? '',
+                    items: items,
+                  ),
+                )
+            : null,
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(color: AppColors.border, width: 0.8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: enabled ? AppColors.border : AppColors.secondaryText,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.photo_library_outlined,
+                size: 14,
+                color:
+                    enabled ? AppColors.secondaryText : AppColors.borderLight,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -287,7 +404,6 @@ class MetadataCard extends StatelessWidget {
                     Text(
                       title,
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         color: AppColors.titleBrown,
@@ -299,7 +415,6 @@ class MetadataCard extends StatelessWidget {
                     Text(
                       releaseDate.isNotEmpty ? '$releaseDate发行' : '—',
                       style: TextStyle(
-                        fontFamily: 'Inter',
                         fontSize: 11,
                         color: AppColors.secondaryText,
                       ),
@@ -322,23 +437,31 @@ class MetadataCard extends StatelessWidget {
     if (coverUrl != null &&
         coverUrl.toString().isNotEmpty &&
         coverUrl.toString().startsWith('http')) {
-      return CachedNetworkImage(
-        cacheManager: PortableImageCacheManager(),
-        imageUrl: coverUrl.toString(),
+      // 刮削结果预览：URL 渲染，缓存落盘后按需补检（§7.1 风险🟠4）
+      return NsfwImage.network(
+        coverUrl.toString(),
+        contentKind: NsfwContentKind.cover,
         width: 46,
         height: 62,
-        fit: BoxFit.cover,
-        placeholder: (context, url) => Center(
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            valueColor: AlwaysStoppedAnimation<Color>(AppColors.border),
+        detectOnDemand: true,
+        child: CachedNetworkImage(
+          cacheManager: PortableImageCacheManager(),
+          imageUrl: coverUrl.toString(),
+          width: 46,
+          height: 62,
+          fit: BoxFit.cover,
+          placeholder: (context, url) => Center(
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.border),
+            ),
           ),
+          errorWidget: (context, url, error) => Center(
+            child: Icon(Icons.image_outlined, size: 14, color: AppColors.border),
+          ),
+          memCacheWidth: 92,
+          memCacheHeight: 124,
         ),
-        errorWidget: (context, url, error) => Center(
-          child: Icon(Icons.image_outlined, size: 14, color: AppColors.border),
-        ),
-        memCacheWidth: 92,
-        memCacheHeight: 124,
       );
     } else {
       return Center(

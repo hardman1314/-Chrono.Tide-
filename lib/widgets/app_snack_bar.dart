@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
-import '../theme/app_colors.dart';
-import '../theme/app_styles.dart';
 
-/// UX-09: 统一的主题适配 SnackBar 工具
+import '../services/system_notice_service.dart';
+
+export '../services/system_notice_service.dart' show NoticeLevel;
+
+/// 统一提示工具（全项目唯一入口）。
 ///
-/// 替代直接调用 `ScaffoldMessenger.of(context).showSnackBar`，
-/// 确保所有 SnackBar 都适配当前主题（暗色/亮色）并保持一致的视觉风格。
+/// **实现已迁移**：早先本类把提示转成 `ScaffoldMessenger.showSnackBar`
+/// ——即底部那条红/黄/绿浮动提示条，会遮挡底部操作区。现在改为推送到
+/// [SystemNoticeService]，由 `SystemNoticeLayer`（挂在 `MaterialApp.builder`
+/// 最顶层）在右下角用户按钮一侧渲染成聊天气泡。
+///
+/// 4 个方法**签名保持不变**，因此既有 125 处调用点无需任何改动即自动切换。
 ///
 /// 用法：
 /// ```dart
@@ -17,86 +23,65 @@ import '../theme/app_styles.dart';
 class AppSnackBar {
   AppSnackBar._();
 
+  /// 成功 / 提示：短驻留后自动收起。
+  static const Duration _shortLived = Duration(milliseconds: 2500);
+
+  /// 警告：停留久一点，但会自行收起（不长期占位）。
+  static const Duration _warningLived = Duration(milliseconds: 8000);
+
+  /// 错误：需要用户看清，但不再常驻 —— 15 秒自动收起（带倒计时条）。
+  /// （2026-10-03 开发者拍板：错误类不再常驻；30s 体感偏长，改 15s。）
+  static const Duration _errorLived = Duration(seconds: 15);
+
   static void success(BuildContext context, String message,
       {Duration? duration}) {
-    _show(
-      context,
-      message: message,
-      icon: Icons.check_circle_outline,
-      backgroundColor: AppColors.successGreen,
-      duration: duration ?? const Duration(seconds: 2, milliseconds: 500),
-    );
+    _push(NoticeLevel.success, message, duration ?? _shortLived);
   }
 
   static void error(BuildContext context, String message,
       {Duration? duration}) {
-    _show(
-      context,
-      message: message,
-      icon: Icons.error_outline,
-      backgroundColor: AppColors.dangerRed,
-      duration: duration ?? const Duration(seconds: 3),
-    );
+    // 错误默认驻留 15s 后自动收起（带进度条）；传 duration 可覆盖时长。
+    _push(NoticeLevel.error, message, duration ?? _errorLived);
   }
 
   static void warning(BuildContext context, String message,
       {Duration? duration}) {
-    _show(
-      context,
-      message: message,
-      icon: Icons.warning_amber_outlined,
-      backgroundColor: AppColors.starGold,
-      duration: duration ?? const Duration(seconds: 3),
-    );
+    _push(NoticeLevel.warning, message, duration ?? _warningLived);
   }
 
-  static void info(BuildContext context, String message, {Duration? duration}) {
-    _show(
-      context,
-      message: message,
-      icon: Icons.info_outline,
-      backgroundColor: AppColors.infoBlue,
-      duration: duration ?? const Duration(seconds: 2, milliseconds: 500),
-    );
+  static void info(BuildContext context, String message,
+      {Duration? duration}) {
+    _push(NoticeLevel.info, message, duration ?? _shortLived);
   }
 
-  static void _show(
-    BuildContext context, {
-    required String message,
-    required IconData icon,
-    required Color backgroundColor,
-    required Duration duration,
+  /// 按等级派发（供需要动态等级的封装器复用，避免各自重写默认时长）。
+  static void show(
+    BuildContext context,
+    NoticeLevel level,
+    String message, {
+    Duration? duration,
   }) {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    if (messenger == null) return;
+    switch (level) {
+      case NoticeLevel.success:
+        success(context, message, duration: duration);
+        return;
+      case NoticeLevel.warning:
+        warning(context, message, duration: duration);
+        return;
+      case NoticeLevel.error:
+        error(context, message, duration: duration);
+        return;
+      case NoticeLevel.info:
+        info(context, message, duration: duration);
+        return;
+    }
+  }
 
-    messenger
-      ..clearSnackBars()
-      ..showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(icon, color: Colors.white, size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  message,
-                  style: AppStyles.bodyMedium.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          duration: duration,
-          backgroundColor: backgroundColor,
-          behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          margin: const EdgeInsets.all(16),
-          elevation: 6,
-        ),
-      );
+  static void _push(NoticeLevel level, String message, Duration? duration) {
+    SystemNoticeService.instance.push(
+      level: level,
+      message: message,
+      autoDismissAfter: duration,
+    );
   }
 }

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../core/pb_config.dart';
 import '../core/path_helper.dart';
+import 'openlist_provision.dart';
 
 class OpenListService {
   static const String _configRecordId = 'tj9z6skib6207if';
@@ -38,6 +39,12 @@ class OpenListService {
   static Future<void> ensureRunning() async {
     if (_isRunning) {
       _markUsed();
+      return;
+    }
+    // 🔴 半移植化（2026-10-02）：未对接（openlist.exe 不存在）时直接短路，
+    //    避免白跑 boot 半残流程（建空目录 / 拉配置失败的日志噪音）。
+    if (!await OpenListProvision.isPaired()) {
+      debugPrint('[OL-BOOT] ⏭️ OpenList 未对接，跳过启动');
       return;
     }
     if (_isBooting) {

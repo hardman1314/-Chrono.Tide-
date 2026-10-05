@@ -1,0 +1,78 @@
+{
+  "format_version": 1,
+  "_comment": "分类匣·标签库的维度注册表：维度的顺序/标题/是否互斥/主题色。概念与别名见 tag_vocabulary.json。",
+  "dimensions": [
+    {
+      "id": "age",
+      "title": "年龄分级",
+      "order": 1,
+      "exclusive": true,
+      "color": "#C96F6F",
+      "desc": "按作品面向的年龄分级划分"
+    },
+    {
+      "id": "playstyle",
+      "title": "玩法结构",
+      "order": 2,
+      "exclusive": false,
+      "color": "#6F8FC0",
+      "desc": "叙事与系统结构"
+    },
+    {
+      "id": "setting",
+      "title": "世界观舞台",
+      "order": 3,
+      "exclusive": false,
+      "color": "#7FA76F",
+      "desc": "故事发生的时间与空间"
+    },
+    {
+      "id": "tone",
+      "title": "作品基调",
+      "order": 4,
+      "exclusive": false,
+      "color": "#C98D5A",
+      "desc": "整体情绪与观感"
+    },
+    {
+      "id": "theme",
+      "title": "主旨情感",
+      "order": 5,
+      "exclusive": false,
+      "color": "#C97FA0",
+      "desc": "情感与关系主题"
+    },
+    {
+      "id": "element",
+      "title": "剧情元素",
+      "order": 6,
+      "exclusive": false,
+      "color": "#9B85C9",
+      "desc": "叙事装置与情节母题"
+    },
+    {
+      "id": "character",
+      "title": "角色特征",
+      "order": 7,
+      "exclusive": false,
+      "color": "#6FAFA5",
+      "desc": "性格 / 身份 / 外貌，供 XP 检索"
+    },
+    {
+      "id": "art",
+      "title": "美术音频",
+      "order": 8,
+      "exclusive": false,
+      "color": "#D4A94E",
+      "desc": "画风与声音制作"
+    },
+    {
+      "id": "adult",
+      "title": "成人内容",
+      "order": 9,
+      "exclusive": false,
+      "color": "#B56A9E",
+      "desc": "R18 场景的行为 / 性癖 / 状态 / 场所（与年龄分级正交）"
+    }
+  ]
+}
